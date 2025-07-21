@@ -28,6 +28,10 @@
       url = "github:nix-community/home-manager/master";
       inputs.nixpkgs.follows = "nixpkgs-unstable";
     };
+    auto-aspm = {
+      url = "github:notthebee/AutoASPM";
+      flake = false;
+    };
   };
 
   outputs =

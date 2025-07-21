@@ -32,13 +32,9 @@ in
         ./common/sops
         ./machines/nixos/_common
         ./machines/nixos/${machineHostname}
+        ./modules/auto-aspm
         inputs.sops-nix.nixosModules.sops
-        homeManagerCfg.nixosModules.home-manager
-        {
-          home-manager.sharedModules = [
-            inputs.sops-nix.homeManagerModules.sops
-          ];
-        }
+        (homeManagerCfg false [ ])
       ] ++ extraModules;
     };
   };
