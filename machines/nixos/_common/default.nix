@@ -35,7 +35,6 @@
   };
 
   imports = [
-    ./filesystems
     ./nix
   ];
 

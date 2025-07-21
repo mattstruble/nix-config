@@ -4,7 +4,8 @@
 , ...
 }:
 {
-  boot.loader.grub.device = "/dev/sda";
+  boot.loader.grub.device = "/dev/sda1";
+
 
   nixpkgs.config.packageOverrides = pkgs: {
     vaapiIntel = pkgs.vaapiIntel.override { enableHybridCodec = true; };
