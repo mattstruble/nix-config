@@ -31,7 +31,13 @@ in
       modules = [
         ./machines/nixos/_common
         ./machines/nixos/${machineHostname}
-        inputs.sops-nix.homeManagerModules.sops
+        inputs.sops-nix.nixosModules.sops
+        homeManagerCfg.nixosModules.home-manager
+        {
+          home-manager.sharedModules = [
+            inputs.sops-nix.homeManagerModules.sops
+          ];
+        }
       ] ++ extraModules;
     };
   };

@@ -42,8 +42,10 @@
         {
           packages.default = pkgs.mkShell {
             packages = [
+              pkgs.age
               pkgs.just
               pkgs.nixos-rebuild
+              pkgs.sops
             ];
           };
         }
