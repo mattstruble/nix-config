@@ -2,7 +2,7 @@
 inputs:
 let
   homeManagerCfg = userPackages: extraImports: {
-    home-manager.userGlobalPkgs = false;
+    home-manager.useGlobalPkgs = false;
     home-manager.extraSpecialArgs = {
       inherit inputs;
     };
