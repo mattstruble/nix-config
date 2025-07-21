@@ -35,7 +35,6 @@
   };
 
   imports = [
-    ./sops.nix
     ./filesystems
     ./nix
   ];

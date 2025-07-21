@@ -29,6 +29,7 @@ in
         inherit inputs;
       };
       modules = [
+        ./common/sops
         ./machines/nixos/_common
         ./machines/nixos/${machineHostname}
         inputs.sops-nix.nixosModules.sops

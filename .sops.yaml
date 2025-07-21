@@ -1,7 +1,7 @@
 keys:
   - &MacStruble age1rae24hwrq3vnldppz92wkx2gqv6rml0vse76l52aaqra8m23pueqdyemh3
 creation_rules:
-  - path_regex: ^machines/nixos/_common/secrets.yaml$
+  - path_regex: common/secrets.yaml$
     key_groups:
       - age:
           - *MacStruble
