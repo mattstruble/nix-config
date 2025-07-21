@@ -8,6 +8,7 @@ let
     };
     home-manager.users.mestruble.imports = [
       inputs.sops-nix.homeManagerModules.sops
+      ./users/mestruble/dots.nix
     ] ++ extraImports;
     home-manager.backupFileExtension = "bak";
     home-manager.useUserPackages = userPackages;
