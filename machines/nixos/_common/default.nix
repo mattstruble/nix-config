@@ -35,11 +35,22 @@
   };
 
   imports = [
+    ./sops.nix
     ./filesystems
     ./nix
   ];
 
   time.timeZone = "America/New_York";
+
+  users.users = {
+    mestruble = {
+      isNormalUser = true;
+      hashedPasswordFile = config.sops.secrets."users/mestruble/password".path;
+    };
+    root = {
+      initialHashedPassword = config.sops.secrets."users/root/password".path;
+    };
+  };
 
   services.openssh = {
     enable = lib.mkDefault true;
