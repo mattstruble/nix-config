@@ -2,6 +2,8 @@
 # https://github.com/notthebee/nix-config/blob/main/justfile
 set quiet
 
+REBUILD_CMD := if `uname` == "Darwin" { "darwin-rebuild" } else { "nixos-rebuild" }
+
 lint:
   pre-commit install
   pre-commit run --all-files
@@ -10,10 +12,10 @@ update:
   nix flake update
 
 dry-run $host:
-	nixos-rebuild dry-activate --flake .#{{host}} --target-host {{host}} --build-host {{host}} --fast --use-remote-sudo
+	{{REBUILD_CMD}} dry-activate --flake .#{{host}} --target-host {{host}} --build-host {{host}} --fast --use-remote-sudo
 
 deploy $host: (copy host)
-	nixos-rebuild switch --flake .#{{host}} --target-host {{host}} --build-host {{host}} --fast --use-remote-sudo
+	{{REBUILD_CMD}} switch --flake .#{{host}} --target-host {{host}} --build-host {{host}} --fast --use-remote-sudo
 
 check-clean:
 	if [ -n "$(git status --porcelain)" ]; then echo -e "\e[31merror\e[0m: git tree is dirty. Refusing to copy configuration." >&2; exit 1; fi

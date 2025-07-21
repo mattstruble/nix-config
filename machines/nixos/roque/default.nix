@@ -22,6 +22,20 @@
     };
   };
 
+  networking = {
+    useDHCP = true;
+    networkmanager.enable = false;
+    hostName = "roque";
+    firewall = {
+      enable = true;
+      allowPing = true;
+      trustedInterfaces = [
+        "enp1s0"
+        "wlp2s0"
+      ];
+    };
+  };
+
   services.auto-aspm.enable = true;
   powerManagement.powertop.enable = true;
 
