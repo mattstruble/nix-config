@@ -6,7 +6,6 @@
 {
   boot.loader.grub.device = "/dev/sda1";
 
-
   nixpkgs.config.packageOverrides = pkgs: {
     vaapiIntel = pkgs.vaapiIntel.override { enableHybridCodec = true; };
   };
@@ -36,6 +35,23 @@
         "enp1s0"
         "wlp2s0"
       ];
+    };
+  };
+
+  zfs-root = {
+    boot = {
+      partitionScheme = {
+        efiBoot = "-part1";
+        rootPool = "-part2";
+      };
+      bootDevices = [ "NGFF_2280_128GB_SSD_20240828101478" ];
+      immutable = true;
+      availableKernelModules = [
+        "xhci_pci"
+        "ahci"
+        "sd_mod"
+      ];
+      removableEfi = false;
     };
   };
 
