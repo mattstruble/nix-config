@@ -4,16 +4,7 @@
 , ...
 }:
 {
-  boot.loader = {
-    efi = {
-      canTouchEfiVariables = true;
-      efiSysMountPoint = "/boot/efi";
-    };
-    grub = {
-      efiSupport = true;
-      device = "nodev";
-    };
-  };
+  imports = [ ./configuration.nix ];
 
   nixpkgs.config.packageOverrides = pkgs: {
     vaapiIntel = pkgs.vaapiIntel.override { enableHybridCodec = true; };
@@ -34,8 +25,6 @@
   };
 
   networking = {
-    useDHCP = true;
-    networkmanager.enable = false;
     hostName = "roque";
     firewall = {
       enable = true;

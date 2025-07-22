@@ -17,7 +17,6 @@
     '';
   };
 
-  system.stateVersion = "22.11";
 
   systemd.services.nixos-upgrade.preStart = ''
     cd /etc/nixos

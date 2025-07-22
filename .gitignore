@@ -5,5 +5,3 @@ result-*
 # Ignore automatically generated direnv output
 .direnv
 
-hardware-configuration.nix
-configuration.nix
