@@ -30,7 +30,7 @@ in
         inherit inputs;
       };
       modules = [
-        ./machines/nixos/${machineHostname}/hardware-configuration.nix
+        ./configuration.nix
         ./common/sops
         ./machines/nixos/_common
         ./machines/nixos/${machineHostname}
