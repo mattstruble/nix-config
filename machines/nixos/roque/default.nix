@@ -31,7 +31,6 @@
       allowPing = true;
       trustedInterfaces = [
         "enp1s0"
-        "wlp2s0"
       ];
     };
   };
