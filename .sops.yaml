@@ -1,9 +1,9 @@
 keys:
   - &MacStruble age1rae24hwrq3vnldppz92wkx2gqv6rml0vse76l52aaqra8m23pueqdyemh3
-  - &roque age1tgzshs9t5dcp3hfv4f46pfp95kqg2ugsasq7gu7mz54kr2ffre8ql2258w
+  - &roque age180kp6mdwxncw6v2juwj60qcdlrnwlz3u0fr5klat9nel8tctqp3q75gtvf
 creation_rules:
   - path_regex: common/sops/secrets.yaml$
     key_groups:
       - age:
-          - *MacStruble
-          - *roque
+          - *MacStruble 
+          - *roque 
