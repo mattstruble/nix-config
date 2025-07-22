@@ -16,6 +16,8 @@ let
 in
 {
   mkNixos = machineHostname: nixpkgsVersion: extraModules: rec {
+    deploy.magicRollback = true;
+    deploy.remoteBuild = true;
     deploy.nodes.${machineHostname} = {
       hostname = machineHostname;
       profiles.system = {

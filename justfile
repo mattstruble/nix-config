@@ -11,14 +11,8 @@ lint:
 update:
   nix flake update
 
-dry-run $host:
-	{{REBUILD_CMD}} dry-activate --flake .#{{host}} --target-host {{host}} --build-host {{host}} --fast --use-remote-sudo
-
 deploy $host: (copy host)
-	{{REBUILD_CMD}} switch --flake .#{{host}} --target-host {{host}} --build-host {{host}} --fast --use-remote-sudo
+	nix run github:serokell/deploy-rs .#{{host}}
 
 check-clean:
 	if [ -n "$(git status --porcelain)" ]; then echo -e "\e[31merror\e[0m: git tree is dirty. Refusing to copy configuration." >&2; exit 1; fi
-
-copy $host: check-clean
-	rsync -ax --delete --rsync-path="sudo rsync" ./ {{host}}:/etc/nixos/

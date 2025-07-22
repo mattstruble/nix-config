@@ -32,10 +32,17 @@
       url = "github:notthebee/AutoASPM";
       flake = false;
     };
+    deploy-rs = {
+      url = "github:serokell/deploy-rs";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 
   outputs =
-    { flake-utils, nixpkgs, ... }@inputs:
+    { flake-utils
+    , nixpkgs
+    , ...
+    }@inputs:
     let
       helpers = import ./flakeHelpers.nix inputs;
       inherit (helpers) mkMerge mkNixos;
