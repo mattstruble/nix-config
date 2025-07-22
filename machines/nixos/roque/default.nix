@@ -38,23 +38,6 @@
     };
   };
 
-  zfs-root = {
-    boot = {
-      partitionScheme = {
-        efiBoot = "-part1";
-        rootPool = "-part2";
-      };
-      bootDevices = [ "NGFF_2280_128GB_SSD_20240828101478" ];
-      immutable = true;
-      availableKernelModules = [
-        "xhci_pci"
-        "ahci"
-        "sd_mod"
-      ];
-      removableEfi = false;
-    };
-  };
-
   services.auto-aspm.enable = true;
   powerManagement.powertop.enable = true;
 
