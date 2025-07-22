@@ -16,3 +16,6 @@ deploy $host: (copy host)
 
 check-clean:
 	if [ -n "$(git status --porcelain)" ]; then echo -e "\e[31merror\e[0m: git tree is dirty. Refusing to copy configuration." >&2; exit 1; fi
+
+copy $host: check-clean
+	rsync -ax --delete --rsync-path="sudo rsync" ./ {{host}}:/etc/nixos/
