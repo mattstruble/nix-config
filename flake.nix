@@ -58,7 +58,6 @@
         }
       ))
       (mkNixos "roque" inputs.nixpkgs [
-        ./modules/zfs-root
         inputs.home-manager.nixosModules.home-manager
       ])
     ];
