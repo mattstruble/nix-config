@@ -1,6 +1,19 @@
 # nix-config
 Configurations for all my NixOS and nix-darwin machines.
 
+# Installation
+
+Assuming NixOS is already installed.
+Navigate to the `/etc/nixos/` directory and initialize the repository there:
+
+```bash
+nix-shell -p git
+git init
+git remote add origin https://github.com/mattstruble/nix-config.git
+git fetch
+git checkout origin/main -b main
+```
+
 # References
 This repository wouldn't be possible without the help of numerous articles,
 YouTube videos, and forum post. Below is a non-exhaustive list of the one's I've
