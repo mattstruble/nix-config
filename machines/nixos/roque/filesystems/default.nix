@@ -3,7 +3,7 @@
 , ...
 }:
 let
-  nfsServer = config.sops.secrets."network/yggdrasil/ip".path;
+  nfsServer = "10.0.0.123";
   nfsShare = "/volume2/media";
   mountPoint = "/mnt/media";
 in
