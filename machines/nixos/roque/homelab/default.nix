@@ -6,10 +6,11 @@
 }:
 {
   services = {
-    plex.enable = true;
+    plex = {
+      enable = true;
+      openFirewall = true;
+    };
     pulseaudio.enable = true;
   };
 
-  networking.firewall.allowedTCPPorts = [ 32400 ]; # Allow Plex port
-  networking.firewall.allowedUDPPorts = [ 32400 ]; # Allow Plex port
 }
