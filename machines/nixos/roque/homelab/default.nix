@@ -6,15 +6,7 @@
 }:
 {
   services = {
-    plex = {
-      enable = true;
-      settings = {
-        transcoding = {
-          hardwareAcceleration = true;
-          vaapi.enable = true;
-        };
-      };
-    };
+    plex.enable = true;
   };
 
   hardware.enableAllFirmware = true;
