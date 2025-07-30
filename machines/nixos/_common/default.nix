@@ -17,7 +17,6 @@
     '';
   };
 
-
   systemd.services.nixos-upgrade.preStart = ''
     cd /etc/nixos
     chown -R root:root .
@@ -43,6 +42,11 @@
     mestruble = {
       isNormalUser = true;
       hashedPasswordFile = config.sops.secrets."users/mestruble/password".path;
+      description = "Matt Struble";
+      extraGroups = [
+        "networkmanager"
+        "wheel"
+      ];
     };
     root = {
       initialHashedPassword = config.sops.secrets."users/root/password".path;

@@ -4,11 +4,20 @@
 , ...
 }:
 {
-  imports = [ ./configuration.nix ];
+  system.stateVersion = "25.05";
+
+  boot.loader.systemd-boot.enable = true;
+  boot.loader.efi.canTouchEfiVariables = true;
+
+  imports = [
+    ./locale.nix
+    ./hardware-configuration.nix
+  ];
 
   nixpkgs.config.packageOverrides = pkgs: {
     vaapiIntel = pkgs.vaapiIntel.override { enableHybridCodec = true; };
   };
+
   hardware = {
     enableRedistributableFirmware = true;
     cpu.intel.updateMicrocode = true;
@@ -33,8 +42,12 @@
         "enp1s0"
       ];
     };
+    networkmanager = {
+      enable = true;
+    };
   };
 
+  services.openssh.enable = true;
   services.auto-aspm.enable = true;
   powerManagement.powertop.enable = true;
 
