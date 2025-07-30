@@ -12,7 +12,9 @@
       "users/root/password" = {
         neededForUsers = true;
       };
-      "network/yggdrasil/ip" = { };
+      "network/yggdrasil/ip" = {
+        neededForUsers = true;
+      };
     };
   };
 }
