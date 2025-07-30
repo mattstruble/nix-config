@@ -12,6 +12,10 @@
       "users/root/password" = {
         neededForUsers = true;
       };
+      "cloudflare/firewallApiKey" = { };
+      "cloudflare/zoneId" = { };
+      "cloudflare/dnsApiCredentials" = { };
+      "network/yggdrasil/ip" = { };
     };
   };
 }
