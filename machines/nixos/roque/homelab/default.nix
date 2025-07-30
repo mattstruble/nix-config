@@ -6,11 +6,6 @@
 }:
 {
   services = {
-    fail2ban-cloudflare = {
-      enable = true;
-      apiKeyFile = config.sops.secrets."cloudflare/firewallApiKey".path;
-      zoneId = config.sops.secrets."cloudflare/zoneId".path;
-    };
     plex = {
       enable = true;
       settings = {
