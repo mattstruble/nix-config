@@ -7,10 +7,8 @@
 {
   services = {
     plex.enable = true;
+    pulseaudio.enable = true;
   };
-
-  hardware.enableAllFirmware = true;
-  hardware.pulseaudio.enable = true;
 
   networking.firewall.allowedTCPPorts = [ 32400 ]; # Allow Plex port
   networking.firewall.allowedUDPPorts = [ 32400 ]; # Allow Plex port
