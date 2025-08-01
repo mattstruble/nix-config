@@ -8,8 +8,13 @@ let
   mountPoint = "/mnt/media";
 in
 {
-  fileSystems."${mountPoint}" = {
-    device = "${nfsServer}:${nfsShare}";
+  fileSystems."/mnt/media" = {
+    device = "${nfsServer}:/volume2/media";
+    fsType = "nfs";
+  };
+
+  fileSysstems."/mnt/immich" = {
+    device = "${nfsServer}:/volume1/immich";
     fsType = "nfs";
   };
 
