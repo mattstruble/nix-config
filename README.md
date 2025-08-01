@@ -24,3 +24,4 @@ been able to keep track of.
 - [lgug2z handling-secrets-in-nixos-an-overview](https://lgug2z.com/articles/handling-secrets-in-nixos-an-overview/)
 - [tsawyer87 sops-nix secrets](https://tsawyer87.github.io/posts/sops-nix/)
 - [samleathers](https://samleathers.com/posts/2022-02-11-my-new-network-and-sops.html)
+- [LongerHV nixos-configuration](https://github.com/LongerHV/nixos-configuration)
