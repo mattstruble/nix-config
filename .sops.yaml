@@ -5,5 +5,10 @@ creation_rules:
   - path_regex: common/sops/secrets.yaml$
     key_groups:
       - age:
-          - *MacStruble 
-          - *roque 
+          - *MacStruble
+          - *roque
+  - path_regex: machines/nixos/roque/sops/secrets.yaml$
+    key_groups:
+      - age:
+          - *MacStruble
+          - *roque

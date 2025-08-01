@@ -12,6 +12,8 @@
   imports = [
     ./locale.nix
     ./hardware-configuration.nix
+    ./filesystems
+    ./homelab
   ];
 
   nixpkgs.config.packageOverrides = pkgs: {
@@ -61,5 +63,6 @@
     cpufrequtils
     intel-gpu-tools
     powertop
+    nfs-utils
   ];
 }
