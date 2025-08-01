@@ -24,7 +24,10 @@
 
   users.users.immich = {
     uid = builtins.readFile config.sops.secrets."user/immich/uid".path;
-    extraGroups = [ "video", "render" ];
+    extraGroups = [
+      "video"
+      "render"
+    ];
   };
 
 }
