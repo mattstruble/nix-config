@@ -13,7 +13,7 @@ in
     fsType = "nfs";
   };
 
-  fileSysstems."/mnt/immich" = {
+  fileSystems."/mnt/immich" = {
     device = "${nfsServer}:/volume1/immich";
     fsType = "nfs";
   };
