@@ -23,7 +23,7 @@
   users.groups.immich.gid = builtins.readFile config.sops.secrets."users/immich/gid".path;
 
   users.users.immich = {
-    uid = builtins.readFile config.sops.secrets."user/immich/uid".path;
+    uid = builtins.readFile config.sops.secrets."users/immich/uid".path;
     extraGroups = [
       "video"
       "render"
