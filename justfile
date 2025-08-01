@@ -12,7 +12,7 @@ update:
   nix flake update
 
 deploy $host: (copy host)
-	nix run github:serokell/deploy-rs .#{{host}}
+	nix run github:serokell/deploy-rs .#{{host}} --impure
 
 check-clean:
 	if [ -n "$(git status --porcelain)" ]; then echo -e "\e[31merror\e[0m: git tree is dirty. Refusing to copy configuration." >&2; exit 1; fi
