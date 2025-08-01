@@ -14,7 +14,6 @@
     ./hardware-configuration.nix
     ./filesystems
     ./homelab
-    ./sops
   ];
 
   nixpkgs.config.packageOverrides = pkgs: {
