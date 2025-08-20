@@ -64,7 +64,7 @@
           };
         }
       ))
-      (mkNixos "roque" inputs.nixpkgs [
+      (mkNixos "roque" inputs.nixpkgs-unstable [
         inputs.home-manager.nixosModules.home-manager
       ])
     ];
