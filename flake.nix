@@ -18,7 +18,7 @@
     nixpkgs-unstable.url = "github:nixos/nixpkgs/nixos-unstable";
     sops-nix = {
       url = "github:Mic92/sops-nix";
-      inputs.nixpkgs.follows = "nixpkgs";
+      inputs.nixpkgs.follows = "nixpkgs-unstable";
     };
     home-manager = {
       url = "github:nix-community/home-manager/release-25.05";
@@ -34,7 +34,7 @@
     };
     deploy-rs = {
       url = "github:serokell/deploy-rs";
-      inputs.nixpkgs.follows = "nixpkgs";
+      inputs.nixpkgs.follows = "nixpkgs-unstable";
     };
   };
 
@@ -65,7 +65,7 @@
         }
       ))
       (mkNixos "roque" inputs.nixpkgs-unstable [
-        inputs.home-manager.nixosModules.home-manager
+        inputs.home-manager-unstable.nixosModules.home-manager
       ])
     ];
 

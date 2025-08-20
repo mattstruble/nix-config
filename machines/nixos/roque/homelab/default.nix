@@ -19,6 +19,11 @@
       openFirewall = true;
       mediaLocation = "/mnt/immich";
     };
+
+    overseerr = {
+      enable = true;
+      openFirewall = true;
+    };
   };
 
   users.groups.immich.gid = lib.mkForce 65541;
