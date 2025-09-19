@@ -10,6 +10,7 @@
   boot.loader.efi.canTouchEfiVariables = true;
 
   imports = [
+    ./sops
     ./locale.nix
     ./hardware-configuration.nix
     ./filesystems

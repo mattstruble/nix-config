@@ -27,12 +27,12 @@
 
     karakeep = {
       enable = true;
-      openFirewall = true;
       browser = {
         enable = true;
-        package = pkgs.ungoogled-chromium;
+        exe = "${pkgs.ungoogled-chromium}/bin/chromium";
       };
-      meilisearch.enable = true;
+      meilisearch.enable = false; # FIXME: broken
+      environmentFile = config.sops.secrets."services/karakeep/env".path;
       extraEnvironment = {
         BROWSER_ARGS = lib.concatStringsSep " " [
           "--headless"
@@ -50,6 +50,10 @@
         ];
       };
     };
+  };
+
+  networking.firewall = {
+    allowedTCPPorts = [ 3000 ]; # karakeep
   };
 
   users.groups.immich.gid = lib.mkForce 65541;
