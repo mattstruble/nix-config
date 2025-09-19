@@ -24,6 +24,36 @@
       enable = true;
       openFirewall = true;
     };
+
+    karakeep = {
+      enable = true;
+      browser = {
+        enable = true;
+        exe = "${pkgs.ungoogled-chromium}/bin/chromium";
+      };
+      meilisearch.enable = false; # FIXME: broken
+      environmentFile = config.sops.secrets."services/karakeep/env".path;
+      extraEnvironment = {
+        BROWSER_ARGS = lib.concatStringsSep " " [
+          "--headless"
+          "--no-sandbox"
+          "--disable-gpu"
+          "--disable-dev-shm-usage"
+          "--disable-extensions"
+          "--disable-plugins"
+          "--disable-images"
+          "--disable-javascript"
+          "--virtual-time-budget=5000"
+          "--disable-background-timer-throttling"
+          "--disable-backgrounding-occluded-windows"
+          "--disable-renderer-backgrounding"
+        ];
+      };
+    };
+  };
+
+  networking.firewall = {
+    allowedTCPPorts = [ 3000 ]; # karakeep
   };
 
   users.groups.immich.gid = lib.mkForce 65541;

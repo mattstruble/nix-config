@@ -7,6 +7,9 @@
       "users/immich/uid" = {
         sopsFile = ./secrets.yaml;
       };
+      "services/karakeep/env" = {
+        sopsFile = ./secrets.yaml;
+      };
     };
   };
 }

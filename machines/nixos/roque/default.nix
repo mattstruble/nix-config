@@ -10,6 +10,7 @@
   boot.loader.efi.canTouchEfiVariables = true;
 
   imports = [
+    ./sops
     ./locale.nix
     ./hardware-configuration.nix
     ./filesystems
@@ -64,5 +65,6 @@
     intel-gpu-tools
     powertop
     nfs-utils
+    ungoogled-chromium
   ];
 }
