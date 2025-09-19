@@ -64,5 +64,6 @@
     intel-gpu-tools
     powertop
     nfs-utils
+    ungoogled-chromium
   ];
 }
