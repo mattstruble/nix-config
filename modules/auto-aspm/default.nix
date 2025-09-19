@@ -1,4 +1,3 @@
-# https://github.com/notthebee/nix-config/blob/main/modules/auto-aspm/default.nix
 { lib
 , config
 , pkgs
@@ -17,19 +16,19 @@ in
   config = lib.mkIf cfg.enable {
     environment.systemPackages = [
       auto-aspm
-      pkgs.python312Full
+      pkgs.python3
     ];
     systemd.services.auto-aspm = {
       description = "Automatically activate ASPM on all supported devices";
       wantedBy = [ "multi-user.target" ];
       path = [
-        pkgs.python312Full
+        pkgs.python3
         pkgs.which
         pkgs.pciutils
       ];
       serviceConfig = {
         Type = "oneshot";
-        ExecStart = "${lib.getExe pkgs.python312Full} ${lib.getExe auto-aspm}";
+        ExecStart = "${lib.getExe pkgs.python3} ${lib.getExe auto-aspm}";
       };
     };
   };
