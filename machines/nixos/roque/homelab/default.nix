@@ -54,6 +54,11 @@
     hedgedoc = {
       enable = true;
       environmentFile = config.sops.secrets."services/hedgedoc/env".path;
+      settings = {
+        host = "0.0.0.0";
+        port = 3030;
+        protocolUseSSL = true;
+      };
     };
   };
 
