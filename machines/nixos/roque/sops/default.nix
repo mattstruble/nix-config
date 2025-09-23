@@ -10,6 +10,9 @@
       "services/karakeep/env" = {
         sopsFile = ./secrets.yaml;
       };
+      "services/hedgedoc/env" = {
+        sopsFile = ./secrets.yaml;
+      };
     };
   };
 }

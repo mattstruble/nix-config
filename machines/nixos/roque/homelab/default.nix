@@ -50,10 +50,18 @@
         ];
       };
     };
+
+    hedgedoc = {
+      enable = true;
+      environmentFile = config.sops.secrets."services/hedgedoc/env".path;
+    };
   };
 
   networking.firewall = {
-    allowedTCPPorts = [ 3000 ]; # karakeep
+    allowedTCPPorts = [
+      3000 # karakeep
+      3030 # hedgedoc
+    ];
   };
 
   users.groups.immich.gid = lib.mkForce 65541;
