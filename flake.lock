@@ -1,7 +1,11 @@
 {
   "nodes": {
-    "auto-aspm": {
-      "flake": false,
+    "autoaspm": {
+      "inputs": {
+        "nixpkgs": [
+          "nixpkgs"
+        ]
+      },
       "locked": {
         "lastModified": 1759050207,
         "narHash": "sha256-WnEKYqj0xs92DZscGVMmLytHOQlUWg3ZtZRdgCoTgQw=",
@@ -148,7 +152,7 @@
     },
     "root": {
       "inputs": {
-        "auto-aspm": "auto-aspm",
+        "autoaspm": "autoaspm",
         "deploy-rs": "deploy-rs",
         "flake-utils": "flake-utils",
         "home-manager": "home-manager",

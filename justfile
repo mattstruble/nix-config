@@ -11,7 +11,7 @@ lint:
 update:
   nix flake update
 
-deploy $host: (copy host)
+deploy $host:
 	nix run github:serokell/deploy-rs .#{{host}} -- -- --impure
 
 check-clean:

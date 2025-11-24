@@ -9,7 +9,8 @@ let
     home-manager.users.mestruble.imports = [
       inputs.sops-nix.homeManagerModules.sops
       ./users/mestruble/dots.nix
-    ] ++ extraImports;
+    ]
+    ++ extraImports;
     home-manager.backupFileExtension = "bak";
     home-manager.useUserPackages = userPackages;
   };
@@ -35,10 +36,10 @@ in
         ./common/sops
         ./machines/nixos/_common
         ./machines/nixos/${machineHostname}
-        ./modules/auto-aspm
         inputs.sops-nix.nixosModules.sops
         (homeManagerCfg false [ ])
-      ] ++ extraModules;
+      ]
+      ++ extraModules;
     };
   };
   mkMerge = inputs.nixpkgs.lib.lists.foldl'

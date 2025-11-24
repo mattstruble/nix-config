@@ -28,9 +28,9 @@
       url = "github:nix-community/home-manager/master";
       inputs.nixpkgs.follows = "nixpkgs-unstable";
     };
-    auto-aspm = {
-      url = "github:notthebee/AutoASPM";
-      flake = false;
+    autoaspm = {
+      url = "github:notthebee/AutoASPM?shallow=true";
+      inputs.nixpkgs.follows = "nixpkgs";
     };
     deploy-rs = {
       url = "github:serokell/deploy-rs";
@@ -66,6 +66,7 @@
       ))
       (mkNixos "roque" inputs.nixpkgs-unstable [
         inputs.home-manager-unstable.nixosModules.home-manager
+        inputs.autoaspm.nixosModules.default
       ])
     ];
 
