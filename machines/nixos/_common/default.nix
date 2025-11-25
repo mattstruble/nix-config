@@ -17,6 +17,8 @@
     '';
   };
 
+  systemd.services.nix-daemon.environment.TMPDIR = "/var/tmp";
+
   systemd.services.nixos-upgrade.preStart = ''
     cd /etc/nixos
     chown -R root:root .
