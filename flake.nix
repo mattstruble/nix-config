@@ -29,7 +29,7 @@
       inputs.nixpkgs.follows = "nixpkgs-unstable";
     };
     autoaspm = {
-      url = "github:notthebee/AutoASPM?shallow=true";
+      url = "git+https://git.notthebe.ee/notthebee/AutoASPM";
       inputs.nixpkgs.follows = "nixpkgs";
     };
     deploy-rs = {
