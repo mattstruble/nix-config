@@ -31,7 +31,7 @@
         enable = true;
         exe = "${pkgs.ungoogled-chromium}/bin/chromium";
       };
-      meilisearch.enable = false; # FIXME: broken
+      meilisearch.enable = true; # FIXME: broken
       environmentFile = config.sops.secrets."services/karakeep/env".path;
       extraEnvironment = {
         BROWSER_ARGS = lib.concatStringsSep " " [
