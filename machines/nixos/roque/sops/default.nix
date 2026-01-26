@@ -10,6 +10,9 @@
       "services/karakeep/env" = {
         sopsFile = ./secrets.yaml;
       };
+      "services/pocket-id/env" = {
+        sopsFile = ./secrets.yaml;
+      };
     };
   };
 }

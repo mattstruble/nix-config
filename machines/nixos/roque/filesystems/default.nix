@@ -17,5 +17,9 @@ in
     device = "${nfsServer}:/volume1/immich";
     fsType = "nfs";
   };
+  fileSystems."/mnt/pocket-id" = {
+    device = "${nfsServer}:/volume1/pocket-id";
+    fsType = "nfs";
+  };
 
 }
