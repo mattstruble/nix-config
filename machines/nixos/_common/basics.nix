@@ -4,6 +4,8 @@
 , ...
 }:
 {
+  system.stateVersion = "25.05";
+
   boot.tmp.useTmpfs = true;
   boot.tmp.cleanOnBoot = true;
   time.timeZone = "America/New_York";
