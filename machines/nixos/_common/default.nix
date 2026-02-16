@@ -42,21 +42,6 @@
 
   time.timeZone = "America/New_York";
 
-  users.users = {
-    mestruble = {
-      isNormalUser = true;
-      hashedPasswordFile = config.sops.secrets."users/mestruble/password".path;
-      description = "Matt Struble";
-      extraGroups = [
-        "networkmanager"
-        "wheel"
-      ];
-    };
-    root = {
-      initialHashedPassword = config.sops.secrets."users/root/password".path;
-    };
-  };
-
   services.openssh = {
     enable = lib.mkDefault true;
     settings = {
@@ -77,15 +62,17 @@
     ];
   };
 
+  nixpkgs = {
+    overlays = [ ];
+    config = {
+      allowUnfree = true;
+      allowUnfreePredicate = (_: true);
+    };
+  };
+
   programs.git.enable = true;
   programs.mosh.enable = true;
   programs.htop.enable = true;
-  programs.neovim = {
-    enable = true;
-    viAlias = true;
-    vimAlias = true;
-    defaultEditor = true;
-  };
 
   security = {
     doas.enable = lib.mkDefault false;

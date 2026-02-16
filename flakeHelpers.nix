@@ -1,21 +1,5 @@
 # Borrowed heavily from https://github.com/notthebee/nix-config/blob/main/flakeHelpers.nix
-inputs:
-let
-  homeManagerCfg = userPackages: extraImports: {
-    home-manager.useGlobalPkgs = false;
-    home-manager.extraSpecialArgs = {
-      inherit inputs;
-    };
-    home-manager.users.mestruble.imports = [
-      inputs.sops-nix.homeManagerModules.sops
-      ./users/mestruble/dots.nix
-    ]
-    ++ extraImports;
-    home-manager.backupFileExtension = "bak";
-    home-manager.useUserPackages = userPackages;
-  };
-in
-{
+inputs: {
   mkNixos = machineHostname: nixpkgsVersion: extraModules: rec {
     deploy.magicRollback = true;
     deploy.remoteBuild = true;
@@ -36,8 +20,8 @@ in
         ./common/sops
         ./machines/nixos/_common
         ./machines/nixos/${machineHostname}
+        ./users
         inputs.sops-nix.nixosModules.sops
-        (homeManagerCfg false [ ])
       ]
       ++ extraModules;
     };
