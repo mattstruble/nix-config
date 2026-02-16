@@ -39,20 +39,11 @@
   networking = {
     hostName = "roque";
     firewall = {
-      enable = true;
-      allowPing = true;
       trustedInterfaces = [
         "enp1s0"
       ];
     };
-    networkmanager = {
-      enable = true;
-    };
   };
-
-  services.openssh.enable = true;
-  services.autoaspm.enable = true;
-  powerManagement.powertop.enable = true;
 
   environment.systemPackages = with pkgs; [
     pciutils
