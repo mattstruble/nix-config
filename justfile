@@ -21,8 +21,7 @@ copy $host: check-clean
 	rsync -ax --delete --rsync-path="sudo rsync" ./ {{host}}:/etc/nixos/
 
 build-rpi $host:
-	mkdir -p ./images
-	nix run nixpkgs#nixos-generators -- -f sd-aarch64 --flake .#{{host}} --system aarch64-linux -o ./images/{{host}}.sd
+	nix build .#nixosConfigurations.{{host}}.config.system.build.sdImage
 
 build-rpi-images:
 	just build-rpi clown
