@@ -20,11 +20,14 @@ check-clean:
 copy $host: check-clean
 	rsync -ax --delete --rsync-path="sudo rsync" ./ {{host}}:/etc/nixos/
 
+build-rpi $host:
+	mkdir -p ./images
+	nix run nixpkgs#nixos-generators -- -f sd-aarch64 --flake .#{{host}} --system aarch64-linux -o ./images/{{host}}.sd
+
 build-rpi-images:
-	nix build \
-	 .#sevro.config.system.build.sdImage \
-	 .#thistle.config.system.build.sdImage \
-	 .#clown.config.system.build.sdImage \
-	 .#pebble.config.system.build.sdImage
+	just build-rpi clown
+	just build-rpi pebble
+	just build-rpi thistle
+	just build-rpi sevro
 
 build: build-rpi-images
