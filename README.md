@@ -25,3 +25,4 @@ been able to keep track of.
 - [tsawyer87 sops-nix secrets](https://tsawyer87.github.io/posts/sops-nix/)
 - [samleathers](https://samleathers.com/posts/2022-02-11-my-new-network-and-sops.html)
 - [LongerHV nixos-configuration](https://github.com/LongerHV/nixos-configuration)
+- [janissary nixos-install-custom-image](https://blog.janissary.xyz/posts/nixos-install-custom-image)
