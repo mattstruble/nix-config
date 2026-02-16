@@ -10,6 +10,7 @@
     iotop
     iperf3
     jq
+    just
     lm_sensors
     ncdu
     nmap
