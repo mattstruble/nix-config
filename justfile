@@ -19,3 +19,12 @@ check-clean:
 
 copy $host: check-clean
 	rsync -ax --delete --rsync-path="sudo rsync" ./ {{host}}:/etc/nixos/
+
+build-rpi-images:
+	nix build \
+	 .#sevro.config.system.build.sdImage \
+	 .#thistle.config.system.build.sdImage \
+	 .#clown.config.system.build.sdImage \
+	 .#pebble.config.system.build.sdImage
+
+build: build-rpi-images

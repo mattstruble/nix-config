@@ -67,7 +67,23 @@
       (mkNixos "roque" inputs.nixpkgs-unstable [
         inputs.home-manager-unstable.nixosModules.home-manager
         inputs.autoaspm.nixosModules.default
-      ])
+      ] "x86_64-linux")
+      (mkNixos "sevro" inputs.nixpkgs [
+        inputs.home-manager.nixosModules.home-manager
+        inputs.autoaspm.nixosModules.default
+      ] "aarch64-linux")
+      (mkNixos "thistle" inputs.nixpkgs [
+        inputs.home-manager.nixosModules.home-manager
+        inputs.autoaspm.nixosModules.default
+      ] "aarch64-linux")
+      (mkNixos "pebble" inputs.nixpkgs [
+        inputs.home-manager.nixosModules.home-manager
+        inputs.autoaspm.nixosModules.default
+      ] "aarch64-linux")
+      (mkNixos "clown" inputs.nixpkgs [
+        inputs.home-manager.nixosModules.home-manager
+        inputs.autoaspm.nixosModules.default
+      ] "aarch64-linux")
     ];
 
 }

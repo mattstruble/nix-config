@@ -1,6 +1,6 @@
 # Borrowed heavily from https://github.com/notthebee/nix-config/blob/main/flakeHelpers.nix
 inputs: {
-  mkNixos = machineHostname: nixpkgsVersion: extraModules: rec {
+  mkNixos = machineHostname: nixpkgsVersion: extraModules: arch: rec {
     deploy.magicRollback = true;
     deploy.remoteBuild = true;
     deploy.nodes.${machineHostname} = {
@@ -8,19 +8,18 @@ inputs: {
       profiles.system = {
         user = "root";
         sshUser = "mestruble";
-        path = inputs.deploy-rs.lib.x86_64-linux.activate.nixos nixosConfigurations.${machineHostname};
+        path = inputs.deploy-rs.lib.${arch}.activate.nixos nixosConfigurations.${machineHostname};
       };
     };
     nixosConfigurations.${machineHostname} = nixpkgsVersion.lib.nixosSystem {
-      system = "x86_64-linux";
+      system = arch;
       specialArgs = {
         inherit inputs;
       };
       modules = [
         ./common/sops
-        ./machines/nixos/_common
-        ./machines/nixos/${machineHostname}
         ./users
+        ./machines/nixos/${machineHostname}
         inputs.sops-nix.nixosModules.sops
       ]
       ++ extraModules;
