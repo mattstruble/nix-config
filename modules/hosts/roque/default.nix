@@ -30,6 +30,7 @@
       boot.binfmt.emulatedSystems = [ "aarch64-linux" ];
 
       networking.hostName = "roque";
+      system.stateVersion = "25.05";
 
       environment.systemPackages = with pkgs; [
         pciutils

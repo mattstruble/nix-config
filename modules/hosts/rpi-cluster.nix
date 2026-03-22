@@ -16,6 +16,7 @@ let
       ];
 
       networking.hostName = name;
+      system.stateVersion = "25.05";
     };
   };
 
