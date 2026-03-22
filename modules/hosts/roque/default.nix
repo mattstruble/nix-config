@@ -29,14 +29,7 @@
       boot.loader.efi.canTouchEfiVariables = true;
       boot.binfmt.emulatedSystems = [ "aarch64-linux" ];
 
-      networking = {
-        hostName = "roque";
-        firewall = {
-          trustedInterfaces = [
-            "enp1s0"
-          ];
-        };
-      };
+      networking.hostName = "roque";
 
       environment.systemPackages = with pkgs; [
         pciutils
