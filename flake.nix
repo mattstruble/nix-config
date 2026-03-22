@@ -12,21 +12,18 @@
       "nix-community.cachix.org-1:mB9FSh9qf2dCimDSUo8Zy7bkq5CX+/rkCWyvRCYg3Fs="
     ];
   };
+
   inputs = {
-    flake-utils.url = "github:numtide/flake-utils";
-    nixpkgs.url = "github:nixos/nixpkgs/nixos-25.05";
-    nixpkgs-unstable.url = "github:nixos/nixpkgs/nixos-unstable";
+    flake-parts.url = "github:hercules-ci/flake-parts";
+    import-tree.url = "github:vic/import-tree";
+    nixpkgs.url = "github:nixos/nixpkgs/nixos-unstable";
     sops-nix = {
       url = "github:Mic92/sops-nix";
-      inputs.nixpkgs.follows = "nixpkgs-unstable";
-    };
-    home-manager = {
-      url = "github:nix-community/home-manager/release-25.05";
       inputs.nixpkgs.follows = "nixpkgs";
     };
-    home-manager-unstable = {
+    home-manager = {
       url = "github:nix-community/home-manager/master";
-      inputs.nixpkgs.follows = "nixpkgs-unstable";
+      inputs.nixpkgs.follows = "nixpkgs";
     };
     autoaspm = {
       url = "git+https://git.notthebe.ee/notthebee/AutoASPM";
@@ -34,56 +31,10 @@
     };
     deploy-rs = {
       url = "github:serokell/deploy-rs";
-      inputs.nixpkgs.follows = "nixpkgs-unstable";
+      inputs.nixpkgs.follows = "nixpkgs";
     };
   };
 
-  outputs =
-    { flake-utils
-    , nixpkgs
-    , ...
-    }@inputs:
-    let
-      helpers = import ./flakeHelpers.nix inputs;
-      inherit (helpers) mkMerge mkNixos;
-    in
-    mkMerge [
-      (flake-utils.lib.eachDefaultSystem (
-        system:
-        let
-          pkgs = nixpkgs.legacyPackages.${system};
-        in
-        {
-          packages.default = pkgs.mkShell {
-            packages = [
-              pkgs.age
-              pkgs.just
-              pkgs.nixos-rebuild
-              pkgs.sops
-            ];
-          };
-        }
-      ))
-      (mkNixos "roque" inputs.nixpkgs-unstable [
-        inputs.home-manager-unstable.nixosModules.home-manager
-        inputs.autoaspm.nixosModules.default
-      ] "x86_64-linux")
-      (mkNixos "sevro" inputs.nixpkgs [
-        inputs.home-manager.nixosModules.home-manager
-        inputs.autoaspm.nixosModules.default
-      ] "aarch64-linux")
-      (mkNixos "thistle" inputs.nixpkgs [
-        inputs.home-manager.nixosModules.home-manager
-        inputs.autoaspm.nixosModules.default
-      ] "aarch64-linux")
-      (mkNixos "pebble" inputs.nixpkgs [
-        inputs.home-manager.nixosModules.home-manager
-        inputs.autoaspm.nixosModules.default
-      ] "aarch64-linux")
-      (mkNixos "clown" inputs.nixpkgs [
-        inputs.home-manager.nixosModules.home-manager
-        inputs.autoaspm.nixosModules.default
-      ] "aarch64-linux")
-    ];
-
+  outputs = inputs:
+    inputs.flake-parts.lib.mkFlake { inherit inputs; } (inputs.import-tree ./modules);
 }
