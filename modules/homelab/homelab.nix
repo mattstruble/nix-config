@@ -7,12 +7,6 @@ in
     { config, pkgs, lib, ... }:
     {
       sops.secrets = {
-        "users/immich/gid" = {
-          sopsFile = ./homelab-secrets.yaml;
-        };
-        "users/immich/uid" = {
-          sopsFile = ./homelab-secrets.yaml;
-        };
         "services/karakeep/env" = {
           sopsFile = ./homelab-secrets.yaml;
         };
@@ -31,10 +25,23 @@ in
 
         immich = {
           enable = true;
-          host = "0.0.0.0";
+          host = "127.0.0.1";
+          port = 3001;
           accelerationDevices = null;
-          openFirewall = true;
+          openFirewall = false;
           mediaLocation = "/mnt/immich";
+        };
+
+        nginx = {
+          enable = true;
+          recommendedProxySettings = true;
+          virtualHosts."immich" = {
+            listen = [{ addr = "0.0.0.0"; port = 2283; }];
+            locations."/" = {
+              proxyPass = "http://127.0.0.1:3001";
+              proxyWebsockets = true;
+            };
+          };
         };
 
         overseerr = {
@@ -58,7 +65,7 @@ in
             enable = true;
             exe = "${pkgs.ungoogled-chromium}/bin/chromium";
           };
-          meilisearch.enable = true; # FIXME: broken
+          meilisearch.enable = true;
           environmentFile = config.sops.secrets."services/karakeep/env".path;
           extraEnvironment = {
             BROWSER_ARGS = lib.concatStringsSep " " [
@@ -81,6 +88,7 @@ in
 
       networking.firewall = {
         allowedTCPPorts = [
+          2283 # immich (nginx)
           3000 # karakeep
           1411 # pocket-id
         ];
@@ -107,16 +115,19 @@ in
       fileSystems."/mnt/media" = {
         device = "${nfsServer}:/volume2/media";
         fsType = "nfs";
+        options = [ "nfsvers=4.2" "noexec" "nosuid" "nodev" ];
       };
 
       fileSystems."/mnt/immich" = {
         device = "${nfsServer}:/volume1/immich";
         fsType = "nfs";
+        options = [ "nfsvers=4.2" "noexec" "nosuid" "nodev" ];
       };
 
       fileSystems."/mnt/pocket-id" = {
         device = "${nfsServer}:/volume1/pocket-id";
         fsType = "nfs";
+        options = [ "nfsvers=4.2" "noexec" "nosuid" "nodev" ];
       };
     };
 }
