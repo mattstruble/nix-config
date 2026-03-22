@@ -13,7 +13,6 @@ let
         sops
         users
         rpi-hardware
-        autoaspm
       ];
 
       networking.hostName = name;
