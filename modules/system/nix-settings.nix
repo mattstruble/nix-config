@@ -10,7 +10,7 @@
       systemd.services.nixos-upgrade.preStart = ''
         cd /etc/nixos
         chown -R root:root .
-        git pull || true
+        git pull
       '';
       system.autoUpgrade = {
         enable = true;

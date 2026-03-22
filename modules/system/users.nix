@@ -25,7 +25,7 @@
 
       home-manager = {
         backupFileExtension = "bak";
-        useGlobalPkgs = false;
+        useGlobalPkgs = true;
         sharedModules = with inputs.self.modules.homeManager; [
           user-base
           shell
