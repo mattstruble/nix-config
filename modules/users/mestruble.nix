@@ -1,9 +1,19 @@
 { inputs, ... }:
 {
-  flake.modules.nixos.users =
+  flake.modules.nixos.user-mestruble =
     { config, ... }:
     {
-      imports = [ inputs.home-manager.nixosModules.home-manager ];
+      sops = {
+        defaultSopsFile = ./sops-secrets.yaml;
+        secrets = {
+          "users/mestruble/password" = {
+            neededForUsers = true;
+          };
+          "users/root/password" = {
+            neededForUsers = true;
+          };
+        };
+      };
 
       users.users = {
         root = {
@@ -24,12 +34,8 @@
       };
 
       home-manager = {
-        backupFileExtension = "bak";
-        useGlobalPkgs = true;
         sharedModules = with inputs.self.modules.homeManager; [
           user-base
-          shell
-          neovim
         ];
         users.mestruble.imports = [
           inputs.sops-nix.homeManagerModules.sops
