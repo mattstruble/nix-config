@@ -34,4 +34,31 @@
         };
       };
     };
+
+  flake.modules.homeManager.ssh-client =
+    { config, ... }:
+    let
+      onePassPath = "~/Library/Group\\ Containers/2BUA8C4S2C.com.1password/t/agent.sock";
+    in
+    {
+      programs.ssh = {
+        enable = true;
+        enableDefaultConfig = false;
+
+        matchBlocks = {
+          "*" = {
+            compression = true;
+            addKeysToAgent = "yes";
+            controlMaster = "auto";
+            controlPath = "/tmp/ssh-%u-%r@%h:%p";
+            controlPersist = "no";
+            forwardAgent = true;
+            serverAliveInterval = 60;
+            hashKnownHosts = true;
+            userKnownHostsFile = "${config.home.homeDirectory}/.ssh/known_hosts";
+            identityAgent = "${onePassPath}";
+          };
+        };
+      };
+    };
 }

@@ -28,3 +28,9 @@ build-rpi-images:
 	just build-rpi sevro
 
 build: build-rpi-images
+
+darwin-switch $host="MacStruble":
+	darwin-rebuild switch --flake .#{{host}}
+
+darwin-build $host="MacStruble":
+	nix build .#darwinConfigurations.{{host}}.system

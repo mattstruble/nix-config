@@ -33,6 +33,19 @@
       url = "github:serokell/deploy-rs";
       inputs.nixpkgs.follows = "nixpkgs";
     };
+    nix-darwin = {
+      url = "github:LnL7/nix-darwin";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
+    ai-agents.url = "github:mattstruble/nix-ai-agents";
+    skills-mattpocock = {
+      url = "github:mattpocock/skills";
+      flake = false;
+    };
+    skills-mattstruble = {
+      url = "github:mattstruble/skills";
+      flake = false;
+    };
   };
 
   outputs = inputs:

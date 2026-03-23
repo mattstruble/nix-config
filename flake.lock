@@ -1,5 +1,20 @@
 {
   "nodes": {
+    "ai-agents": {
+      "locked": {
+        "lastModified": 1773843298,
+        "narHash": "sha256-rMRZiMhEsEtm6tps3UlbZC9DAiVSOShCrYkhI3x/g4A=",
+        "owner": "mattstruble",
+        "repo": "nix-ai-agents",
+        "rev": "93b3d8f88d47b0c0db529f4e400844d27e67c609",
+        "type": "github"
+      },
+      "original": {
+        "owner": "mattstruble",
+        "repo": "nix-ai-agents",
+        "type": "github"
+      }
+    },
     "autoaspm": {
       "inputs": {
         "nixpkgs": [
@@ -112,6 +127,26 @@
         "type": "github"
       }
     },
+    "nix-darwin": {
+      "inputs": {
+        "nixpkgs": [
+          "nixpkgs"
+        ]
+      },
+      "locked": {
+        "lastModified": 1773000227,
+        "narHash": "sha256-zm3ftUQw0MPumYi91HovoGhgyZBlM4o3Zy0LhPNwzXE=",
+        "owner": "LnL7",
+        "repo": "nix-darwin",
+        "rev": "da529ac9e46f25ed5616fd634079a5f3c579135f",
+        "type": "github"
+      },
+      "original": {
+        "owner": "LnL7",
+        "repo": "nix-darwin",
+        "type": "github"
+      }
+    },
     "nixpkgs": {
       "locked": {
         "lastModified": 1773821835,
@@ -145,13 +180,49 @@
     },
     "root": {
       "inputs": {
+        "ai-agents": "ai-agents",
         "autoaspm": "autoaspm",
         "deploy-rs": "deploy-rs",
         "flake-parts": "flake-parts",
         "home-manager": "home-manager",
         "import-tree": "import-tree",
+        "nix-darwin": "nix-darwin",
         "nixpkgs": "nixpkgs",
+        "skills-mattpocock": "skills-mattpocock",
+        "skills-mattstruble": "skills-mattstruble",
         "sops-nix": "sops-nix"
+      }
+    },
+    "skills-mattpocock": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1773912798,
+        "narHash": "sha256-2YhcamZjmEPe+IrVo2UqSYL0lVLInq5mS+5gwsrwzjk=",
+        "owner": "mattpocock",
+        "repo": "skills",
+        "rev": "fb3629d3a2ba638a65ef336061204995be7f5d5e",
+        "type": "github"
+      },
+      "original": {
+        "owner": "mattpocock",
+        "repo": "skills",
+        "type": "github"
+      }
+    },
+    "skills-mattstruble": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1774041024,
+        "narHash": "sha256-OBATI/FrFygPZv+TlXmSPlRXptL2JmCGMcWQR5hA6rE=",
+        "owner": "mattstruble",
+        "repo": "skills",
+        "rev": "7b24f2e70040e7d3d66a80b8b2b1e4af17cada9f",
+        "type": "github"
+      },
+      "original": {
+        "owner": "mattstruble",
+        "repo": "skills",
+        "type": "github"
       }
     },
     "sops-nix": {
