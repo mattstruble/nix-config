@@ -4,7 +4,12 @@ let
 in
 {
   flake.modules.nixos.homelab =
-    { config, pkgs, lib, ... }:
+    {
+      config,
+      pkgs,
+      lib,
+      ...
+    }:
     {
       sops.secrets = {
         "services/karakeep/env" = {
@@ -36,7 +41,12 @@ in
           enable = true;
           recommendedProxySettings = true;
           virtualHosts."immich" = {
-            listen = [{ addr = "0.0.0.0"; port = 2283; }];
+            listen = [
+              {
+                addr = "0.0.0.0";
+                port = 2283;
+              }
+            ];
             locations."/" = {
               proxyPass = "http://127.0.0.1:3001";
               proxyWebsockets = true;
@@ -115,19 +125,16 @@ in
       fileSystems."/mnt/media" = {
         device = "${nfsServer}:/volume2/media";
         fsType = "nfs";
-        options = [ "nfsvers=4.2" "noexec" "nosuid" "nodev" ];
       };
 
       fileSystems."/mnt/immich" = {
         device = "${nfsServer}:/volume1/immich";
         fsType = "nfs";
-        options = [ "nfsvers=4.2" "noexec" "nosuid" "nodev" ];
       };
 
       fileSystems."/mnt/pocket-id" = {
         device = "${nfsServer}:/volume1/pocket-id";
         fsType = "nfs";
-        options = [ "nfsvers=4.2" "noexec" "nosuid" "nodev" ];
       };
     };
 }
