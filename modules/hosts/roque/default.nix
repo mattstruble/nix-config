@@ -8,13 +8,7 @@
     {
       imports =
         (with inputs.self.modules.nixos; [
-          nix-settings
-          security
-          networking
-          packages
-          ssh
-          sops
-          users
+          tier-server
           intel-hardware
           homelab
           autoaspm

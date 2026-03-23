@@ -5,13 +5,7 @@ let
   mkRpiModules = name: {
     ${name} = {
       imports = with inputs.self.modules.nixos; [
-        nix-settings
-        security
-        networking
-        packages
-        ssh
-        sops
-        users
+        tier-server
         rpi-hardware
       ];
 

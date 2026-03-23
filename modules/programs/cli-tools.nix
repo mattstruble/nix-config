@@ -1,6 +1,6 @@
 { ... }:
 {
-  flake.modules.nixos.packages =
+  flake.modules.nixos.cli-tools =
     { pkgs, ... }:
     {
       programs.git.enable = true;
