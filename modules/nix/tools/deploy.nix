@@ -5,8 +5,13 @@ let
     profiles.system = {
       user = "root";
       sshUser = "mestruble";
-      path = inputs.deploy-rs.lib.${arch}.activate.nixos
-        inputs.self.nixosConfigurations.${hostname};
+      sshOpts = [
+        "-o"
+        "ControlMaster=no"
+        "-o"
+        "ControlPath=none"
+      ];
+      path = inputs.deploy-rs.lib.${arch}.activate.nixos inputs.self.nixosConfigurations.${hostname};
     };
   };
 in
@@ -14,6 +19,8 @@ in
   flake.deploy = {
     magicRollback = true;
     remoteBuild = true;
+    confirmTimeout = 120;
+    tempPath = "/var/tmp";
     nodes = {
       roque = mkDeploy "roque" "x86_64-linux";
       sevro = mkDeploy "sevro" "aarch64-linux";
