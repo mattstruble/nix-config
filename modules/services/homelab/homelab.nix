@@ -26,6 +26,14 @@ in
           openFirewall = true;
         };
 
+        n8n = {
+          enable = true;
+          openFirewall = true; # 5678
+          environment = {
+            N8N_SECURE_COOKIE = false;
+          };
+        };
+
         pulseaudio.enable = true;
 
         immich = {
