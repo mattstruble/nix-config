@@ -62,7 +62,7 @@ in
           };
         };
 
-        overseerr = {
+        seerr = {
           enable = true;
           openFirewall = true;
         };
@@ -78,7 +78,7 @@ in
         };
 
         karakeep = {
-          enable = true;
+          enable = false;
           browser = {
             enable = true;
             exe = "${pkgs.ungoogled-chromium}/bin/chromium";
