@@ -20,6 +20,8 @@ in
         };
       };
 
+      nixpkgs.config.permittedInsecurePackages = [ "pnpm-9.15.9" ]; # ponytail: build-time only, remove when nixpkgs bumps karakeep off pnpm_9
+
       services = {
         plex = {
           enable = true;
@@ -78,12 +80,12 @@ in
         };
 
         karakeep = {
-          enable = false;
+          enable = true;
           browser = {
             enable = true;
             exe = "${pkgs.ungoogled-chromium}/bin/chromium";
           };
-          meilisearch.enable = true;
+          meilisearch.enable = false;
           environmentFile = config.sops.secrets."services/karakeep/env".path;
           extraEnvironment = {
             BROWSER_ARGS = lib.concatStringsSep " " [
