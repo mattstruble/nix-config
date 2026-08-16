@@ -69,6 +69,11 @@ in
           openFirewall = true;
         };
 
+        tailscale = {
+          enable = true;
+          useRoutingFeatures = "server";
+        };
+
         pocket-id = {
           enable = true;
           dataDir = "/mnt/pocket-id";
@@ -106,7 +111,22 @@ in
         };
       };
 
+      # Force tailscaled to use nftables (Critical for clean nftables-only systems)
+      # This avoids the "iptables-compat" translation layer issues.
+      systemd.services.tailscaled.serviceConfig.Environment = [
+        "TS_DEBUG_FIREWALL_MODE=nftables" # pragma: allowlist secret
+      ];
+
+      # Optimization: Prevent systemd from waiting for network online
+      # (Optional but recommended for faster boot with VPNs)
+      systemd.network.wait-online.enable = false;
+      boot.initrd.systemd.network.wait-online.enable = false;
+
+      networking.nftables.enable = true;
       networking.firewall = {
+        enable = true;
+        trustedInterfaces = [ config.services.tailscale.interfaceName ];
+        allowedUDPPorts = [ config.services.tailscale.port ];
         allowedTCPPorts = [
           2283 # immich (nginx)
           3000 # karakeep
