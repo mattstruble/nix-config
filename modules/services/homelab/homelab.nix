@@ -71,7 +71,7 @@ in
 
         tailscale = {
           enable = true;
-          useRoutingFeatures = "server";
+          useRoutingFeatures = "client";
         };
 
         pocket-id = {
