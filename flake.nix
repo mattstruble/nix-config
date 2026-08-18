@@ -37,6 +37,10 @@
       url = "github:LnL7/nix-darwin";
       inputs.nixpkgs.follows = "nixpkgs";
     };
+    disko = {
+      url = "github:nix-community/disko";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
     ai-agents.url = "github:mattstruble/nix-ai-agents";
     skills-mattpocock = {
       url = "github:mattpocock/skills";
