@@ -30,7 +30,14 @@
       system.stateVersion = "26.11";
 
       # ponytail: 64 cores exhausts 96GB RAM during CUDA/Cython C++ compilation
-      nix.settings.cores = 16;
+      nix.settings.cores = 8;
+
+      # ponytail: 32G swapfile absorbs CUDA compilation memory spikes (nvcc cicc)
+      swapDevices = [
+        {
+          device = "/swapfile";
+        }
+      ];
 
       # TODO: switch to static bond0 10.0.0.168 once deploy-rs is working
       # Integrated NICs are bonded via LACP (802.3ad) on the switch
