@@ -19,7 +19,7 @@ in
   flake.deploy = {
     magicRollback = true;
     remoteBuild = true;
-    confirmTimeout = 120;
+    confirmTimeout = 300;
     tempPath = "/var/tmp";
     nodes = {
       roque = mkDeploy "roque" "x86_64-linux";
