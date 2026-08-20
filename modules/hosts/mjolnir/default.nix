@@ -105,6 +105,8 @@
       virtualisation.docker.daemon.settings.features.cdi = true;
       hardware.nvidia-container-toolkit.enable = true;
 
+      # AWQ INT4 4-bit + TP1: fits one Titan RTX, frees the other GPU.
+      # eager load avoids mmap page-fault stalls (17 GiB checkpoint, ample RAM)
       virtualisation.oci-containers.backend = "docker";
       virtualisation.oci-containers.containers.vllm = {
         image = "vllm/vllm-openai:latest";
@@ -115,15 +117,17 @@
         };
         cmd = [
           "--model"
-          "Qwen/Qwen3.8-27B-FP8"
+          "Twu31/Qwen3.8-27B-AWQ-INT4-MTP-LowLatency"
           "--tensor-parallel-size"
-          "2"
+          "1"
           "--kv-cache-dtype"
           "float16"
           "--max-model-len"
           "32768"
           "--gpu-memory-utilization"
           "0.90"
+          "--safetensors-load-strategy"
+          "eager"
           "--host"
           "0.0.0.0"
           "--port"
