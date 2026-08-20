@@ -102,6 +102,7 @@
 
       # vLLM via Docker (official image has Qwen3.5 arch support)
       virtualisation.docker.enable = true;
+      virtualisation.docker.daemon.settings.features.cdi = true;
       hardware.nvidia-container-toolkit.enable = true;
 
       virtualisation.oci-containers.backend = "docker";
