@@ -16,10 +16,10 @@
           tier-server
           nvidia-hardware
           vllm
-          disko
         ])
         ++ [
-          ./_disko.nix
+          (inputs.self.lib.modulesPath + "/installer/scan/not-detected.nix")
+          ./_hardware-configuration.nix
           ./_locale.nix
         ];
 
@@ -29,38 +29,39 @@
       networking.hostName = "mjolnir";
       system.stateVersion = "26.11";
 
+      # TODO: switch to static bond0 10.0.0.168 once deploy-rs is working
       # Integrated NICs are bonded via LACP (802.3ad) on the switch
-      networking.networkmanager.enable = lib.mkForce false;
-      networking.bonds.bond0 = {
-        interfaces = [
-          "eno1"
-          "enp69s0"
-        ];
-        driverOptions = {
-          mode = "802.3ad";
-          xmit_hash_policy = "layer2";
-          lacp_rate = "fast";
-          miimon = "100";
-          ad_select = "stable";
-        };
-      };
-      networking.interfaces.bond0 = {
-        ipv4.addresses = [
-          {
-            address = "10.0.0.168";
-            prefixLength = 24;
-          }
-        ];
-        ipv4.routes = [
-          {
-            address = "0.0.0.0";
-            prefixLength = 0;
-            via = "10.0.0.1";
-          }
-        ];
-      };
-      networking.defaultGateway = "10.0.0.1";
-      networking.nameservers = [ "10.0.0.1" ];
+      # networking.networkmanager.enable = lib.mkForce false;
+      # networking.bonds.bond0 = {
+      #   interfaces = [
+      #     "eno1"
+      #     "enp69s0"
+      #   ];
+      #   driverOptions = {
+      #     mode = "802.3ad";
+      #     xmit_hash_policy = "layer2";
+      #     lacp_rate = "fast";
+      #     miimon = "100";
+      #     ad_select = "stable";
+      #   };
+      # };
+      # networking.interfaces.bond0 = {
+      #   ipv4.addresses = [
+      #     {
+      #       address = "10.0.0.168";
+      #       prefixLength = 24;
+      #     }
+      #   ];
+      #   ipv4.routes = [
+      #     {
+      #       address = "0.0.0.0";
+      #       prefixLength = 0;
+      #       via = "10.0.0.1";
+      #     }
+      #   ];
+      # };
+      # networking.defaultGateway = "10.0.0.1";
+      # networking.nameservers = [ "10.0.0.1" ];
 
       # Force tailscaled to use nftables (clean nftables-only systems)
       systemd.services.tailscaled.serviceConfig.Environment = [
@@ -85,15 +86,16 @@
         useRoutingFeatures = "client";
       };
 
-      services.vllm = {
-        enable = true;
-        model = "Qwen/Qwen3.8-27B-FP8";
-        tensorParallelSize = 2;
-        kvCacheDtype = "bfloat16";
-        maxModelLen = 131072;
-        gpuMemoryUtilization = 0.90;
-        port = 8000;
-      };
+      # TODO: enable after first deploy works (triggers 30-60min CUDA build)
+      # services.vllm = {
+      #   enable = true;
+      #   model = "Qwen/Qwen3.8-27B-FP8";
+      #   tensorParallelSize = 2;
+      #   kvCacheDtype = "bfloat16";
+      #   maxModelLen = 131072;
+      #   gpuMemoryUtilization = 0.90;
+      #   port = 8000;
+      # };
 
       hardware.nvidia.cudaCapabilities = [ "7.5" ];
       hardware.cpu.amd.updateMicrocode = true;

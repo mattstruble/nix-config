@@ -23,6 +23,7 @@ in
     tempPath = "/var/tmp";
     nodes = {
       roque = mkDeploy "roque" "x86_64-linux";
+      mjolnir = mkDeploy "mjolnir" "x86_64-linux";
       sevro = mkDeploy "sevro" "aarch64-linux";
       thistle = mkDeploy "thistle" "aarch64-linux";
       pebble = mkDeploy "pebble" "aarch64-linux";
