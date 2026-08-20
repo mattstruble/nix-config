@@ -29,12 +29,15 @@
       # ponytail: tokenspeed-triton hardcodes -j128 ignoring nix cores setting
       nixpkgs.overlays = [
         (final: prev: {
-          tokenspeed-triton = prev.tokenspeed-triton.overrideAttrs (old: {
-            postPatch = (old.postPatch or "") + ''
-              substituteInPlace setup.py \
-                --replace-fail "os.cpu_count()" "8"
-            '';
-          });
+          python3Packages = prev.python3Packages.overrideScope (
+            self: super: {
+              tokenspeed-triton = super.tokenspeed-triton.overrideAttrs (old: {
+                env = (old.env or { }) // {
+                  MAX_JOBS = "8";
+                };
+              });
+            }
+          );
         })
       ];
 
