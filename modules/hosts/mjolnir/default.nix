@@ -104,6 +104,7 @@
       virtualisation.docker.enable = true;
       hardware.nvidia-container-toolkit.enable = true;
 
+      virtualisation.oci-containers.backend = "docker";
       virtualisation.oci-containers.containers.vllm = {
         image = "vllm/vllm-openai:latest";
         ports = [ "8000:8000" ];
