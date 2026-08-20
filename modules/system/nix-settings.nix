@@ -35,8 +35,8 @@
 
       nix.settings.extra-sandbox-paths = [
         "/etc/resolv.conf"
-        "/etc/nsswitch.conf"
-        "/etc/hosts"
+        "/etc/hosts=/etc/static/hosts"
+        "/etc/nsswitch.conf=/etc/static/nsswitch.conf"
       ];
 
       nixpkgs = {
