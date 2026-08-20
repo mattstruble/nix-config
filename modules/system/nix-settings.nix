@@ -33,7 +33,11 @@
         "flakes"
       ];
 
-      nix.settings.extra-sandbox-paths = [ "/etc/resolv.conf" ];
+      nix.settings.extra-sandbox-paths = [
+        "/etc/resolv.conf"
+        "/etc/nsswitch.conf"
+        "/etc/hosts"
+      ];
 
       nixpkgs = {
         config = {
