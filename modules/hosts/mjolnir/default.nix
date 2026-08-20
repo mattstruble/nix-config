@@ -30,10 +30,10 @@
       nixpkgs.overlays = [
         (final: prev: {
           tokenspeed-triton = prev.tokenspeed-triton.overrideAttrs (old: {
-            env = (old.env or { }) // {
-              MAX_JOBS = "8";
-              CMAKE_BUILD_PARALLEL_LEVEL = "8";
-            };
+            postPatch = (old.postPatch or "") + ''
+              substituteInPlace setup.py \
+                --replace-fail "os.cpu_count()" "8"
+            '';
           });
         })
       ];
