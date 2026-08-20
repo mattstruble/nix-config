@@ -86,16 +86,15 @@
         useRoutingFeatures = "client";
       };
 
-      # TODO: enable after first deploy works (triggers 30-60min CUDA build)
-      # services.vllm = {
-      #   enable = true;
-      #   model = "Qwen/Qwen3.8-27B-FP8";
-      #   tensorParallelSize = 2;
-      #   kvCacheDtype = "bfloat16";
-      #   maxModelLen = 131072;
-      #   gpuMemoryUtilization = 0.90;
-      #   port = 8000;
-      # };
+      services.vllm = {
+        enable = true;
+        model = "Qwen/Qwen3.8-27B-FP8";
+        tensorParallelSize = 2;
+        kvCacheDtype = "bfloat16";
+        maxModelLen = 131072;
+        gpuMemoryUtilization = 0.90;
+        port = 8000;
+      };
 
       hardware.nvidia.cudaCapabilities = [ "7.5" ];
       hardware.cpu.amd.updateMicrocode = true;
