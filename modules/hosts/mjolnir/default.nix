@@ -110,6 +110,9 @@
         image = "vllm/vllm-openai:latest";
         ports = [ "8000:8000" ];
         volumes = [ "/var/lib/vllm/hf-cache:/root/.cache/huggingface" ];
+        environment = {
+          VLLM_ATTENTION_BACKEND = "XFORMERS";
+        };
         cmd = [
           "--model"
           "Qwen/Qwen3.8-27B-FP8"
@@ -125,6 +128,7 @@
           "0.0.0.0"
           "--port"
           "8000"
+          "--enforce-eager"
         ];
         extraOptions = [
           "--device"
