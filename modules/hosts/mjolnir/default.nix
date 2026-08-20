@@ -119,7 +119,7 @@
           "--tensor-parallel-size"
           "2"
           "--kv-cache-dtype"
-          "bfloat16"
+          "float16"
           "--max-model-len"
           "131072"
           "--gpu-memory-utilization"
