@@ -127,8 +127,8 @@
           "8000"
         ];
         extraOptions = [
-          "--gpus"
-          "all"
+          "--device"
+          "nvidia.com/gpu=all"
           "--shm-size"
           "32g"
           "--ipc=host"
