@@ -105,8 +105,9 @@
       virtualisation.docker.daemon.settings.features.cdi = true;
       hardware.nvidia-container-toolkit.enable = true;
 
-      # AWQ INT4 4-bit + TP1: fits one Titan RTX, frees the other GPU.
+      # AWQ INT4 4-bit TP1: fits one Titan RTX, frees the other GPU.
       # eager load avoids mmap page-fault stalls (17 GiB checkpoint, ample RAM)
+      # 0.95 util required: 0.90 leaves <2.15 GiB KV cache, can't serve 32k ctx
       virtualisation.oci-containers.backend = "docker";
       virtualisation.oci-containers.containers.vllm = {
         image = "vllm/vllm-openai:latest";
@@ -125,7 +126,7 @@
           "--max-model-len"
           "32768"
           "--gpu-memory-utilization"
-          "0.90"
+          "0.95"
           "--safetensors-load-strategy"
           "eager"
           "--host"
