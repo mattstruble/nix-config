@@ -111,13 +111,13 @@
         ports = [ "8000:8000" ];
         volumes = [ "/var/lib/vllm/hf-cache:/root/.cache/huggingface" ];
         environment = {
-          VLLM_ATTENTION_BACKEND = "XFORMERS";
+          VLLM_WORKER_MULTIPROC_METHOD = "spawn";
         };
         cmd = [
           "--model"
           "Qwen/Qwen3.8-27B-FP8"
           "--tensor-parallel-size"
-          "1"
+          "2"
           "--kv-cache-dtype"
           "float16"
           "--max-model-len"
