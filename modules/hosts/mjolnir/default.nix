@@ -26,22 +26,6 @@
       boot.loader.systemd-boot.enable = true;
       boot.loader.efi.canTouchEfiVariables = true;
 
-      # ponytail: tokenspeed-triton hardcodes -j128 ignoring nix cores setting
-      nixpkgs.overlays = [
-        (final: prev: {
-          python313 = prev.python313.override (old: {
-            packageOverrides = pySelf: pySuper: {
-              tokenspeed-triton = pySuper.tokenspeed-triton.overrideAttrs (old: {
-                postPatch = (old.postPatch or "") + ''
-                  substituteInPlace setup.py \
-                    --replace-fail 'os.getenv("MAX_JOBS", str(2 * os.cpu_count()))' '"8"'
-                '';
-              });
-            };
-          });
-        })
-      ];
-
       networking.hostName = "mjolnir";
       system.stateVersion = "26.11";
 
@@ -112,14 +96,41 @@
         useRoutingFeatures = "client";
       };
 
-      services.vllm = {
-        enable = true;
-        model = "Qwen/Qwen3.8-27B-FP8";
-        tensorParallelSize = 2;
-        kvCacheDtype = "bfloat16";
-        maxModelLen = 131072;
-        gpuMemoryUtilization = 0.90;
-        port = 8000;
+      # ponytail: nix vLLM 0.24.0 doesn't support Qwen3.8's Qwen3_5 arch yet
+      # TODO: flip to services.vllm.enable = true when nixpkgs updates vLLM
+      services.vllm.enable = false;
+
+      # vLLM via Docker (official image has Qwen3.5 arch support)
+      virtualisation.docker.enable = true;
+      hardware.nvidia-container-toolkit.enable = true;
+
+      virtualisation.oci-containers.containers.vllm = {
+        image = "vllm/vllm-openai:latest";
+        ports = [ "8000:8000" ];
+        volumes = [ "/var/lib/vllm/hf-cache:/root/.cache/huggingface" ];
+        cmd = [
+          "--model"
+          "Qwen/Qwen3.8-27B-FP8"
+          "--tensor-parallel-size"
+          "2"
+          "--kv-cache-dtype"
+          "bfloat16"
+          "--max-model-len"
+          "131072"
+          "--gpu-memory-utilization"
+          "0.90"
+          "--host"
+          "0.0.0.0"
+          "--port"
+          "8000"
+        ];
+        extraOptions = [
+          "--gpus"
+          "all"
+          "--shm-size"
+          "32g"
+          "--ipc=host"
+        ];
       };
 
       hardware.nvidia.cudaCapabilities = [ "7.5" ];
