@@ -26,6 +26,18 @@
       boot.loader.systemd-boot.enable = true;
       boot.loader.efi.canTouchEfiVariables = true;
 
+      # ponytail: tokenspeed-triton hardcodes -j128 ignoring nix cores setting
+      nixpkgs.overlays = [
+        (final: prev: {
+          tokenspeed-triton = prev.tokenspeed-triton.overrideAttrs (old: {
+            env = (old.env or { }) // {
+              MAX_JOBS = "8";
+              CMAKE_BUILD_PARALLEL_LEVEL = "8";
+            };
+          });
+        })
+      ];
+
       networking.hostName = "mjolnir";
       system.stateVersion = "26.11";
 
