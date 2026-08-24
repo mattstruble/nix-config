@@ -1,6 +1,6 @@
 { inputs, ... }:
 let
-  nfsServer = "10.0.0.123";
+  nfsServer = "yggdrasil";
 in
 {
   flake.modules.nixos.homelab =
