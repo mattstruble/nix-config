@@ -87,8 +87,8 @@
         trustedInterfaces = [ config.services.tailscale.interfaceName ];
         allowedUDPPorts = [ config.services.tailscale.port ];
         allowedTCPPorts = [
-          8000 # vllm OpenAI-compatible API (GPU 0)
-          8555 # llama.cpp OpenAI-compatible API (GPU 1)
+          8555 # llama.cpp Qwen3.6-35B-A3B fallback (GPU 1)
+          8556 # llama.cpp Qwen3.8-27B primary, MTP (GPU 0)
         ];
       };
 
@@ -97,48 +97,78 @@
         useRoutingFeatures = "client";
       };
 
-      # ponytail: nix vLLM 0.24.0 doesn't support Qwen3.8's Qwen3_5 arch yet
-      # TODO: flip to services.vllm.enable = true when nixpkgs updates vLLM
+      # ponytail: vLLM AWQ-INT4 + MTP dead-ended on this hardware (proposer
+      # gptq_marlin_repack OOM on one 24GB Turing card). MTP's validated home is
+      # llama.cpp+GGUF — see ~/llm-wiki topics/qwen3-8-27b-deployment. nix vLLM
+      # module stays off; revisit vLLM TP2 over NVLink for multi-user later
+      # (~/llm-wiki topics/nvlink-tp-multi-gpu-turing).
       services.vllm.enable = false;
 
-      # vLLM via Docker (official image has Qwen3.5 arch support)
+      # Docker + CDI for per-GPU llama.cpp containers
       virtualisation.docker.enable = true;
       virtualisation.docker.daemon.settings.features.cdi = true;
       hardware.nvidia-container-toolkit.enable = true;
-
-      # AWQ INT4 4-bit TP1: fits one Titan RTX, frees the other GPU.
-      # eager load avoids mmap page-fault stalls (17 GiB checkpoint, ample RAM)
-      # 0.95 util required: 0.90 leaves <2.15 GiB KV cache, can't serve 32k ctx
       virtualisation.oci-containers.backend = "docker";
-      virtualisation.oci-containers.containers.vllm = {
-        image = "vllm/vllm-openai:latest";
-        ports = [ "8000:8000" ];
-        volumes = [ "/var/lib/vllm/hf-cache:/root/.cache/huggingface" ];
-        environment = {
-          VLLM_WORKER_MULTIPROC_METHOD = "spawn";
-        };
+
+      # Qwen3.8-27B primary on GPU 0 — Unsloth UD-Q4_K_XL GGUF, MTP spec decode.
+      # ~43 tok/s warm (2.9x the old vLLM AWQ baseline), tool calls parse to OpenAI
+      # format, vendored chat template coalesces opencode's 2+ system messages.
+      # reasoning_effort=medium tames the xhigh default (15k-50k tok thinking).
+      virtualisation.oci-containers.containers.llama-qwen38 = {
+        image = "ghcr.io/ggml-org/llama.cpp:server-cuda";
+        ports = [ "8556:8556" ];
+        volumes = [
+          "/var/lib/llama-models:/models"
+          "${./qwen3-chat-template.jinja}:/app/qwen3-chat-template.jinja:ro"
+        ];
         cmd = [
-          "--model"
-          "Twu31/Qwen3.8-27B-AWQ-INT4-MTP-LowLatency"
-          "--tensor-parallel-size"
-          "1"
-          "--kv-cache-dtype"
-          "float16"
-          "--max-model-len"
-          "32768"
-          "--gpu-memory-utilization"
-          "0.95"
-          "--safetensors-load-strategy"
-          "eager"
+          "-m"
+          "/models/Qwen3.8-27B-UD-Q4_K_XL.gguf"
+          "--alias"
+          "qwen3.8-27b"
+          "-ngl"
+          "99"
+          "-c"
+          "16384"
+          "--cache-type-k"
+          "q8_0"
+          "--cache-type-v"
+          "q8_0"
           "--host"
           "0.0.0.0"
           "--port"
-          "8000"
-          "--enforce-eager"
+          "8556"
+          "--api-key"
+          "foo"
+          "--jinja"
+          "--chat-template-file"
+          "/app/qwen3-chat-template.jinja"
+          "--chat-template-kwargs"
+          ''{"reasoning_effort":"medium","preserve_thinking":true}''
+          "--reasoning-budget"
+          "8192"
+          "--spec-type"
+          "draft-mtp"
+          "--spec-draft-n-max"
+          "2"
+          "--spec-draft-n-min"
+          "1"
+          "--temp"
+          "0.6"
+          "--top-k"
+          "20"
+          "--top-p"
+          "0.95"
+          "--min-p"
+          "0"
+          "-ub"
+          "256"
+          "-np"
+          "1"
         ];
         extraOptions = [
           "--device"
-          "nvidia.com/gpu=all"
+          "nvidia.com/gpu=0"
           "--shm-size"
           "32g"
           "--ipc=host"
