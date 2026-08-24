@@ -87,7 +87,8 @@
         trustedInterfaces = [ config.services.tailscale.interfaceName ];
         allowedUDPPorts = [ config.services.tailscale.port ];
         allowedTCPPorts = [
-          8000 # vllm OpenAI-compatible API
+          8000 # vllm OpenAI-compatible API (GPU 0)
+          8555 # llama.cpp OpenAI-compatible API (GPU 1)
         ];
       };
 
@@ -140,6 +141,38 @@
           "nvidia.com/gpu=all"
           "--shm-size"
           "32g"
+          "--ipc=host"
+        ];
+      };
+
+      # llama.cpp on GPU 1 — Qwen3.6-35B-A3B MoE (3B active), MTP spec decode
+      # 24/64 layers offloaded to CPU (96GB RAM), ~74 tok/s with 80% MTP acceptance
+      virtualisation.oci-containers.containers.llama-qwen36 = {
+        image = "ghcr.io/ggml-org/llama.cpp:server-cuda";
+        ports = [ "8555:8555" ];
+        volumes = [ "/var/lib/llama-models:/models" ];
+        cmd = [
+          "--models-dir"
+          "/models"
+          "--jinja"
+          "--host"
+          "0.0.0.0"
+          "--port"
+          "8555"
+          "-c"
+          "32768"
+          "--api-key"
+          "foo"
+          "--spec-type"
+          "draft-mtp"
+          "-ngl"
+          "40"
+        ];
+        extraOptions = [
+          "--device"
+          "nvidia.com/gpu=1"
+          "--shm-size"
+          "16g"
           "--ipc=host"
         ];
       };
