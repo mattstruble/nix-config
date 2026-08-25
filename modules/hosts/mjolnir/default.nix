@@ -97,11 +97,9 @@
         useRoutingFeatures = "client";
       };
 
-      # ponytail: vLLM AWQ-INT4 + MTP dead-ended on this hardware (proposer
-      # gptq_marlin_repack OOM on one 24GB Turing card). MTP's validated home is
-      # llama.cpp+GGUF — see ~/llm-wiki topics/qwen3-8-27b-deployment. nix vLLM
-      # module stays off; revisit vLLM TP2 over NVLink for multi-user later
-      # (~/llm-wiki topics/nvlink-tp-multi-gpu-turing).
+      # vLLM AWQ-INT4 + MTP dead-ended on Turing (proposer gptq_marlin_repack OOM
+      # on one 24GB card). MTP's validated home is llama.cpp+GGUF. nix vLLM module
+      # stays off. See docs/cluster-overview.md for the full testing history.
       services.vllm.enable = false;
 
       # Docker + CDI for per-GPU llama.cpp containers
@@ -110,10 +108,9 @@
       hardware.nvidia-container-toolkit.enable = true;
       virtualisation.oci-containers.backend = "docker";
 
-      # Qwen3.8-27B primary on GPU 0 — Unsloth UD-Q4_K_XL GGUF, MTP spec decode.
-      # ~43 tok/s warm (2.9x the old vLLM AWQ baseline), tool calls parse to OpenAI
-      # format, vendored chat template coalesces opencode's 2+ system messages.
-      # reasoning_effort=medium tames the xhigh default (15k-50k tok thinking).
+      # Qwen3.8-27B on GPU 0 — coding/agentic (accuracy-primary).
+      # Q4_K_XL GGUF, 128k context, q8_0 KV, MTP n-max 2, flash-attn for long-prompt
+      # prefill speed. Single-user (-np 1) — full context for one coder.
       virtualisation.oci-containers.containers.llama-qwen38 = {
         image = "ghcr.io/ggml-org/llama.cpp:server-cuda";
         ports = [ "8556:8556" ];
@@ -121,6 +118,9 @@
           "/var/lib/llama-models:/models"
           "${./qwen3-chat-template.jinja}:/app/qwen3-chat-template.jinja:ro"
         ];
+        environment = {
+          GGML_CUDA_DISABLE_GRAPHS = "1";
+        };
         cmd = [
           "-m"
           "/models/Qwen3.8-27B-UD-Q4_K_XL.gguf"
@@ -129,7 +129,7 @@
           "-ngl"
           "99"
           "-c"
-          "16384"
+          "131072"
           "--cache-type-k"
           "q8_0"
           "--cache-type-v"
@@ -165,6 +165,8 @@
           "256"
           "-np"
           "1"
+          "--flash-attn"
+          "on"
         ];
         extraOptions = [
           "--device"
@@ -175,34 +177,72 @@
         ];
       };
 
-      # llama.cpp on GPU 1 — Qwen3.6-35B-A3B MoE (3B active), MTP spec decode
-      # 24/64 layers offloaded to CPU (96GB RAM), ~74 tok/s with 80% MTP acceptance
+      # Qwen3.6-35B-A3B MoE on GPU 1 — dispatch/chat/HA/n8n (speed-primary).
+      # IQ4_XS-MTP GGUF (from unsloth -MTP repo — has MTP head), 256k context,
+      # full offload (-ngl 99, was -ngl 40 = 74→121 tok/s), -np 2 for 2 concurrent
+      # users, flash-attn for long-prompt prefill speed, q5_1 KV (minimum viable).
       virtualisation.oci-containers.containers.llama-qwen36 = {
         image = "ghcr.io/ggml-org/llama.cpp:server-cuda";
         ports = [ "8555:8555" ];
-        volumes = [ "/var/lib/llama-models:/models" ];
+        volumes = [
+          "/var/lib/llama-models:/models"
+          "${./qwen3-chat-template.jinja}:/app/qwen3-chat-template.jinja:ro"
+        ];
+        environment = {
+          GGML_CUDA_DISABLE_GRAPHS = "1";
+        };
         cmd = [
-          "--models-dir"
-          "/models"
-          "--jinja"
+          "-m"
+          "/models/Qwen3.6-35B-A3B-MTP-UD-IQ4_XS.gguf"
+          "--alias"
+          "Qwen3.6-35B-A3B"
+          "-ngl"
+          "99"
+          "-c"
+          "262144"
+          "--cache-type-k"
+          "q5_1"
+          "--cache-type-v"
+          "q5_1"
           "--host"
           "0.0.0.0"
           "--port"
           "8555"
-          "-c"
-          "32768"
           "--api-key"
           "foo"
+          "--jinja"
+          "--chat-template-file"
+          "/app/qwen3-chat-template.jinja"
+          "--chat-template-kwargs"
+          ''{"reasoning_effort":"medium","preserve_thinking":true}''
+          "--reasoning-budget"
+          "8192"
           "--spec-type"
           "draft-mtp"
-          "-ngl"
-          "40"
+          "--spec-draft-n-max"
+          "2"
+          "--spec-draft-n-min"
+          "1"
+          "--temp"
+          "0.6"
+          "--top-k"
+          "20"
+          "--top-p"
+          "0.95"
+          "--min-p"
+          "0"
+          "-ub"
+          "256"
+          "-np"
+          "2"
+          "--flash-attn"
+          "on"
         ];
         extraOptions = [
           "--device"
           "nvidia.com/gpu=1"
           "--shm-size"
-          "16g"
+          "32g"
           "--ipc=host"
         ];
       };
