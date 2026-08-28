@@ -38,12 +38,12 @@ Two Docker containers, one model per GPU, managed via NixOS
 
 | Setting | Value |
 |---------|-------|
-| Engine | llama.cpp (same image) |
+| Engine | llama.cpp (image digest pinned, see below) |
 | Model | Unsloth UD-IQ4_XS GGUF from `-MTP` repo (4-bit, 18.2 GB) |
 | Context | 262,144 tokens (256k) |
-| KV cache | q5_1 |
-| MTP | `--spec-type draft-mtp --spec-draft-n-max 2` |
-| Flash attention | on |
+| KV cache | q8_0 K + f16 V |
+| MTP | removed (draft path O(n) at length — 5.7 tok/s @16k vs 53 without; re-enable after upstream #24670) |
+| Flash attention | off (hybrid-SSM fattn path broken in pinned build — 14.6 vs 951 tok/s @51k prefill) |
 | Decode slots | 2 (`-np 2`, 2 concurrent users, 128k per slot) |
 | Reasoning | `reasoning_effort=medium`, budget 8192 |
 | Chat template | Vendored (same as GPU 0) |
@@ -52,6 +52,14 @@ Two Docker containers, one model per GPU, managed via NixOS
 
 - `GGML_CUDA_DISABLE_GRAPHS=1` — prevents CUDA graph caching deadlocks during
   long agentic sessions (Qwen aggressively caches checkpoints)
+- 3.6 image digest pinned (`@sha256:41ebf873c2e0…`, build 2026-08-24). The
+  floating `server-cuda` tag changed flash-attn behavior on the hybrid-SSM
+  model between 2026-08-25 and 08-26 — never run 3.6 on an unpinned tag.
+- `--cache-reuse` is **not supported** for the 3.6's hybrid SSM context in
+  this build (server logs `cache_reuse is not supported by this context`).
+  Slot-level prefix reuse still works natively: a repeated prompt returns
+  `cached_tokens` ≈ 100% of the prompt, so conversation turns 2+ skip
+  re-prefill without any flag.
 - Full GPU offload (`-ngl 99`) on both models
 - Tool calling via vendored chat template (coalesces multiple system messages,
   handles `reasoning_effort` levels, preserves `<think>` blocks)
@@ -68,24 +76,33 @@ Two Docker containers, one model per GPU, managed via NixOS
 
 ### Single-user (warm)
 
-| Model | Decode | Prefill (51k prompt) | MTP acceptance |
-|-------|--------|---------------------|----------------|
-| Qwen3.8-27B | 40 tok/s | 517 tok/s | 65% |
-| Qwen3.6-35B-A3B | 121 tok/s | ~520 tok/s | 76% |
+| Model | Decode | Prefill | MTP acceptance |
+|-------|--------|---------|----------------|
+| Qwen3.8-27B | 40 tok/s | 517 tok/s @51k | 65% |
+| Qwen3.6-35B-A3B | 80 tok/s @15k ctx, 66 @24k, 51 @43k | ~1250 tok/s @15–28k, 951 @91k (51k ≈ 54s) | — (removed) |
+
+3.6 decode degrades gently with context (hybrid SSM — most layers are linear
+attention). Short-context decode is ~102 tok/s without MTP (was 121 with MTP).
 
 ### Two concurrent users (3.6 only, `-np 2`)
 
-| Model | Decode (per user) | Context per user |
-|-------|-------------------|-----------------|
-| Qwen3.6-35B-A3B | 22.5 tok/s | 128k |
-
-Single-user on 3.6 gets full 121 tok/s — the second slot idles. The 22.5
-tok/s per-user figure applies only when both users generate simultaneously.
+128k context per slot. With long prompts, the two prefills interleave
+(~41s each for a 24.5k prompt); a user mid-decode drops to ~3 tok/s while the
+other's prefill runs, then recovers to ~44–66 tok/s. Far better than the old
+FA-on config, where each 24.5k prefill took ~28 minutes.
 
 ### Cold start
 
 ~55s per container (model load + kernel init). One-time per restart; containers
 stay up continuously.
+
+Additionally, the **first request** after a restart (or long idle) carries a
+28–48s penalty on top of normal prefill (measured 50s TTFT vs 11.5s warm for a
+15k prompt, 2026-08-27). Not FA- or CUDA-graph-related. If it becomes a
+problem, a systemd timer sending a periodic 1-token completion keeps the
+server warm — note the image's built-in healthcheck probes port 8080 (wrong
+port), so nothing pings the server today and `docker ps` shows "unhealthy"
+permanently.
 
 ## What was tested and rejected
 
@@ -112,13 +129,13 @@ loading dominates). Revisited at 128k context: flash-attn gave +32% decode and
 +61% prefill, making it a clear win for long-context agentic use. The breakpoint
 is context length, not a blanket on/off.
 
-### Flash attention on 3.6 concurrent decode
+### Flash attention on 3.6 (pinned build)
 
-Flash-attn dropped 3.6's 2-user concurrent decode from 35+35 to 22.5+22.5 tok/s
-(-36%). However, without flash-attn, prefill of a 51k-token prompt takes >5
-minutes (O(n²) attention without flash-attn). With flash-attn, prefill is ~100s.
-The prefill time dominates total request time for long prompts, so flash-attn is
-net-positive despite the concurrent decode hit.
+In the pinned image (build 2026-08-24), flash-attn is **broken** for the
+hybrid-SSM 3.6: 51k prefill at 14.6 tok/s (36 min) with FA on vs 951 tok/s
+with FA off. An earlier 2026-08-25 measurement on the floating tag showed FA
+helping (520 tok/s) — the tag moved between measurements, which is why the
+digest is now pinned. FA stays off; re-test on any future pinned build.
 
 ### KV cache quantization below q5_1
 
