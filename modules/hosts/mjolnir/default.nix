@@ -186,11 +186,16 @@
       };
 
       # Qwen3.6-35B-A3B MoE on GPU 1 — dispatch/chat/HA/n8n (speed-primary).
-      # IQ4_XS-MTP GGUF (from unsloth -MTP repo — has MTP head), 256k context,
-      # full offload (-ngl 99, was -ngl 40 = 74→121 tok/s), -np 2 for 2 concurrent
-      # users, flash-attn for long-prompt prefill speed, q5_1 KV (minimum viable).
+      # IQ4_XS GGUF (unsloth -MTP repo), 256k context, full offload (-ngl 99),
+      # -np 2 (128k per user). Tuned 2026-08-27 after A/B bench: FA off (hybrid
+      # SSM fattn path broken in this build — 51k prefill 14.6 vs 951 tok/s),
+      # q8_0 K + f16 V KV (3.3x decode vs q5_1, 14/14 planted-name quality), MTP
+      # removed (draft path O(n) at length: 5.7 tok/s @16k vs 53 without).
+      # Digest pinned — the floating tag changed FA behavior between 08-25 and 08-26.
+      # Re-enable MTP once llama.cpp upstream #24670 (draft path missing SSM state)
+      # is fixed and lands in a new pinned image build.
       virtualisation.oci-containers.containers.llama-qwen36 = {
-        image = "ghcr.io/ggml-org/llama.cpp:server-cuda";
+        image = "ghcr.io/ggml-org/llama.cpp@sha256:41ebf873c2e085dcc3186dc4717ce8112bf8011aabd98038b6bb2b1fe66c86b9";
         ports = [ "8555:8555" ];
         volumes = [
           "/var/lib/llama-models:/models"
@@ -209,9 +214,9 @@
           "-c"
           "262144"
           "--cache-type-k"
-          "q5_1"
+          "q8_0"
           "--cache-type-v"
-          "q5_1"
+          "f16"
           "--host"
           "0.0.0.0"
           "--port"
@@ -225,12 +230,6 @@
           ''{"reasoning_effort":"medium","preserve_thinking":true}''
           "--reasoning-budget"
           "8192"
-          "--spec-type"
-          "draft-mtp"
-          "--spec-draft-n-max"
-          "2"
-          "--spec-draft-n-min"
-          "1"
           "--temp"
           "0.6"
           "--top-k"
@@ -244,7 +243,7 @@
           "-np"
           "2"
           "--flash-attn"
-          "on"
+          "off"
         ];
         extraOptions = [
           "--device"
