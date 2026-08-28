@@ -109,10 +109,18 @@
       virtualisation.oci-containers.backend = "docker";
 
       # Qwen3.8-27B on GPU 0 — coding/agentic (accuracy-primary).
-      # Q4_K_XL GGUF, 128k context, q8_0 KV, MTP n-max 2, flash-attn for long-prompt
-      # prefill speed. Single-user (-np 1) — full context for one coder.
+      # Q4_K_XL GGUF, 128k context, q8_0 KV, MTP n-max 2, flash-attn on.
+      # Single-user (-np 1) — full context for one coder.
+      # Bench 2026-08-27 (pinned build): prefill 626/575/485 tok/s @15k/30k/60k
+      # (~2x the floating tag in prod), decode 43.7/43.6/35.0, MTP 1.68-1.79x with
+      # no O(n) collapse at length (unlike 3.6), quality 14/14, tool calling OK.
+      # FA on is a hard requirement: quantized V cache requires it, and f16 V at
+      # 128k OOMs. 256k infeasible on 24GB (q8_0 OOM, q5_1 V FA path broken:
+      # 28 tok/s prefill). Digest pinned — same build validated for 3.6; the
+      # floating tag had moved and degraded prefill. Cold-start first request
+      # after load is 96.4s @15k (warm ~24s) — deterministic.
       virtualisation.oci-containers.containers.llama-qwen38 = {
-        image = "ghcr.io/ggml-org/llama.cpp:server-cuda";
+        image = "ghcr.io/ggml-org/llama.cpp@sha256:41ebf873c2e085dcc3186dc4717ce8112bf8011aabd98038b6bb2b1fe66c86b9";
         ports = [ "8556:8556" ];
         volumes = [
           "/var/lib/llama-models:/models"
