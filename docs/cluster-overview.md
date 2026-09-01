@@ -20,19 +20,26 @@ agentic coding and multi-user dispatch workloads on Turing-era hardware.
 Two Docker containers, one model per GPU, managed via NixOS
 `virtualisation.oci-containers` in `modules/hosts/mjolnir/default.nix`.
 
-### GPU 0 — Qwen3.8-27B (coding / agentic)
+### GPU 0 — Qwen3.8-Flash-Next (coding / agentic)
+
+125B-class hybrid-SSM MoE. Replaced Qwen3.8-27B on 2026-09-01: 125B-class
+quality + 256k context outweigh the 2× decode slowdown (20 vs 40 tok/s).
+Requires the mjungnickel18 llama.cpp fork (upstream can't run this model's
+MTP + MoE expert residency) — see the comment block in
+`modules/hosts/mjolnir/default.nix` for the branch/commit and rebuild recipe.
 
 | Setting | Value |
 |---------|-------|
-| Engine | llama.cpp (`ghcr.io/ggml-org/llama.cpp:server-cuda`) |
-| Model | Unsloth UD-Q4_K_XL GGUF (4-bit, 17.6 GB) |
-| Context | 131,072 tokens (128k) |
+| Engine | llama.cpp fork `qwen4exp-mtp-plus-moe-residency` @ 0384f5c, sm_75 build in `/var/lib/llama-builds/llama-fork-mjungnickel` (CUDA 12.6 image, digest pinned) |
+| Model | Unsloth UD-Q3_K_XL GGUF, MoE experts split hot/cold (92 GB; hot64 in VRAM, cold on CPU via `-ot "exps_cold=CPU"`) |
+| MTP sidecar | `mtp-fn-jockeupptaget-Q8_0.gguf` (4.1 GB; jockeupptaget layout — fused-`eh_proj` sidecars are incompatible) |
+| Context | 131,072 tokens, `-ub 1024` (256k mode: no MTP, `-c 262144 -ub 256` — see comment) |
 | KV cache | q8_0 |
-| MTP | `--spec-type draft-mtp --spec-draft-n-max 2` |
-| Flash attention | on |
+| MTP | `--spec-type draft-mtp --spec-draft-n-max 6 --spec-draft-p-min 0.75` |
+| Flash attention | on (hard requirement — q8_0 KV needs it, f16 KV OOMs) |
 | Decode slots | 1 (`-np 1`, single-user) |
-| Reasoning | `reasoning_effort=medium`, budget 8192 |
-| Chat template | Vendored (`qwen3-chat-template.jinja`) |
+| Reasoning | budget 8192 (built-in `--jinja` template) |
+| Chat template | Built-in (`--jinja`, validated incl. tool calling) |
 
 ### GPU 1 — Qwen3.6-35B-A3B MoE (dispatch / chat / HA / n8n)
 
@@ -69,7 +76,7 @@ Two Docker containers, one model per GPU, managed via NixOS
 
 | Port | Model | Role |
 |------|-------|------|
-| 8556 | Qwen3.8-27B | Coding, agentic workflows |
+| 8556 | Qwen3.8-Flash-Next (alias `qwen3.8-flash-next`) | Coding, agentic workflows |
 | 8555 | Qwen3.6-35B-A3B | Chat, dispatch, HA intents, n8n |
 
 ## Throughput
@@ -78,7 +85,7 @@ Two Docker containers, one model per GPU, managed via NixOS
 
 | Model | Decode | Prefill | MTP acceptance |
 |-------|--------|---------|----------------|
-| Qwen3.8-27B | 40 tok/s | 517 tok/s @51k | 65% |
+| Qwen3.8-Flash-Next | 20.2/18.7/20.6 tok/s @4k/15k/51k, 19.5 @122k depth (flat — hybrid SSM); 11 tok/s @257k in 256k mode | 142 tok/s (`-ub 1024`, fastest that fits 24GB; ~65s for a 15k first prompt, turns 2+ skip re-prefill); 54 in 256k mode | 0.87–0.98 (mean draft len 4.1–5.6) |
 | Qwen3.6-35B-A3B | 80 tok/s @15k ctx, 66 @24k, 51 @43k | ~1250 tok/s @15–28k, 951 @91k (51k ≈ 54s) | — (removed) |
 
 3.6 decode degrades gently with context (hybrid SSM — most layers are linear
