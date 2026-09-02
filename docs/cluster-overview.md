@@ -25,12 +25,12 @@ Two Docker containers, one model per GPU, managed via NixOS
 125B-class hybrid-SSM MoE. Replaced Qwen3.8-27B on 2026-09-01: 125B-class
 quality + 256k context outweigh the 2× decode slowdown (20 vs 40 tok/s).
 Requires the mjungnickel18 llama.cpp fork (upstream can't run this model's
-MTP + MoE expert residency) — see the comment block in
-`modules/hosts/mjolnir/default.nix` for the branch/commit and rebuild recipe.
+MTP + MoE expert residency) — built from source by nix
+(`modules/hosts/mjolnir/_llama-fork.nix`: rev + hash pinned; bump = update both).
 
 | Setting | Value |
 |---------|-------|
-| Engine | llama.cpp fork `qwen4exp-mtp-plus-moe-residency` @ 0384f5c, sm_75 build in `/var/lib/llama-builds/llama-fork-mjungnickel` (CUDA 12.6 image, digest pinned) |
+| Engine | llama.cpp fork `qwen4exp-mtp-plus-moe-residency` @ 0384f5c, built by nix for sm_75 (cudaPackages, nvcc 12.9); container runs it from `/nix/store` mounted `:ro` on a digest-pinned CUDA 12.6 base — CDI `--device` mandatory (nix binaries link `libcuda.so.1` directly) |
 | Model | Unsloth UD-Q3_K_XL GGUF, MoE experts split hot/cold (92 GB; hot64 in VRAM, cold on CPU via `-ot "exps_cold=CPU"`) |
 | MTP sidecar | `mtp-fn-jockeupptaget-Q8_0.gguf` (4.1 GB; jockeupptaget layout — fused-`eh_proj` sidecars are incompatible) |
 | Context | 131,072 tokens, `-ub 1024` (256k mode: no MTP, `-c 262144 -ub 256` — see comment) |
