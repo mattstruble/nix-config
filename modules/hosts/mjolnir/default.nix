@@ -10,6 +10,12 @@
       lib,
       ...
     }:
+    let
+      # llama.cpp fork (qwen4exp + MTP + MoE expert residency), sm_75 — built
+      # from the pinned GitHub rev; the container runs it from the nix store
+      # (mounted read-only), so the whole serving stack is deterministic.
+      llamaFork = pkgs.callPackage ./_llama-fork.nix { };
+    in
     {
       imports =
         (with inputs.self.modules.nixos; [
@@ -113,14 +119,18 @@
       # 256k context outweigh the 2x decode slowdown (20 vs 40 tok/s).
       #
       # Requires the mjungnickel18 llama.cpp FORK — upstream cannot run this
-      # model's MTP + MoE expert residency. Branch qwen4exp-mtp-plus-moe-residency
-      # @ 0384f5c ("moe: split routed experts by residency across backends"),
-      # built for sm_75 in /var/lib/llama-builds/llama-fork-mjungnickel; source in
-      # /var/lib/llama-builds/llama-fork-src (rebuild via the fn-build.sh recipe if
-      # the branch moves). Runtime image is the CUDA 12.6 base the build links
-      # against (digest pinned — the floating-tag-moved lesson from the 3.6/3.8
-      # retunes applies to any image that ships inference code; this one only
-      # ships the CUDA runtime, but pin anyway).
+      # model's MTP + MoE expert residency. Built by ./_llama-fork.nix: branch
+      # qwen4exp-mtp-plus-moe-residency @ 0384f5c ("moe: split routed experts
+      # by residency across backends"), fetched from GitHub by rev + hash, sm_75
+      # via nixpkgs cudaPackages (nvcc 12.9). To bump: update rev + hash in
+      # _llama-fork.nix. The old imperative build in /var/lib/llama-builds/ is
+      # superseded (safe to delete after this deploys).
+      #
+      # The binary runs from the nix store (/nix/store mounted :ro into the
+      # container — rpath resolves all nix deps); the base image only provides a
+      # filesystem + CUDA 12.6 userland, driver libs injected by CDI. Digest
+      # pinned anyway — the floating-tag-moved lesson from the 3.6/3.8 retunes
+      # applies to anything that ships inference code.
       #
       # Model: Q3_K_XL (92GB) with MoE experts split hot/cold (timadinorth patch):
       # hot64 traced experts in VRAM, cold on CPU via -ot "exps_cold=CPU". MTP
@@ -156,14 +166,13 @@
         ports = [ "8556:8080" ];
         volumes = [
           "/var/lib/llama-models:/models"
-          "/var/lib/llama-builds/llama-fork-mjungnickel:/bb"
+          "/nix/store:/nix/store:ro"
         ];
         environment = {
           GGML_CUDA_DISABLE_GRAPHS = "1";
-          LD_LIBRARY_PATH = "/bb/lib:/bb/bin";
         };
         cmd = [
-          "/bb/bin/llama-server"
+          "${llamaFork}/bin/llama-server"
           "-m"
           "/models/UD-Q3_K_XL-split96/Qwen3.8-Flash-Next-UD-Q3_K_XL-hot64.gguf"
           "-md"
