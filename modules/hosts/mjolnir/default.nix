@@ -270,9 +270,10 @@
           "--chat-template-file"
           "/app/qwen3-chat-template.jinja"
           "--chat-template-kwargs"
-          ''{"reasoning_effort":"medium","preserve_thinking":true}''
+          ''{"reasoning_effort":"xhigh","preserve_thinking":true}''
           "--reasoning-budget"
           "8192"
+          "--reasoning-preserve"
           "--temp"
           "0.6"
           "--top-k"
