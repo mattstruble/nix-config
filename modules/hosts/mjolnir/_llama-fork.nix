@@ -39,7 +39,7 @@ cudaPackages.backendStdenv.mkDerivation (finalAttrs: {
   ];
 
   cmakeFlags = [
-    (lib.cmakeBool "GGML_NATIVE" false)
+    (lib.cmakeBool "GGML_NATIVE" true)
     (lib.cmakeBool "GGML_CUDA" true)
     (lib.cmakeFeature "CMAKE_CUDA_ARCHITECTURES" "75")
     (lib.cmakeBool "LLAMA_BUILD_SERVER" true)
