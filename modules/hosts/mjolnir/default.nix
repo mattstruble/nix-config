@@ -10,22 +10,18 @@
       lib,
       ...
     }:
-    let
-      # llama.cpp fork (qwen4exp + MTP + MoE expert residency), sm_75 — built
-      # from the pinned GitHub rev; the container runs it from the nix store
-      # (mounted read-only), so the whole serving stack is deterministic.
-      llamaFork = pkgs.callPackage ./_llama-fork.nix { };
-    in
     {
       imports =
         (with inputs.self.modules.nixos; [
           tier-server
           nvidia-hardware
           vllm
+          llama-fleet
         ])
         ++ [
           (inputs.self.lib.modulesPath + "/installer/scan/not-detected.nix")
           ./_hardware-configuration.nix
+          ./_llama-models.nix
           ./_locale.nix
         ];
 
@@ -92,10 +88,8 @@
         enable = true;
         trustedInterfaces = [ config.services.tailscale.interfaceName ];
         allowedUDPPorts = [ config.services.tailscale.port ];
-        allowedTCPPorts = [
-          8555 # llama.cpp Qwen3.6-35B-A3B fallback (GPU 1)
-          8556 # llama.cpp Qwen3.8-Flash-Next primary, MTP (GPU 0)
-        ];
+        # llama.cpp model ports come from the llama-fleet module (derived from
+        # the enabled models), so a disabled model closes its port.
       };
 
       services.tailscale = {
@@ -114,188 +108,36 @@
       hardware.nvidia-container-toolkit.enable = true;
       virtualisation.oci-containers.backend = "docker";
 
-      # Qwen3.8-Flash-Next (125B-class hybrid-SSM MoE) on GPU 0 — coding/agentic.
-      # Replaces Qwen3.8-27B (2026-09-01, user go/no-go): 125B-class quality +
-      # 256k context outweigh the 2x decode slowdown (20 vs 40 tok/s).
-      #
-      # Requires the mjungnickel18 llama.cpp FORK — upstream cannot run this
-      # model's MTP + MoE expert residency. Built by ./_llama-fork.nix: branch
-      # qwen4exp-mtp-plus-moe-residency @ 0384f5c ("moe: split routed experts
-      # by residency across backends"), fetched from GitHub by rev + hash, sm_75
-      # via nixpkgs cudaPackages (nvcc 12.9). To bump: update rev + hash in
-      # _llama-fork.nix. The old imperative build in /var/lib/llama-builds/ is
-      # superseded (safe to delete after this deploys).
-      #
-      # The binary runs from the nix store (/nix/store mounted :ro into the
-      # container — rpath resolves all nix deps); the base image only provides a
-      # filesystem + CUDA 12.6 userland, driver libs injected by CDI. Digest
-      # pinned anyway — the floating-tag-moved lesson from the 3.6/3.8 retunes
-      # applies to anything that ships inference code.
-      #
-      # Model: Q3_K_XL (92GB) with MoE experts split hot/cold (timadinorth patch):
-      # hot64 traced experts in VRAM, cold on CPU via -ot "exps_cold=CPU". MTP
-      # sidecar is the jockeupptaget Q8_0 extraction — its separate
-      # fc_embedding/fc_hidden layout is what the fork expects; sidecars with the
-      # fused eh_proj layout (the Q4_K_M ones) are incompatible.
-      #
-      # Bench 2026-09-01 (Titan RTX, this exact config): decode 18.7-20.6 tok/s
-      # @4k/15k/51k, 19.5 tok/s @122k depth (flat — hybrid SSM), MTP acceptance
-      # 0.87-0.98 (mean draft len 4.1-5.6), 1.75x the non-MTP baseline (11.5),
-      # tool calling OK. 78-90% of the 3090 reference (24-26 t/s).
-      # FA on is a hard requirement: q8_0 KV needs it, f16 KV OOMs on 24GB.
-      # Uses the built-in template (--jinja, validated incl. tool calling). If
-      # opencode's multi-system-message "System message must be at the beginning"
-      # error shows up, mount the vendored qwen3 template like llama-qwen36 does.
-      #
-      # -ub 1024 (validated 2026-09-01: full 121,676-token prefill at 142 tok/s,
-      # decode 19.5 @122k, VRAM peak 22.5GB). The FA compute workspace scales
-      # with ubatch x KV depth: -ub 2048 OOMs at ~120k KV (server segfaults
-      # mid-prefill), -ub 256 fits but prefills at only 60 tok/s. ub1024 is the
-      # fastest that fits 24GB; a 15k first prompt ≈ 65s (vs ~4 min at ub256).
-      # Turns 2+ skip re-prefill via native slot prefix reuse (cached_tokens
-      # ≈ 100%), so only session start pays it. To go faster: free ~3.4GB
-      # (H=48 split + Q4_K_M sidecar) for -ub 2048 — see beads ticket.
-      #
-      # 256k mode (no MTP — MTP + 256k KV + FA workspace = 24.05GB > 24GB):
-      # drop -md and the spec flags, set -c 262144 (keep -ub 256). Bench:
-      # prefill 54 tok/s, decode 11 tok/s at 257k depth, long-context retention
-      # correct. Use when a session outgrows 128k; 3.6 on GPU 1 covers
-      # long-context speed in the meantime.
-      virtualisation.oci-containers.containers.llama-flashnext = {
-        image = "nvidia/cuda@sha256:af25d2ef68f7aedaf0eb179e67773e64feefc3b65a12f59a6cd604ca7c53bb57";
-        ports = [ "8556:8080" ];
-        volumes = [
-          "/var/lib/llama-models:/models"
-          "/nix/store:/nix/store:ro"
-        ];
-        environment = {
-          GGML_CUDA_DISABLE_GRAPHS = "1";
-        };
-        cmd = [
-          "${llamaFork}/bin/llama-server"
-          "-m"
-          "/models/UD-Q3_K_XL-split96/Qwen3.8-Flash-Next-UD-Q3_K_XL-hot64.gguf"
-          "-md"
-          "/models/mtp-fn-jockeupptaget-Q8_0.gguf"
-          "--spec-type"
-          "draft-mtp"
-          "--spec-draft-n-max"
-          "6"
-          "--spec-draft-p-min"
-          "0.75"
-          "--alias"
-          "qwen3.8-flash-next"
-          "-ot"
-          "exps_cold=CPU"
-          "-ngl"
-          "99"
-          "-c"
-          "131072"
-          "-np"
-          "1"
-          "-ub"
-          "1024"
-          "--cache-type-k"
-          "q8_0"
-          "--cache-type-v"
-          "q8_0"
-          "--flash-attn"
-          "on"
-          "--jinja"
-          "--reasoning-budget"
-          "8192"
-          "--temp"
-          "0.6"
-          "--top-k"
-          "20"
-          "--top-p"
-          "0.95"
-          "--min-p"
-          "0"
-          "--host"
-          "0.0.0.0"
-          "--port"
-          "8080"
-          "--api-key"
-          "foo"
-        ];
-        extraOptions = [
-          "--device"
-          "nvidia.com/gpu=0"
-          "--shm-size"
-          "32g"
-          "--ipc=host"
-        ];
+      # ── llama fleet switchboard ──────────────────────────────────────────
+      # What runs on which GPU. Model definitions (image, GGUF, flags, host
+      # port) live in ./_llama-models.nix — this is the only place you edit to
+      # swap models, and retired configs stay there as inert data: flip
+      # enable/gpu, never delete. Two enabled models on one GPU fails
+      # evaluation. See docs/cluster-overview.md.
+      # Keys must match a definition in ./_llama-models.nix exactly — a typo'd
+      # key defines a new empty model instead of toggling the one you meant.
+      llama.models.qwen3-8-flash-next = {
+        enable = true;
+        gpu = 0;
+      };
+      llama.models.qwen3-8-27b = {
+        enable = true;
+        gpu = 1;
+        port = 8555;
+      };
+      llama.models.qwen3-6-35b-iq4xs = {
+        enable = false;
+        gpu = 1;
+      };
+      llama.models.qwen3-8-flash-next-256k = {
+        enable = false;
+        gpu = 0;
       };
 
-      # Qwen3.6-35B-A3B MoE on GPU 1 — dispatch/chat/HA/n8n (speed-primary).
-      # IQ4_XS GGUF (unsloth -MTP repo), 256k context, full offload (-ngl 99),
-      # -np 2 (128k per user). Tuned 2026-08-27 after A/B bench: FA off (hybrid
-      # SSM fattn path broken in this build — 51k prefill 14.6 vs 951 tok/s),
-      # q8_0 K + f16 V KV (3.3x decode vs q5_1, 14/14 planted-name quality), MTP
-      # removed (draft path O(n) at length: 5.7 tok/s @16k vs 53 without).
-      # Digest pinned — the floating tag changed FA behavior between 08-25 and 08-26.
-      # Re-enable MTP once llama.cpp upstream #24670 (draft path missing SSM state)
-      # is fixed and lands in a new pinned image build.
-      virtualisation.oci-containers.containers.llama-qwen36 = {
-        image = "ghcr.io/ggml-org/llama.cpp@sha256:41ebf873c2e085dcc3186dc4717ce8112bf8011aabd98038b6bb2b1fe66c86b9";
-        ports = [ "8555:8555" ];
-        volumes = [
-          "/var/lib/llama-models:/models"
-          "${./qwen3-chat-template.jinja}:/app/qwen3-chat-template.jinja:ro"
-        ];
-        environment = {
-          GGML_CUDA_DISABLE_GRAPHS = "1";
-        };
-        cmd = [
-          "-m"
-          "/models/Qwen3.6-35B-A3B-MTP-UD-IQ4_XS.gguf"
-          "--alias"
-          "Qwen3.6-35B-A3B"
-          "-ngl"
-          "99"
-          "-c"
-          "262144"
-          "--cache-type-k"
-          "q8_0"
-          "--cache-type-v"
-          "f16"
-          "--host"
-          "0.0.0.0"
-          "--port"
-          "8555"
-          "--api-key"
-          "foo"
-          "--jinja"
-          "--chat-template-file"
-          "/app/qwen3-chat-template.jinja"
-          "--chat-template-kwargs"
-          ''{"reasoning_effort":"xhigh","preserve_thinking":true}''
-          "--reasoning-budget"
-          "8192"
-          "--temp"
-          "0.6"
-          "--top-k"
-          "20"
-          "--top-p"
-          "0.95"
-          "--min-p"
-          "0"
-          "-ub"
-          "256"
-          "-np"
-          "2"
-          "--flash-attn"
-          "off"
-        ];
-        extraOptions = [
-          "--device"
-          "nvidia.com/gpu=1"
-          "--shm-size"
-          "32g"
-          "--ipc=host"
-        ];
-      };
+      # Swap patterns: turn off whoever holds the GPU/port first, then
+      #   qwen3-8-27b = { enable = true; gpu = 0; }             -> 27B on 8556 (flash-next off)
+      #   qwen3-6-35b-iq4xs = { enable = true; gpu = 1; }       -> 3.6 back on 8555 (27B off)
+      #   qwen3-8-flash-next-256k = { enable = true; gpu = 0; }  -> 256k, no MTP (flash-next off)
 
       hardware.nvidia.cudaCapabilities = [ "7.5" ];
       hardware.cpu.amd.updateMicrocode = true;

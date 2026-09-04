@@ -41,19 +41,26 @@ MTP + MoE expert residency) — built from source by nix
 | Reasoning | budget 8192 (built-in `--jinja` template) |
 | Chat template | Built-in (`--jinja`, validated incl. tool calling) |
 
-### GPU 1 — Qwen3.6-35B-A3B MoE (dispatch / chat / HA / n8n)
+### GPU 1 — Qwen3.8-27B dense (dispatch / chat / HA / n8n)
 
 | Setting | Value |
 |---------|-------|
 | Engine | llama.cpp (image digest pinned, see below) |
-| Model | Unsloth UD-IQ4_XS GGUF from `-MTP` repo (4-bit, 18.2 GB) |
-| Context | 262,144 tokens (256k) |
-| KV cache | q8_0 K + f16 V |
-| MTP | removed (draft path O(n) at length — 5.7 tok/s @16k vs 53 without; re-enable after upstream #24670) |
-| Flash attention | off (hybrid-SSM fattn path broken in pinned build — 14.6 vs 951 tok/s @51k prefill) |
-| Decode slots | 2 (`-np 2`, 2 concurrent users, 128k per slot) |
+| Model | Unsloth UD-Q4_K_XL GGUF (4-bit, 17.6 GB) |
+| Context | 131,072 tokens (128k) |
+| KV cache | q8_0 K + q8_0 V |
+| MTP | `draft-mtp`, n-max 2, n-min 1 |
+| Flash attention | on |
+| Ubatch | 256 |
+| Decode slots | 1 (`-np 1`) |
 | Reasoning | `reasoning_effort=medium`, budget 8192 |
 | Chat template | Vendored (same as GPU 0) |
+
+Took over GPU 1 from Qwen3.6-35B-A3B on 2026-09-04 (switchboard flip; the 3.6
+config is still in `_llama-models.nix`, `enable = false`). Its 256k context and
+`-np 2` are what 3.6 traded for: 27B runs 128k single-slot with MTP.
+Not benched on this swap — the throughput table below has no 27B row, so don't
+quote it for GPU 1.
 
 ### Shared settings
 
@@ -77,7 +84,7 @@ MTP + MoE expert residency) — built from source by nix
 | Port | Model | Role |
 |------|-------|------|
 | 8556 | Qwen3.8-Flash-Next (alias `qwen3.8-flash-next`) | Coding, agentic workflows |
-| 8555 | Qwen3.6-35B-A3B | Chat, dispatch, HA intents, n8n |
+| 8555 | Qwen3.8-27B (alias `qwen3.8-27b`) | Chat, dispatch, HA intents, n8n |
 
 ## Throughput
 
@@ -86,12 +93,12 @@ MTP + MoE expert residency) — built from source by nix
 | Model | Decode | Prefill | MTP acceptance |
 |-------|--------|---------|----------------|
 | Qwen3.8-Flash-Next | 20.2/18.7/20.6 tok/s @4k/15k/51k, 19.5 @122k depth (flat — hybrid SSM); 11 tok/s @257k in 256k mode | 142 tok/s (`-ub 1024`, fastest that fits 24GB; ~65s for a 15k first prompt, turns 2+ skip re-prefill); 54 in 256k mode | 0.87–0.98 (mean draft len 4.1–5.6) |
-| Qwen3.6-35B-A3B | 80 tok/s @15k ctx, 66 @24k, 51 @43k | ~1250 tok/s @15–28k, 951 @91k (51k ≈ 54s) | — (removed) |
+| Qwen3.6-35B-A3B (dormant since 2026-09-04) | 80 tok/s @15k ctx, 66 @24k, 51 @43k | ~1250 tok/s @15–28k, 951 @91k (51k ≈ 54s) | — (removed) |
 
 3.6 decode degrades gently with context (hybrid SSM — most layers are linear
 attention). Short-context decode is ~102 tok/s without MTP (was 121 with MTP).
 
-### Two concurrent users (3.6 only, `-np 2`)
+### Two concurrent users (3.6 only, `-np 2` — 3.6 dormant, kept for reference)
 
 128k context per slot. With long prompts, the two prefills interleave
 (~41s each for a 24.5k prompt); a user mid-decode drops to ~3 tok/s while the
@@ -174,6 +181,21 @@ These hard limits shaped every decision:
 
 - **Flake host:** `modules/hosts/mjolnir/` in nix-config
 - **Deploy:** `just deploy mjolnir` (deploy-rs, magic rollback disabled)
+- **Kernel/NVIDIA driver bumps:** cannot activate in place — use `nix run .#deploy-rs -- --boot .#mjolnir` then `ssh mjolnir 'sudo reboot'`. In-place `nixos-rebuild switch` leaves the old kernel module loaded, CDI generator hits 'Driver/library version mismatch', and containers exit 125 with auto-rollback.
 - **Model storage:** `/var/lib/llama-models/` (GGUF files)
+- **Which model runs where:** the switchboard in
+  `modules/hosts/mjolnir/default.nix` (`llama.models.<name> = { enable, gpu,
+  port; }`). Model definitions — image, GGUF, flags — live in
+  `modules/hosts/mjolnir/_llama-models.nix` and are inert when disabled, so a
+  retired config stays on disk and is one line away from running again.
+  Retire/bring back by flipping `enable`; never delete the definition.
+  Two enabled models on one GPU, or publishing the same host port, fails
+  evaluation with the culprits named. `port` is `mkDefault` in the definition,
+  so override it when a model shares the host with another one (8556 belongs to
+  flash-next). Deploy with `just deploy mjolnir`; a swap restarts that GPU's
+  container and the model reloads from page cache (~90s).
+- **New files must be `git add`ed before deploying:** deploy-rs runs
+  `nix flake check`, which evaluates the git tree and skips untracked files —
+  a brand-new module reads as "undefined variable" until staged.
 - **NVIDIA driver:** initrd kernel module loading + nouveau blacklisted
 - **Docker GPU passthrough:** CDI device syntax (`nvidia.com/gpu=0`, not `--gpus all`)

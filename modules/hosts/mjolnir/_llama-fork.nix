@@ -23,6 +23,10 @@ cudaPackages.backendStdenv.mkDerivation (finalAttrs: {
     hash = "sha256-m0NWK92KeCmJLS9CWf2mrktciEIXKH7Qvo5IS+FFN4s=";  # pragma: allowlist secret
   };
 
+  patches = [
+    ../../../patches/llama-flashnext/0001-upstream-correctness-and-perf-fixes.patch
+  ];
+
   nativeBuildInputs = [
     cmake
     ninja
@@ -44,7 +48,7 @@ cudaPackages.backendStdenv.mkDerivation (finalAttrs: {
     (lib.cmakeFeature "CMAKE_CUDA_ARCHITECTURES" "75")
     (lib.cmakeBool "LLAMA_BUILD_SERVER" true)
     (lib.cmakeBool "LLAMA_BUILD_EXAMPLES" false)
-    (lib.cmakeBool "LLAMA_BUILD_TESTS" false)
+    (lib.cmakeBool "LLAMA_BUILD_TESTS" true)
     (lib.cmakeBool "LLAMA_BUILD_UI" false)
     (lib.cmakeBool "LLAMA_OPENSSL" true)
     (lib.cmakeBool "BUILD_SHARED_LIBS" true)
