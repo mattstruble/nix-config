@@ -25,6 +25,11 @@ cudaPackages.backendStdenv.mkDerivation (finalAttrs: {
 
   patches = [
     ../../../patches/llama-flashnext/0001-upstream-correctness-and-perf-fixes.patch
+    # position-based context checkpoints (--checkpoint-pos-step N): break the
+    # prompt batch every N tokens so hybrid/recurrent slots reuse a nearby
+    # checkpoint on partial-prefix divergence instead of a full re-prefill.
+    # Touches common/* and tools/server/* — disjoint from 0001 (src/*).
+    ../../../patches/llama-flashnext/0002-checkpoint-pos-step.patch
   ];
 
   nativeBuildInputs = [

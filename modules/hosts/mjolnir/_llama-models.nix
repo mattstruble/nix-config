@@ -98,8 +98,30 @@ in
         "--jinja"
         "--reasoning-budget"
         "8192"
+        # Denser turn-boundary checkpoints. Default -cms 8192 skips a user turn
+        # closer than 8192 tok to the last checkpoint, so mid-conversation
+        # divergence re-prefills from the previous turn. 1024 gives every turn its
+        # own checkpoint. a1v proved this is the only *config* lever on recurrent
+        # re-prefill (see beads nix-config-a1v/nvt).
+        "-cms"
+        "1024"
+        # Position-based checkpoints (nix-config-9g1): the fork patch
+        # (0002-checkpoint-pos-step.patch) adds --checkpoint-pos-step N, which
+        # also breaks the batch every N tokens so a checkpoint exists within N tok
+        # of any divergence point — closes the residual that -cms alone can't.
+        # Checkpoint state is the recurrent state (~137 MiB w/ MTP) stored in the
+        # RAM prompt cache, NOT VRAM, so -c 131072 is unaffected. Measured on
+        # mjolnir 2026-09-04: checkpoints at the 2048/4096/6144 cadence, VRAM
+        # 21.3->22.6 GB at 120k (KV growth only), prefill ~144-189 t/s.
+        "--checkpoint-pos-step"
+        "2048"
+        # EXPERIMENT (5f8, 2026-09-04): enable POST /slots?id_slot=N&action=save|restore
+        # to a host dir, to test NVMe recovery of an aborted slot on hybrid memory.
+        "--slot-save-path"
+        "/slots-save"
       ]
       ++ sampling;
+      volumes = [ "/var/lib/llama-models:/models" "/var/lib/llama-slots:/slots-save" ];
     };
 
     # Same model on the same GPU, 256k context, NO MTP: MTP + 256k KV + FA

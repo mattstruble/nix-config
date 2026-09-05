@@ -1,0 +1,119 @@
+Add position-based context checkpoints (--checkpoint-pos-step N).
+
+For hybrid/recurrent models the recurrent state only retains its trailing
+n_rs_seq positions, so on a partial-prefix divergence the server needs a
+context checkpoint at or before the divergence point. Checkpoints are only
+created at user-turn starts and the prompt end, so any divergence in the
+middle of a long prompt falls back to a full re-prefill.
+
+This adds a --checkpoint-pos-step N flag that also breaks the prompt batch
+every N tokens so a checkpoint is created there, letting a diverging slot
+reuse a checkpoint within N tokens instead of re-prefilling from zero. The
+checkpoint state lives in the RAM prompt cache, not VRAM, so context size
+is unaffected. When enabled, checkpoint eviction spacing follows the
+position step (not the larger user-turn min-step) so the dense checkpoints
+survive.
+---
+diff --git a/common/arg.cpp b/common/arg.cpp
+index 86f8610..e217eed 100644
+--- a/common/arg.cpp
++++ b/common/arg.cpp
+@@ -1701,6 +1701,16 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
+             params.checkpoint_min_step = value;
+         }
+     ).set_env("LLAMA_ARG_CHECKPOINT_MIN_SPACING_NT").set_examples({LLAMA_EXAMPLE_SERVER}));
++    add_opt(common_arg(
++        {"--checkpoint-pos-step"}, "N",
++        string_format("create a context checkpoint every N tokens (position-based; default: %d, 0 = off)", params.checkpoint_pos_step),
++        [](common_params & params, int value) {
++            if (value < 0) {
++                throw std::invalid_argument("checkpoint-pos-step must be non-negative");
++            }
++            params.checkpoint_pos_step = value;
++        }
++    ).set_env("LLAMA_ARG_CHECKPOINT_POS_STEP").set_examples({LLAMA_EXAMPLE_SERVER}));
+     add_opt(common_arg(
+         {"-cram", "--cache-ram"}, "N",
+         string_format("set the maximum cache size in MiB (default: %d, -1 - no limit, 0 - disable)"
+diff --git a/common/common.h b/common/common.h
+index 7dfa3f2..9074012 100644
+--- a/common/common.h
++++ b/common/common.h
+@@ -622,6 +622,7 @@ struct common_params {
+     bool    cache_idle_slots    = true;  // save and clear idle slots upon starting a new task
+     int32_t n_ctx_checkpoints   = 32;    // max number of context checkpoints per slot
+     int32_t checkpoint_min_step = 8192;  // minimum spacing between context checkpoints
++    int32_t checkpoint_pos_step = 0;     // create a context checkpoint every N tokens (position-based; 0 = off)
+     int32_t cache_ram_mib       = 8192;  // -1 = no limit, 0 - disable, 1 = 1 MiB, etc.
+
+     std::string hostname      = "127.0.0.1";
+diff --git a/tools/server/server-context.cpp b/tools/server/server-context.cpp
+index eaeb35a..88e5bce 100644
+--- a/tools/server/server-context.cpp
++++ b/tools/server/server-context.cpp
+@@ -2212,9 +2212,15 @@ private:
+
+         // evict checkpoints within min-step of a previous checkpoint, unless they were
+         // created by the current task
++        // [TAG_CHECKPOINT_POS_STEP] when position-based checkpoints are enabled, use the
++        // position step (minus one, so checkpoints exactly at the spacing survive) as the
++        // eviction spacing, instead of the (larger) user-turn min step.
++        const int64_t ckpt_evict_step = params_base.checkpoint_pos_step > 0
++            ? std::max<int64_t>(1, params_base.checkpoint_pos_step - 1)
++            : params_base.checkpoint_min_step;
+         int64_t last = -1;
+         for (auto it = slot.prompt.checkpoints.begin(); it != slot.prompt.checkpoints.end(); ) {
+-            if (it->id_task != id_task && last >= 0 && it->n_tokens <= last + params_base.checkpoint_min_step) {
++            if (it->id_task != id_task && last >= 0 && it->n_tokens <= last + ckpt_evict_step) {
+                 SLT_TRC(slot, "erasing context checkpoint too close to an earlier one (pos_min = %d, pos_max = %d, n_tokens = %" PRId64 ", size = %.3f MiB)\n",
+                         it->pos_min, it->pos_max, it->n_tokens, (float) it->size() / 1024 / 1024);
+
+@@ -3424,6 +3430,9 @@ private:
+                     const auto & spans = slot.task->params.message_spans;
+                     const auto last_user_pos = spans.last_user_message_pos();
+
++                    // [TAG_CHECKPOINT_POS_STEP] set when the batch broke at a position-based checkpoint
++                    bool ckpt_pos_break = false;
++
+                     // add prompt tokens for processing in the current batch
+                     while (slot.prompt.n_tokens() < slot.task->n_tokens() && batch.size() < n_batch) {
+                         // get next token to process
+@@ -3460,6 +3469,18 @@ private:
+                             }
+                         }
+
++                        // [TAG_CHECKPOINT_POS_STEP] position-based checkpoint: break every
++                        // checkpoint_pos_step tokens so hybrid/recurrent slots can reuse a
++                        // nearby checkpoint on partial-prefix divergence (avoids full re-prefill).
++                        if (do_checkpoint && params_base.checkpoint_pos_step > 0) {
++                            const auto pos = slot.prompt.n_tokens();
++                            const auto last_pos = slot.prompt.checkpoints.empty() ? 0 : slot.prompt.checkpoints.back().n_tokens;
++                            if (pos - last_pos >= params_base.checkpoint_pos_step) {
++                                ckpt_pos_break = true;
++                                break;
++                            }
++                        }
++
+                         // process the last few tokens of the prompt separately in order to allow for a checkpoint to be created.
+                         // create checkpoints that many tokens before the end of the prompt:
+                         //  - 4 + n_ubatch
+@@ -3507,8 +3528,9 @@ private:
+                         slot.init_sampler();
+                     } else {
+                         // skip ordinary mid-prompt checkpoints, unless the batch starts a user
+-                        // message or we are near the end of the prompt
+-                        if (!is_user_start && !near_prompt_end) {
++                        // message, we are near the end of the prompt, or we broke at a
++                        // position-based checkpoint position
++                        if (!is_user_start && !near_prompt_end && !ckpt_pos_break) {
+                             do_checkpoint = false;
+                         }
+                     }
+@@ -3528,7 +3550,7 @@ private:
+                     // no need to create checkpoints that are too close together, unless it's the last user message
+                     do_checkpoint = do_checkpoint && (
+                             slot.prompt.checkpoints.empty() ||
+-                            is_last_user_message || near_prompt_end ||
++                            is_last_user_message || near_prompt_end || ckpt_pos_break ||
+                             n_tokens_start > slot.prompt.checkpoints.back().n_tokens + params_base.checkpoint_min_step);
+                     SLT_DBG(slot, "main/do_checkpoint = %s, pos_min = %d, pos_max = %d\n", do_checkpoint ? "yes" : "no", pos_min, pos_max);
