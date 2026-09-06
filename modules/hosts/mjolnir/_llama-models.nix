@@ -110,11 +110,29 @@ in
         # also breaks the batch every N tokens so a checkpoint exists within N tok
         # of any divergence point — closes the residual that -cms alone can't.
         # Checkpoint state is the recurrent state (~137 MiB w/ MTP) stored in the
-        # RAM prompt cache, NOT VRAM, so -c 131072 is unaffected. Measured on
-        # mjolnir 2026-09-04: checkpoints at the 2048/4096/6144 cadence, VRAM
-        # 21.3->22.6 GB at 120k (KV growth only), prefill ~144-189 t/s.
+        # RAM prompt cache, NOT VRAM, so -c 131072 is unaffected.
+        #
+        # COVERAGE PRIORITY (nix-config: 2026-09-05). Two coupled knobs, one
+        # formula: coverage = ctxcp * pos_step, RAM = ctxcp * 137 MiB.
+        #   32 x 2048 = 65,536 tok covered, 4.38 GiB  <- what shipped first
+        #   16 x 4096 = 65,536 tok covered, 2.19 GiB  <- now
+        # Same coverage at half the RAM, and half the checkpoint-creation churn
+        # (one 137 MiB sync copy per 4096 prefill tokens instead of per 2048).
+        # Why it matters: at 32 x 2048 a 128k session only had checkpoints over
+        # its LAST 64k, so a deep divergence (compaction 127k->39k) still
+        # full-re-prefilled; and the denser checkpoints pushed the prompt-cache
+        # entry to 8360 MiB against the 8192 MiB -cram cap, where alloc() SKIPS
+        # the whole entry (no eviction) -> prompt_clear() -> full re-prefill.
+        # The patch was causing the thing it exists to prevent. Worst-case
+        # residual is now 4096 tok (~27 s) vs 54-79 s pre-patch. Host has
+        # ~1.3 GB MemAvailable, so halving the footprint is the point.
+        # NOTE: pos_step 2048 == n_batch default, so the batch break was free;
+        # 4096 still breaks on a 2048 boundary (2 batches), so it stays free.
         "--checkpoint-pos-step"
-        "2048"
+        "4096"
+        # Max context checkpoints per slot (default 32). See the formula above.
+        "-ctxcp"
+        "16"
         # EXPERIMENT (5f8, 2026-09-04): enable POST /slots?id_slot=N&action=save|restore
         # to a host dir, to test NVMe recovery of an aborted slot on hybrid memory.
         "--slot-save-path"
