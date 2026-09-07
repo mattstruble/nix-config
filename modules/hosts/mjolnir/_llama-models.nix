@@ -272,6 +272,38 @@ in
         "1"
         "--flash-attn"
         "on"
+        # Consult the RAM prompt cache on *every* request (nix-config-l4s).
+        # get_available_slot() only calls prompt_save/prompt_load when
+        # update_cache is set, and it sets update_cache=false whenever it
+        # LCP-selects a slot with f_keep >= 0.5. After a pi compaction the slot
+        # holds a short summary, so the next big turn still scores f_sim ~0.15
+        # (> the 0.10 thold) with f_keep ~0.73 -> cache never consulted -> the
+        # entry holding the real history at f_keep 1.00 is ignored and the turn
+        # full-re-prefills. 0.0 skips the LCP block, so every request takes the
+        # LRU branch and update_cache is always true.
+        # Measured on mjolnir GPU1 against the live production arg set:
+        #   resume-after-compaction @118k: 299.2s/108857 tok -> 6.6s/987 tok
+        #   resume-after-compaction @17k :  23.2s/ 14349 tok -> 3.4s/ 1202 tok
+        #   divergent mid-turn probe     : cached 9,627 in both (no regression)
+        #   appends turn0-5              : wall and cached identical to base
+        # SAFE ONLY WITH -np 1 — with several slots the LCP block is what routes
+        # each conversation to its own slot; disabling it makes them ping-pong.
+        "--slot-prompt-similarity"
+        "0"
+        # -sps 0 alone does NOT fix the deep case: at 118k the cache entry is
+        # ~10 GiB (5.5 GiB state + checkpoints) and alloc() SKIPS any single
+        # entry larger than -cram (it does not evict), so nothing is saved,
+        # prompt_load finds nothing and prompt_clear() drops the conversation —
+        # the re-prefill we are fixing, from the other direction. 16 GiB holds
+        # one full 128k session: 0 overflow warnings, RSS 16.38 GiB on a host
+        # with 27 GiB available.
+        # Do NOT try to shrink the entry with -ctxcp instead. -ctxcp bounds how
+        # far back the slot can roll back, not just its cache footprint: at
+        # -ctxcp 2 (2 x 17.9k turn spacing = 36k of coverage) every divergent
+        # request lost prefix reuse outright (cached 9,627 -> 0) and resume got
+        # worse than base. Measured 2026-09-06.
+        "-cram"
+        "16384"
       ]
       ++ sampling;
     };
