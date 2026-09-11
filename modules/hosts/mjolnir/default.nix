@@ -129,6 +129,12 @@
         gpu = 1;
         port = 8555;
       };
+      # DORMANT (2026-09-11): TBQ4 KV variant — rejected on sm_75 (slower than
+      # q8_0 at every depth). The winning turboq+SWA+q8_0 config is qwen3-8-27b.
+      llama.models.qwen3-8-27b-turboq = {
+        enable = false;
+        gpu = 1;
+      };
       llama.models.qwen3-8-flash-next-256k = {
         enable = false;
         gpu = 0;

@@ -6,6 +6,9 @@ let
   # rev + hash in ./_llama-fork.nix.
   llamaFork = pkgs.callPackage ./_llama-fork.nix { };
 
+  # Indras-Mirror turboq fork (Qwen35 SWA + fused TBQ4 KV FA + MTP), sm_75.
+  llamaTurboq = pkgs.callPackage ./_llama-turboq.nix { };
+
   # Digest pinned — the floating-tag-moved lesson from the 3.6/3.8 retunes
   # applies to anything that ships inference code.
   upstreamImage = "ghcr.io/ggml-org/llama.cpp@sha256:41ebf873c2e085dcc3186dc4717ce8112bf8011aabd98038b6bb2b1fe66c86b9";
@@ -223,20 +226,33 @@ in
       ++ sampling;
     };
 
-    # Qwen3.8-27B — DORMANT since 2026-09-01 (replaced on GPU 0 by Flash-Next).
-    # Q4_K_XL GGUF, 128k context, q8_0 KV, MTP n-max 2, flash-attn on, single
-    # user (-np 1) — full context for one coder.
-    # Bench 2026-08-27 (pinned build): prefill 626/575/485 tok/s @15k/30k/60k,
-    # decode 43.7/43.6/35.0, MTP 1.68-1.79x with no O(n) collapse at length
-    # (unlike 3.6), quality 14/14, tool calling OK. FA on is a hard
-    # requirement: quantized V cache needs it, and f16 V at 128k OOMs. 256k
-    # infeasible on 24GB. Cold-start first request after load 96.4s @15k
-    # (warm ~24s).
+    # Qwen3.8-27B — dense 27B (qwen35 arch: 16 full-attn + 48 delta-net layers),
+    # the "smart" model. Q4_K_XL GGUF, 128k context, q8_0 KV, MTP n-max 2,
+    # flash-attn on, single user (-np 1) — full context for one coder.
+    # 2026-09-11: runs the Indras-Mirror turboq fork (llamaTurboq) with SWA
+    # (window 4096, 8 global layers). Bench on the 3090, same GGUF:
+    #   depth:  2k    15k    50k    100k
+    #   old:   47.2  35.2   31.8   29.1   (38% depth cliff)
+    #   SWA:   44.7  40.9   38.0   31.1   (30% cliff, +5.7/+6.2/+2.0 at 15k+)
+    # SWA recall verified: needle planted 20k back (5x window) recalled exactly
+    # via the 8 global layers. TBQ4 KV tested and rejected on sm_75 (slower at
+    # every depth, 25.1 vs 31.1 @100k) — see qwen3-8-27b-turboq below.
+    # FA on is a hard requirement: quantized V cache needs it, and f16 V at
+    # 128k OOMs. 256k infeasible on 24GB.
     # Takes 8556 (the coding endpoint) when it replaces Flash-Next, so clients
     # need no change; the alias differs, so pick by name if both ever run.
+    # Quant sweep (c3j.7, 2026-09-12): Q4_K_M selected.
+    # IQ4_XS: 14GB, +1.5% decode, -0.6pp PPL vs Q4_K_M. REJECTED: speed gain
+    #   negligible (1.5%), quality cost real (0.6pp PPL, 0.4pp MMLU-Pro), designed
+    #   for VRAM emergencies not quality-neutral swaps. bric.pe.kr: Q4_K_M is the
+    #   default for 95% of cases.
+    # Q4_K_M: 16GB, baseline quality, sweet spot per all published benchmarks.
+    # Q4_K_XL: 19GB, marginal quality edge over Q4_K_M, slower decode.
+    # Q5_K_M: 18GB, OOM on MTP draft (VRAM too tight).
     qwen3-8-27b = {
-      image = upstreamImage;
-      model = "/models/Qwen3.8-27B-UD-Q4_K_XL.gguf";
+      image = cudaImage;
+      package = llamaTurboq;
+      model = "/models/Qwen3.8-27B-UD-Q4_K_M.gguf";
       port = lib.mkDefault 8556;
       volumes = [
         "/var/lib/llama-models:/models"
@@ -253,6 +269,11 @@ in
         "q8_0"
         "--cache-type-v"
         "q8_0"
+        # SWA: window 4096 on most full-attn layers, 8 stay global (dense) for
+        # long-range recall. Only the turboq fork honors this override; on the
+        # upstream image the 27B runs dense (the pre-2026-09-11 behavior).
+        "--override-kv"
+        "qwen35.attention.sliding_window=int:4096,qwen35.attention.swa_global_layers=int:8"
         "--jinja"
         "--chat-template-file"
         "/app/qwen3-chat-template.jinja"
@@ -262,12 +283,19 @@ in
         "8192"
         "--spec-type"
         "draft-mtp"
+        # MTP n-max sweep (c3j): 2026-09-12. n=2 confirmed optimal.
+        # n=1: 40.7 t/s (-8.6%), n=2: 45.5 t/s (optimal), n=3: 41.8 t/s (-6.0%).
+        # jonidimo 3090: n=2=65.28, n=3=63.07, n=4=62.91.
         "--spec-draft-n-max"
         "2"
         "--spec-draft-n-min"
         "1"
+        # ubatch sweep (c3j): 2026-09-12. ub1024 selected for best prefill+decode.
+        # ub256: 657 t/s prefill, 44.5 decode (baseline). ub512: +3% prefill.
+        # ub1024: +4.5% prefill, +2.4% decode, +4.9pp MTP acceptance.
+        # 128k at ub1024: tested OK, no OOM. 256k would need ub256.
         "-ub"
-        "256"
+        "1024"
         "-np"
         "1"
         "--flash-attn"
@@ -306,6 +334,78 @@ in
         "16384"
       ]
       ++ sampling;
+    };
+
+    # DORMANT (2026-09-11, nix-config-vjd): TBQ4 KV variant of the 27B.
+    # Measured on the 3090: SLOWER than q8_0 KV at every depth (43.7/38.4/31.9/
+    # 25.1 @ 2k/15k/50k/100k vs q8_0+SWA's 44.7/40.9/38.0/31.1) — the fused
+    # TBQ4 FA kernel is not fast on sm_75, and TBQ4 KV also drops MTP acceptance
+    # (0.64-0.85 vs 0.79). The fork's headline 70 t/s @62K did not reproduce.
+    # Kept as inert data per the switchboard rule; the winning config
+    # (turboq + q8_0 + SWA) lives in qwen3-8-27b above.
+    qwen3-8-27b-turboq = {
+      image = cudaImage;
+      package = llamaTurboq;
+      model = "/models/Qwen3.8-27B-UD-Q4_K_XL.gguf";
+      port = 8557;
+      volumes = [
+        "/var/lib/llama-models:/models"
+        vendoredTemplate
+      ];
+      args = [
+        "--alias"
+        "qwen3.8-27b-turboq"
+        "-ngl"
+        "99"
+        "-c"
+        "131072"
+        "--cache-type-k"
+        "tbq4_0"
+        "--cache-type-v"
+        "tbq4_0"
+        "--override-kv"
+        "qwen35.attention.sliding_window=int:4096,qwen35.attention.swa_global_layers=int:8"
+        "--jinja"
+        "--chat-template-file"
+        "/app/qwen3-chat-template.jinja"
+        "--chat-template-kwargs"
+        ''{"reasoning_effort":"medium","preserve_thinking":true}''
+        "--reasoning-budget"
+        "8192"
+        "--spec-type"
+        "draft-mtp"
+        "--spec-draft-n-max"
+        "2"
+        "--spec-draft-n-min"
+        "1"
+        "-ub"
+        "256"
+        "-np"
+        "1"
+        "--flash-attn"
+        "on"
+        "--slot-prompt-similarity"
+        "0"
+        "-cram"
+        "16384"
+      ]
+      ++ sampling;
+    };
+
+    # DORMANT (c3j.7, 2026-09-12): Quant variant tests. Q4_K_M (16GB), Q5_K_M
+    # (18GB) downloaded. IQ4_XS downloading. jonidimo: AD-Q4_K_M 765 MiB
+    # smaller, same quality as Q4_K_XL. Tests: decode speed, VRAM, quality.
+    qwen3-8-27b-Q4_K_M = {
+      enable = false;
+      gpu = 1;
+    };
+    qwen3-8-27b-Q5_K_M = {
+      enable = false;
+      gpu = 1;
+    };
+    qwen3-8-27b-IQ4_XS = {
+      enable = false;
+      gpu = 1;
     };
   };
 }
