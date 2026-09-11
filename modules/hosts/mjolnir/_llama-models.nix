@@ -241,18 +241,12 @@ in
     # 128k OOMs. 256k infeasible on 24GB.
     # Takes 8556 (the coding endpoint) when it replaces Flash-Next, so clients
     # need no change; the alias differs, so pick by name if both ever run.
-    # Quant sweep (c3j.7, 2026-09-12): Q4_K_M selected.
-    # IQ4_XS: 14GB, +1.5% decode, -0.6pp PPL vs Q4_K_M. REJECTED: speed gain
-    #   negligible (1.5%), quality cost real (0.6pp PPL, 0.4pp MMLU-Pro), designed
-    #   for VRAM emergencies not quality-neutral swaps. bric.pe.kr: Q4_K_M is the
-    #   default for 95% of cases.
-    # Q4_K_M: 16GB, baseline quality, sweet spot per all published benchmarks.
-    # Q4_K_XL: 19GB, marginal quality edge over Q4_K_M, slower decode.
-    # Q5_K_M: 18GB, OOM on MTP draft (VRAM too tight).
+    # 2026-09-14: Reverted Q4_K_M back to Q4_K_XL (quality degradation with
+    # Q4_K_M). ub256 restored (ub1024 was OK but ub256 is safer for VRAM).
     qwen3-8-27b = {
       image = cudaImage;
       package = llamaTurboq;
-      model = "/models/Qwen3.8-27B-UD-Q4_K_M.gguf";
+      model = "/models/Qwen3.8-27B-UD-Q4_K_XL.gguf";
       port = lib.mkDefault 8556;
       volumes = [
         "/var/lib/llama-models:/models"
@@ -283,19 +277,12 @@ in
         "8192"
         "--spec-type"
         "draft-mtp"
-        # MTP n-max sweep (c3j): 2026-09-12. n=2 confirmed optimal.
-        # n=1: 40.7 t/s (-8.6%), n=2: 45.5 t/s (optimal), n=3: 41.8 t/s (-6.0%).
-        # jonidimo 3090: n=2=65.28, n=3=63.07, n=4=62.91.
         "--spec-draft-n-max"
         "2"
         "--spec-draft-n-min"
         "1"
-        # ubatch sweep (c3j): 2026-09-12. ub1024 selected for best prefill+decode.
-        # ub256: 657 t/s prefill, 44.5 decode (baseline). ub512: +3% prefill.
-        # ub1024: +4.5% prefill, +2.4% decode, +4.9pp MTP acceptance.
-        # 128k at ub1024: tested OK, no OOM. 256k would need ub256.
         "-ub"
-        "1024"
+        "256"
         "-np"
         "1"
         "--flash-attn"
