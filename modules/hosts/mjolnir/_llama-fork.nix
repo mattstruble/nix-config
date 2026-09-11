@@ -19,8 +19,8 @@ cudaPackages.backendStdenv.mkDerivation (finalAttrs: {
   src = fetchFromGitHub {
     owner = "mjungnickel18";
     repo = "llama.cpp";
-    rev = "0384f5c660be6541307ee2e360d9567a3affd597";  # pragma: allowlist secret
-    hash = "sha256-m0NWK92KeCmJLS9CWf2mrktciEIXKH7Qvo5IS+FFN4s=";  # pragma: allowlist secret
+    rev = "0384f5c660be6541307ee2e360d9567a3affd597"; # pragma: allowlist secret
+    hash = "sha256-m0NWK92KeCmJLS9CWf2mrktciEIXKH7Qvo5IS+FFN4s="; # pragma: allowlist secret
   };
 
   patches = [
@@ -50,6 +50,7 @@ cudaPackages.backendStdenv.mkDerivation (finalAttrs: {
   cmakeFlags = [
     (lib.cmakeBool "GGML_NATIVE" true)
     (lib.cmakeBool "GGML_CUDA" true)
+    (lib.cmakeBool "GGML_CUDA_FORCE_MMQ" true)
     (lib.cmakeFeature "CMAKE_CUDA_ARCHITECTURES" "75")
     (lib.cmakeBool "LLAMA_BUILD_SERVER" true)
     (lib.cmakeBool "LLAMA_BUILD_EXAMPLES" false)

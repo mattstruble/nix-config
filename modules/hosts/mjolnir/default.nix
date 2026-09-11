@@ -117,17 +117,17 @@
       # Keys must match a definition in ./_llama-models.nix exactly — a typo'd
       # key defines a new empty model instead of toggling the one you meant.
       llama.models.qwen3-8-flash-next = {
-        enable = true;
+        enable = false;
         gpu = 0;
       };
       llama.models.qwen3-8-27b = {
         enable = true;
-        gpu = 1;
-        port = 8555;
+        gpu = 0;
       };
       llama.models.qwen3-6-35b-iq4xs = {
-        enable = false;
+        enable = true;
         gpu = 1;
+        port = 8555;
       };
       llama.models.qwen3-8-flash-next-256k = {
         enable = false;
@@ -135,9 +135,9 @@
       };
 
       # Swap patterns: turn off whoever holds the GPU/port first, then
-      #   qwen3-8-27b = { enable = true; gpu = 0; }             -> 27B on 8556 (flash-next off)
-      #   qwen3-6-35b-iq4xs = { enable = true; gpu = 1; }       -> 3.6 back on 8555 (27B off)
-      #   qwen3-8-flash-next-256k = { enable = true; gpu = 0; }  -> 256k, no MTP (flash-next off)
+      #   qwen3-8-flash-next = { enable = true; gpu = 0; }      -> flash-next back on 8556 (27B off)
+      #   qwen3-6-35b-iq4xs = { enable = true; gpu = 1; }       -> 3.6 on 8555 (27B off)
+      #   qwen3-8-flash-next-256k = { enable = true; gpu = 0; }  -> 256k, no MTP (27B off)
 
       hardware.nvidia.cudaCapabilities = [ "7.5" ];
       hardware.cpu.amd.updateMicrocode = true;
