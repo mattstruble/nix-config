@@ -242,7 +242,8 @@ in
     # Takes 8556 (the coding endpoint) when it replaces Flash-Next, so clients
     # need no change; the alias differs, so pick by name if both ever run.
     # 2026-09-14: Reverted Q4_K_M back to Q4_K_XL (quality degradation with
-    # Q4_K_M). ub256 restored (ub1024 was OK but ub256 is safer for VRAM).
+    # Q4_K_M). 2026-09-14: ub1024 restored (verified 2026-09-12: +6.9% prefill,
+    # +4.1% decode vs ub256; VRAM headroom 3.1GB sufficient).
     qwen3-8-27b = {
       image = cudaImage;
       package = llamaTurboq;
@@ -282,7 +283,7 @@ in
         "--spec-draft-n-min"
         "1"
         "-ub"
-        "256"
+        "1024"
         "-np"
         "1"
         "--flash-attn"
