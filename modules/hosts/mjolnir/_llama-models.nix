@@ -21,9 +21,9 @@ let
 
   sampling = [
     "--temp"
-    "0.6"
+    "0.8"
     "--top-k"
-    "20"
+    "40"
     "--top-p"
     "0.95"
     "--min-p"
@@ -62,8 +62,8 @@ in
     # fits 24GB. Turns 2+ skip re-prefill via native slot prefix reuse, so only
     # session start pays it.
     #
-    # Decode is ~9.5 tok/s on real traffic (NOT the 19.5 in the old bench
-    # comment — that was a badly configured first test).
+    # Decode is ~10.3 tok/s (bench 2026-09-12: n-max3 n-min2 p-min0.75 =
+    # 10.28 t/s avg, 3.8% drop from @4k to @15k). Updated from n-max6.
     qwen3-8-flash-next = {
       image = cudaImage;
       package = llamaFork;
@@ -75,7 +75,9 @@ in
         "--spec-type"
         "draft-mtp"
         "--spec-draft-n-max"
-        "6"
+        "3"
+        "--spec-draft-n-min"
+        "2"
         "--spec-draft-p-min"
         "0.75"
         "--load-mode"
@@ -142,7 +144,10 @@ in
         "/slots-save"
       ]
       ++ sampling;
-      volumes = [ "/var/lib/llama-models:/models" "/var/lib/llama-slots:/slots-save" ];
+      volumes = [
+        "/var/lib/llama-models:/models"
+        "/var/lib/llama-slots:/slots-save"
+      ];
     };
 
     # Same model on the same GPU, 256k context, NO MTP: MTP + 256k KV + FA
@@ -302,6 +307,12 @@ in
         # worse than base. Measured 2026-09-06.
         "-cram"
         "16384"
+        "--reasoning-format"
+        "deepseek"
+        # Token-level repeat penalty (default 1.0 = disabled). Bump to 1.10 if
+        # loops persist, drop to 1.05 if quality degrades, 1.0 for max quality.
+        "--repeat-penalty"
+        "1.05"
       ]
       ++ sampling;
     };
