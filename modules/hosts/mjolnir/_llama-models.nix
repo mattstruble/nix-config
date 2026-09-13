@@ -29,6 +29,21 @@ let
     "--min-p"
     "0"
   ];
+
+  # Qwen's own coding preset. Measured on the 27B (tools/27b-quality/FINDINGS.md,
+  # 2026-09-12): +11% effective decode (46.2 vs 41.5 t/s over the tool suite, MTP
+  # acceptance rises at lower entropy), identical grounding and tool validity, zero
+  # loop events. Kept separate from `sampling` so the other models are untouched.
+  samplingCoding = [
+    "--temp"
+    "0.6"
+    "--top-k"
+    "20"
+    "--top-p"
+    "0.8"
+    "--min-p"
+    "0"
+  ];
 in
 {
   # Model definitions only — no enable/gpu here. Those are the switchboard in
@@ -239,9 +254,13 @@ in
     #   depth:  2k    15k    50k    100k
     #   old:   47.2  35.2   31.8   29.1   (38% depth cliff)
     #   SWA:   44.7  40.9   38.0   31.1   (30% cliff, +5.7/+6.2/+2.0 at 15k+)
-    # SWA recall verified: needle planted 20k back (5x window) recalled exactly
-    # via the 8 global layers. TBQ4 KV tested and rejected on sm_75 (slower at
-    # every depth, 25.1 vs 31.1 @100k) — see qwen3-8-27b-turboq below.
+    # SUPERSEDED (2026-09-12, nix-config-qjz): those are decode-speed numbers and
+    # the old "SWA recall verified via the 8 global layers" line was never a recall
+    # measurement. Re-measured with a scored recall harness
+    # (tools/27b-quality/harness.py): forced SWA(4096/8) = 0/6 at 80k, dense = 6/6,
+    # and dense is faster at depth too. The override is gone from the args below.
+    # TBQ4 KV tested and rejected on sm_75 (slower at every depth, 25.1 vs 31.1
+    # @100k) — see qwen3-8-27b-turboq below.
     # FA on is a hard requirement: quantized V cache needs it, and f16 V at
     # 128k OOMs. 256k infeasible on 24GB.
     # Takes 8556 (the coding endpoint) when it replaces Flash-Next, so clients
@@ -269,11 +288,20 @@ in
         "q8_0"
         "--cache-type-v"
         "q8_0"
-        # SWA: window 4096 on most full-attn layers, 8 stay global (dense) for
-        # long-range recall. Only the turboq fork honors this override; on the
-        # upstream image the 27B runs dense (the pre-2026-09-11 behavior).
-        "--override-kv"
-        "qwen35.attention.sliding_window=int:4096,qwen35.attention.swa_global_layers=int:8"
+        # NO SWA override here, on purpose (2026-09-12, nix-config-qjz).
+        # The Qwen3.8-27B GGUF ships no sliding window: the forced
+        # `--override-kv qwen35.attention.sliding_window=int:4096,...swa_global_layers=int:8`
+        # did not shrink an existing window, it CREATED one, and the fork's
+        # swa_global_layers escape hatch does not keep long-range recall. Measured
+        # with tools/27b-quality/harness.py (identity + needle probes, byte-exact
+        # scoring, prompt built from real repo+C++ source): with the override the
+        # model answers 2/6 at 20k, 1/6 at 50k, 0/6 at 80k — it cannot see its own
+        # repo/cwd/branch in the system prompt past ~4k tokens. Dense: 6/6 at 20k,
+        # 5/6 at 50k, 6/6 at 80k, 6/6 at 100k and 120k. Dense is also FASTER at
+        # depth (31.4 vs 29.0 t/s @80k) and costs 2.1 GiB more VRAM (23.05 of 24 GB
+        # at -c 131072, allocated up front, verified at 120k depth). The old
+        # "SWA recall verified via the 8 global layers" note below was a speed
+        # anecdote, not a recall measurement. Full table: tools/27b-quality/FINDINGS.md.
         "--jinja"
         "--chat-template-file"
         "/app/qwen3-chat-template.jinja"
@@ -309,12 +337,14 @@ in
         "16384"
         "--reasoning-format"
         "deepseek"
-        # Token-level repeat penalty (default 1.0 = disabled). Bump to 1.10 if
-        # loops persist, drop to 1.05 if quality degrades, 1.0 for max quality.
+        # 1.0 = penalty disabled. Measured 1.05 vs 1.0 (arms S3/S2 on the dense
+        # config): no difference in grounding or tool validity, no loop events in
+        # either; 1.0 is the higher-fidelity setting, so keep it and fix loops at
+        # the cause (context) rather than with a token penalty.
         "--repeat-penalty"
-        "1.05"
+        "1.0"
       ]
-      ++ sampling;
+      ++ samplingCoding;
     };
 
     # DORMANT (2026-09-11, nix-config-vjd): TBQ4 KV variant of the 27B.
