@@ -117,11 +117,11 @@
       # Keys must match a definition in ./_llama-models.nix exactly — a typo'd
       # key defines a new empty model instead of toggling the one you meant.
       llama.models.qwen3-8-flash-next = {
-        enable = false;
+        enable = true;
         gpu = 0;
       };
       llama.models.qwen3-8-27b = {
-        enable = true;
+        enable = false;
         gpu = 0;
       };
       llama.models.qwen3-6-35b-iq4xs = {
