@@ -124,8 +124,13 @@
         enable = false;
         gpu = 0;
       };
+      # Incumbent voice + classification endpoint, RETIRED from GPU 1 on 2026-09-14 in
+      # favour of gemma-4-26b-a4b (tools/gpu1-model-selection/FINDINGS.md). Kept enabled-
+      # capable, not deleted: rollback is enable = true here, enable = false on gemma, and
+      # `just deploy`. Its vendored chat template and 262k context are still in
+      # ./_llama-models.nix.
       llama.models.qwen3-6-35b-iq4xs = {
-        enable = true;
+        enable = false;
         gpu = 1;
         port = 8555;
       };
@@ -139,11 +144,32 @@
         enable = false;
         gpu = 0;
       };
+      # ENABLED on GPU 1 since 2026-09-14: voice + n8n classification, reasoning OFF
+      # (tools/gpu1-model-selection/FINDINGS.md). Inherits port 8555, so HA Voice Assist
+      # and the n8n flows need no changes. Wins on speakable latency (0.06s vs the
+      # incumbent's 8.5s of thinking before any audio), prefill, 100k recall and enum
+      # compliance. Known regression to watch: single-turn tool choice 0.60 vs 0.90 — the
+      # model prefers the no-arg list_areas tool for action requests, and the HA service
+      # catalogue in the prompt does not fix it (0.60 at temp 0.2 and 0.7).
+      # Rollback: qwen3-6-35b-iq4xs.enable = true, this enable = false, just deploy.
+      # See decisions/2026-09-14-thinking-is-an-endpoint-property: thinking cannot be
+      # requested per call, so an agentic flow that wants deliberation needs its own GPU.
+      llama.models.gemma-4-26b-a4b = {
+        enable = true;
+        gpu = 1;
+      };
+      llama.models.gemma-4-26b-a4b-longctx = {
+        enable = false;
+        gpu = 1;
+      };
 
       # Swap patterns: turn off whoever holds the GPU/port first, then
       #   qwen3-8-flash-next = { enable = true; gpu = 0; }      -> flash-next back on 8556 (27B off)
       #   qwen3-6-35b-iq4xs = { enable = true; gpu = 1; }       -> 3.6 on 8555 (27B off)
       #   qwen3-8-flash-next-256k = { enable = true; gpu = 0; }  -> 256k, no MTP (27B off)
+      #   gemma-4-26b-a4b = { enable = true; gpu = 1; }          -> Gemma 4 on 8555 (3.6 off)
+      #   gemma-4-26b-a4b-longctx = { enable = true; gpu = 1; }  -> Gemma 4 at 256k on 8557,
+      #                                                            no MTP, no co-enable
 
       hardware.nvidia.cudaCapabilities = [ "7.5" ];
       hardware.cpu.amd.updateMicrocode = true;

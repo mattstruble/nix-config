@@ -13,6 +13,12 @@ let
   # applies to anything that ships inference code.
   upstreamImage = "ghcr.io/ggml-org/llama.cpp@sha256:41ebf873c2e085dcc3186dc4717ce8112bf8011aabd98038b6bb2b1fe66c86b9";
 
+  # b10920 — needed for Gemma 4: the arch (``gemma4``, ``gemma4-assistant`` for the
+  # MTP drafter) and ``--reasoning`` do not exist in older builds. b9752 fails with
+  # "Rolling buffer type is not supported"; the layer name is misleading, the real
+  # cause is unknown-model KV dimensions (tools/gpu1-model-selection/FINDINGS.md).
+  upstreamGemmaImage = "ghcr.io/ggml-org/llama.cpp@sha256:6ac921528d613deb0fd142c654735e594a446a1c37a069eeab08d8fd974d4bec";
+
   # Only provides a filesystem + CUDA 12.6 userland; the fork binary comes from
   # the nix store and driver libs are injected by CDI.
   cudaImage = "nvidia/cuda@sha256:af25d2ef68f7aedaf0eb179e67773e64feefc3b65a12f59a6cd604ca7c53bb57";
@@ -399,6 +405,123 @@ in
         "16384"
       ]
       ++ sampling;
+    };
+
+    # Gemma 4 26B-A4B (MoE, 4B active) — voice + n8n classification.
+    # Chosen over the Qwen3.6-35B-A3B incumbent by the bake-off in
+    # tools/gpu1-model-selection/ (FINDINGS.md has every number: same harness, same
+    # calibrated prompt depths, server timings on both sides).
+    #
+    # Why: 2.4-2.6x the prefill throughput (3221/2950/1934 t/s at 4k/20k/60k vs
+    # 1319/1139/745), 135 t/s decode with the MTP drafter vs 103, and it is the only
+    # one of the two that answers a voice turn on time (10/10 turns speak within
+    # 0.07 s; the incumbent manages 6/10 at 8.5 s, because reasoning_effort=medium
+    # + preserve_thinking emit ~3800 chars of thinking first). Recall: 4/4 needle +
+    # grounding through 100k at any KV dtype; the incumbent loses a needle at 100k.
+    #
+    # Why it is NOT a clean win: single-turn tool choice is 0.60 vs 0.90 and
+    # multi-turn agent closure 2/3 vs 3/3 — Gemma prefers the one tool that needs no
+    # arguments. Putting the Home Assistant service catalogue in the prompt does not
+    # fix it (0.60 at temp 0.2 and 0.7), so it is the model on this task shape, not
+    # a prompt artifact. If the HA flow degrades after the swap, flip back: the
+    # incumbent is inert, one line away.
+    #
+    # `--reasoning off` is the load-bearing flag. Reasoning on triples output volume
+    # and n8n flows passing max_tokens ~= 800 get an empty result. It is also what
+    # makes the schema bind: with thinking on, the incumbent violates a required
+    # enum 4/4 even non-streaming with json_schema set (the schema is in the
+    # request; the sampler ignores it).
+    #
+    # Model + drafter are imperative downloads (the host has no direct HF access):
+    #   hf-mirror.com/unsloth/gemma-4-26B-A4B-it-GGUF/.../gemma-4-26B-A4B-it-UD-Q4_K_XL.gguf
+    #   hf-mirror.com/unsloth/gemma-4-26B-A4B-it-GGUF/.../MTP/mtp-gemma-4-26B-A4B-it-Q8_0.gguf
+    # The repo-root mirror of the MTP file is a 0-byte placeholder; the real one is
+    # under MTP/. Both live in /var/lib/llama-models (mounted at /models).
+    #
+    # FA on is mandatory: --flash-attn off cannot build a context at -ub 512 or 2048
+    # (tested). q8_0 KV is free recall-wise (q4_0/q8_0/f16 all 4/4 at 100k), so the
+    # saved VRAM goes to the drafter instead. -ub 512 measures the same as 2048
+    # without MTP, so if the drafter ever has to go, drop -ub to 512 rather than
+    # shrinking the context.
+    # Reasoning on Gemma 4 is a binary switch, not a ladder: --reasoning-effort
+    # low/medium/high/auto measure identical (1066 chars of thinking before the answer,
+    # 1.90s to speakable audio, against 0.06s with it off), and no per-request knob moves
+    # it -- reasoning_effort, chat_template_kwargs.thinking, thinking_budget and
+    # reasoning.exclude all leave thinking untouched. So a thinking agentic flow needs its
+    # own server; do not add reasoning_effort to chat_template_kwargs expecting a middle
+    # setting. Thinking also costs enum compliance: 8/8 jstress violations against 0.
+    # -np 1 is deliberate: two simultaneous 60k callers already cost ~40s each (1.5x), and
+    # -np 2 needs -ub 512, which loses single-stream work too (20k round trip 8.9s -> 11.1s).
+    gemma-4-26b-a4b = {
+      image = upstreamGemmaImage;
+      model = "/models/gemma-4-26B-A4B-it-UD-Q4_K_XL.gguf";
+      port = lib.mkDefault 8555;
+      args = [
+        "--alias"
+        "gemma-4-26b-a4b"
+        "-md"
+        "/models/mtp-gemma-4-26B-A4B-it-Q8_0.gguf"
+        "--spec-type"
+        "draft-mtp"
+        "--spec-draft-n-max"
+        "2"
+        "--spec-draft-p-min"
+        "0.75"
+        "-ngl"
+        "99"
+        "-c"
+        "131072"
+        "-np"
+        "1"
+        "-ub"
+        "2048"
+        "--cache-type-k"
+        "q8_0"
+        "--cache-type-v"
+        "q8_0"
+        "--flash-attn"
+        "on"
+        "--jinja"
+        "--reasoning"
+        "off"
+      ]
+      ++ samplingCoding;
+    };
+
+    # Same weights, 256k context, no drafter (MTP + 256k KV does not fit 24GB).
+    # Measured 21890 MiB at -c 262144: prefill 919 t/s and decode 47 t/s at 200k,
+    # needle intact at 200k — but repo/cwd/branch grounding from the system prompt
+    # is LOST at 200k (it holds at 120k). Fine for "read this long document", not
+    # fine for an agentic session that must remember where it is. f16 KV does not
+    # fit at 256k. Do not enable together with gemma-4-26b-a4b: they share a GPU,
+    # and the guard in ../../../services/llama-fleet.nix only catches duplicate
+    # ports, not duplicate GPUs.
+    gemma-4-26b-a4b-longctx = {
+      image = upstreamGemmaImage;
+      model = "/models/gemma-4-26B-A4B-it-UD-Q4_K_XL.gguf";
+      port = lib.mkDefault 8557;
+      args = [
+        "--alias"
+        "gemma-4-26b-a4b-longctx"
+        "-ngl"
+        "99"
+        "-c"
+        "262144"
+        "-np"
+        "1"
+        "-ub"
+        "2048"
+        "--cache-type-k"
+        "q8_0"
+        "--cache-type-v"
+        "q8_0"
+        "--flash-attn"
+        "on"
+        "--jinja"
+        "--reasoning"
+        "off"
+      ]
+      ++ samplingCoding;
     };
 
     # DORMANT (c3j.7, 2026-09-12): Quant variant tests. Q4_K_M (16GB), Q5_K_M
