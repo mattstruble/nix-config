@@ -1,6 +1,6 @@
 { inputs, ... }:
 let
-  nfsServer = "10.0.0.123";
+  nfsServer = "10.0.0.2";
 in
 {
   flake.modules.nixos.homelab =
@@ -20,10 +20,20 @@ in
         };
       };
 
+      nixpkgs.config.permittedInsecurePackages = [ "pnpm-9.15.9" ]; # ponytail: build-time only, remove when nixpkgs bumps karakeep off pnpm_9
+
       services = {
         plex = {
           enable = true;
           openFirewall = true;
+        };
+
+        n8n = {
+          enable = true;
+          openFirewall = true; # 5678
+          environment = {
+            N8N_SECURE_COOKIE = false;
+          };
         };
 
         pulseaudio.enable = true;
@@ -54,9 +64,15 @@ in
           };
         };
 
-        overseerr = {
+        seerr = {
           enable = true;
           openFirewall = true;
+        };
+
+        tailscale = {
+          enable = true;
+          useRoutingFeatures = "both";
+          extraUpFlags = [ "--advertise-routes=10.0.0.0/24" ];
         };
 
         pocket-id = {
@@ -75,7 +91,7 @@ in
             enable = true;
             exe = "${pkgs.ungoogled-chromium}/bin/chromium";
           };
-          meilisearch.enable = true;
+          meilisearch.enable = false;
           environmentFile = config.sops.secrets."services/karakeep/env".path;
           extraEnvironment = {
             BROWSER_ARGS = lib.concatStringsSep " " [
@@ -96,7 +112,22 @@ in
         };
       };
 
+      # Force tailscaled to use nftables (Critical for clean nftables-only systems)
+      # This avoids the "iptables-compat" translation layer issues.
+      systemd.services.tailscaled.serviceConfig.Environment = [
+        "TS_DEBUG_FIREWALL_MODE=nftables" # pragma: allowlist secret
+      ];
+
+      # Optimization: Prevent systemd from waiting for network online
+      # (Optional but recommended for faster boot with VPNs)
+      systemd.network.wait-online.enable = false;
+      boot.initrd.systemd.network.wait-online.enable = false;
+
+      networking.nftables.enable = true;
       networking.firewall = {
+        enable = true;
+        trustedInterfaces = [ config.services.tailscale.interfaceName ];
+        allowedUDPPorts = [ config.services.tailscale.port ];
         allowedTCPPorts = [
           2283 # immich (nginx)
           3000 # karakeep

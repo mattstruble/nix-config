@@ -15,7 +15,7 @@
 
   inputs = {
     flake-parts.url = "github:hercules-ci/flake-parts";
-    import-tree.url = "github:vic/import-tree";
+    import-tree.url = "github:vic/import-tree/4ebb10ae17d5f1ad366e7aef5b92cb8eecf24f69";
     nixpkgs.url = "github:nixos/nixpkgs/nixos-unstable";
     sops-nix = {
       url = "github:Mic92/sops-nix";
@@ -33,8 +33,29 @@
       url = "github:serokell/deploy-rs";
       inputs.nixpkgs.follows = "nixpkgs";
     };
+    nix-darwin = {
+      url = "github:LnL7/nix-darwin";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
+    disko = {
+      url = "github:nix-community/disko";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
+    ai-agents.url = "github:mattstruble/nix-ai-agents";
+    skills-mattpocock = {
+      url = "github:mattpocock/skills";
+      flake = false;
+    };
+    skills-mattstruble = {
+      url = "github:mattstruble/skills";
+      flake = false;
+    };
   };
 
   outputs = inputs:
-    inputs.flake-parts.lib.mkFlake { inherit inputs; } (inputs.import-tree ./modules);
+    inputs.flake-parts.lib.mkFlake { inherit inputs; } ((inputs.import-tree ./modules) // {
+      perSystem = { system, ... }: {
+        apps.deploy-rs = inputs.deploy-rs.apps.${system}.deploy-rs;
+      };
+    });
 }
