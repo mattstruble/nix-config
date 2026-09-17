@@ -353,6 +353,84 @@ in
       ++ samplingCoding;
     };
 
+    # Swift-Qwen3.8-27B-Q4_K_M — reasoning-efficient fine-tune of the same 27B, sibling of
+    # qwen3-8-27b above. This entry IS arm A of the 2026-09-15 A/B verbatim (epic
+    # nix-config-ah6), so the comparison can be re-run without retyping flags.
+    # VERDICT: measured, NOT adopted — tools/gpu1-model-selection/SWIFT-AB.md.
+    #   Parity, not x1.95: G1 0 loops, G2 args valid 1.00, G3 grounding 3/3 @80k, needle 3/3 at
+    #   20/50/80k (all identical to qwen3-8-27b), decode 32.5 vs 31.7 t/s @80k, acceptance 0.830
+    #   vs 0.813. -27% thinking chars (944 -> 689 median, not the claimed -58%) buys 15-17% on
+    #   2-7s probes and costs 4-5% at 80k, where the prompt and not the thinking is the cost
+    #   (prefill 448 -> 435 t/s).
+    #   The vendor recipe is worse, not "as-shipped better": temp 1.0 + n-max 3 + p-min 0.0 drops
+    #   draft acceptance 0.813 -> 0.570 (34% more drafted, fewer accepted) and decode -18%, and a
+    #   160-token request comes back with an EMPTY answer (whole budget thinking). So keep the
+    #   vendored template + reasoning_effort=medium below and do NOT take the vendor sampler.
+    #   Tool choice 0.80/0.70 vs 0.90/0.80 is the Q4_K_M TIER, not the fine-tune: arm C
+    #   (incumbent weights at Q4_K_M) reproduces it. The card's own pick for agentic tool-call
+    #   work is Q6_K, which does not fit 128k KV on 24GB.
+    # Three deliberate differences from the bench container, none of them measured here:
+    #   -cram 16384 — production's prompt-cache fix, omitted in the sandbox because a 16 GiB cap
+    #     next to flash-next's 74 GiB is an OOM risk for the wrong process, and the suites (single
+    #     slot, monotonic prompts) never exercise cross-slot resume.
+    #   GGML_CUDA_DISABLE_GRAPHS=1 comes from the fleet default; the bench ran the image default.
+    #     Graphs on/off measured no difference on this card (98.3 vs 98.3 t/s).
+    #   --presence-penalty 0 dropped — it is the llama.cpp default (the bench passed it explicitly).
+    # Measured on the pinned upstream image (b10920), NOT on llamaTurboq: the fork is not built on
+    # mjolnir, so no Swift-on-fork interaction (MoE residency, PLE state) is verified. Peak VRAM
+    # 23,090 MiB of 24,576 at -c 131072, idle 23,018. No -md: the MTP head is embedded at Q8_0 in
+    # every Swift tier. License: Swift Open v1.0, gated repo (hf-mirror cannot serve it) — the GGUF
+    # was pulled by hand to /var/lib/llama-models, so the artifact is NOT reproducible from the flake.
+    swift-qwen3-8-27b = {
+      image = upstreamGemmaImage;
+      model = "/models/Swift-Qwen3.8-27B-Q4_K_M.gguf";
+      # 8556 is the coding endpoint (qwen3-8-27b's port). 8558 so a side-by-side rerun against the
+      # incumbent is possible; re-point to 8556 if this ever replaces flash-next and clients need no change.
+      port = lib.mkDefault 8556;
+      volumes = [
+        "/var/lib/llama-models:/models"
+        vendoredTemplate
+      ];
+      args = [
+        "--alias"
+        "swift-qwen3.8-27b"
+        "-ngl"
+        "99"
+        "-c"
+        "131072"
+        "--cache-type-k"
+        "q8_0"
+        "--cache-type-v"
+        "q8_0"
+        "--jinja"
+        "--chat-template-file"
+        "/app/qwen3-chat-template.jinja"
+        "--chat-template-kwargs"
+        ''{"reasoning_effort":"xhigh","preserve_thinking":true}''
+        "--reasoning-budget"
+        "8192"
+        "--reasoning-format"
+        "deepseek"
+        "--spec-type"
+        "draft-mtp"
+        "--spec-draft-n-max"
+        "2"
+        "--spec-draft-n-min"
+        "1"
+        "-ub"
+        "1024"
+        "-np"
+        "1"
+        "--flash-attn"
+        "on"
+        "-cram"
+        "16384"
+        "--repeat-penalty"
+        "1.0"
+      ]
+      ++ samplingCoding;
+    };
+
     # DORMANT (2026-09-11, nix-config-vjd): TBQ4 KV variant of the 27B.
     # Measured on the 3090: SLOWER than q8_0 KV at every depth (43.7/38.4/31.9/
     # 25.1 @ 2k/15k/50k/100k vs q8_0+SWA's 44.7/40.9/38.0/31.1) — the fused
@@ -493,9 +571,11 @@ in
     # needle intact at 200k — but repo/cwd/branch grounding from the system prompt
     # is LOST at 200k (it holds at 120k). Fine for "read this long document", not
     # fine for an agentic session that must remember where it is. f16 KV does not
-    # fit at 256k. Do not enable together with gemma-4-26b-a4b: they share a GPU,
-    # and the guard in ../../../services/llama-fleet.nix only catches duplicate
-    # ports, not duplicate GPUs.
+    # fit at 256k. Do not enable together with gemma-4-26b-a4b: they share a GPU.
+    # Correction (2026-09-15): the guard in ../../../services/llama-fleet.nix asserts
+    # BOTH duplicate GPU and duplicate host port and names the culprits at eval time,
+    # so co-enabling fails the build instead of OOMing at container start. Enable one
+    # and turn the other off in the switchboard (./default.nix).
     gemma-4-26b-a4b-longctx = {
       image = upstreamGemmaImage;
       model = "/models/gemma-4-26B-A4B-it-UD-Q4_K_XL.gguf";

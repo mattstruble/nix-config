@@ -117,7 +117,7 @@
       # Keys must match a definition in ./_llama-models.nix exactly — a typo'd
       # key defines a new empty model instead of toggling the one you meant.
       llama.models.qwen3-8-flash-next = {
-        enable = true;
+        enable = false;
         gpu = 0;
       };
       llama.models.qwen3-8-27b = {
@@ -163,6 +163,17 @@
         gpu = 1;
       };
 
+      # MEASURED, NOT ADOPTED (2026-09-15, nix-config-ah6): Swift-Qwen3.8-27B is parity with the
+      # incumbent 27B, not the vendor's x1.95 — same G1/G2/G3, decode parity, -27% thinking tokens
+      # (not -58%) which pays out only on 2-7s probes and costs 5% at 80k. Cost of adopting is real:
+      # gated Swift Open v1.0 license (not flake-reproducible) and the Q4_K_M tier that fits 24GB is
+      # the one that costs the tool-choice probe. Args, numbers and the arm-B sampler trap live in
+      # ./_llama-models.nix:swift-qwen3-8-27b and tools/gpu1-model-selection/SWIFT-AB.md.
+      llama.models.swift-qwen3-8-27b = {
+        enable = true;
+        gpu = 0;
+      };
+
       # Swap patterns: turn off whoever holds the GPU/port first, then
       #   qwen3-8-flash-next = { enable = true; gpu = 0; }      -> flash-next back on 8556 (27B off)
       #   qwen3-6-35b-iq4xs = { enable = true; gpu = 1; }       -> 3.6 on 8555 (27B off)
@@ -170,6 +181,8 @@
       #   gemma-4-26b-a4b = { enable = true; gpu = 1; }          -> Gemma 4 on 8555 (3.6 off)
       #   gemma-4-26b-a4b-longctx = { enable = true; gpu = 1; }  -> Gemma 4 at 256k on 8557,
       #                                                            no MTP, no co-enable
+      #   swift-qwen3-8-27b = { enable = true; gpu = 1; }         -> Swift 27B on 8558 (gemma off GPU1;
+      #                                                            HA voice + n8n lose their endpoint)
 
       hardware.nvidia.cudaCapabilities = [ "7.5" ];
       hardware.cpu.amd.updateMicrocode = true;
