@@ -1,0 +1,50 @@
+# Local PVs so model pods mount the nix store (binaries) and model weights without
+# raw hostPath — keeps the model pods PSS `restricted` (see topics/k8s-local-pv-pss-restricted).
+# Both are read-only and shared by many pods -> ReadOnlyMany.
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: nix-store
+  labels:
+    app.kubernetes.io/part-of: llama-fleet
+spec:
+  capacity:
+    storage: 100Gi
+  accessModes:
+    - ReadOnlyMany
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: nix-store
+  local:
+    path: /nix/store
+  nodeAffinity:
+    required:
+      nodeSelectorTerms:
+        - matchExpressions:
+            - key: kubernetes.io/hostname
+              operator: In
+              values:
+                - mjolnir
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: llama-models
+  labels:
+    app.kubernetes.io/part-of: llama-fleet
+spec:
+  capacity:
+    storage: 500Gi
+  accessModes:
+    - ReadOnlyMany
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: llama-models
+  local:
+    path: /var/lib/llama-models
+  nodeAffinity:
+    required:
+      nodeSelectorTerms:
+        - matchExpressions:
+            - key: kubernetes.io/hostname
+              operator: In
+              values:
+                - mjolnir

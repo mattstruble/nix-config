@@ -17,6 +17,7 @@
           nvidia-hardware
           vllm
           llama-fleet
+          k3s
         ])
         ++ [
           (inputs.self.lib.modulesPath + "/installer/scan/not-detected.nix")
@@ -26,6 +27,10 @@
         ];
 
       boot.loader.systemd-boot.enable = true;
+      # ponytail: /boot is a 1GB partition; unlimited boot entries (one per
+      # generation, each ~180MB initrd) filled it and broke deploys on
+      # 2026-09-18. Cap at 3 generations so old kernels/initrds are pruned.
+      boot.loader.systemd-boot.configurationLimit = 3;
       boot.loader.efi.canTouchEfiVariables = true;
 
       networking.hostName = "mjolnir";
@@ -107,6 +112,12 @@
       virtualisation.docker.daemon.settings.features.cdi = true;
       hardware.nvidia-container-toolkit.enable = true;
       virtualisation.oci-containers.backend = "docker";
+
+      # ── k3s (Phase 1: LLM fleet as k8s pods) ──────────────────────────
+      # The server + nvidia runtime + CDI plugin + local PVs all live in
+      # modules/services/k3s.nix (keyed off this enable flag). See
+      # ~/llm-wiki/plans/k3s-mjolnir-migration.md.
+      services.k3s.enable = true;
 
       # ── llama fleet switchboard ──────────────────────────────────────────
       # What runs on which GPU. Model definitions (image, GGUF, flags, host
