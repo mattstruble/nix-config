@@ -1,0 +1,46 @@
+models:
+  qwen3-8-flash-next-256k:
+    enable: false
+    image: nvidia/cuda@sha256:af25d2ef68f7aedaf0eb179e67773e64feefc3b65a12f59a6cd604ca7c53bb57
+    gpu: "0"
+    port: 8557
+    nixBinary: true
+    command: ["/nix/store/21rw2mnyx2wcf6dvag6bzi90chbj3a4y-llama-cpp-qwen4exp-0.3.0-0384f5c/bin/llama-server"]
+    args:
+      - "-m"
+      - "/models/UD-Q3_K_XL-split96/Qwen3.8-Flash-Next-UD-Q3_K_XL-hot64.gguf"
+      - "--alias"
+      - "qwen3.8-flash-next"
+      - "-ot"
+      - "exps_cold=CPU"
+      - "-ngl"
+      - "99"
+      - "-c"
+      - "262144"
+      - "-np"
+      - "1"
+      - "-ub"
+      - "256"
+      - "--cache-type-k"
+      - "q8_0"
+      - "--cache-type-v"
+      - "q8_0"
+      - "--flash-attn"
+      - "on"
+      - "--jinja"
+      - "--reasoning-budget"
+      - "8192"
+      - "--temp"
+      - "0.8"
+      - "--top-k"
+      - "40"
+      - "--top-p"
+      - "0.95"
+      - "--min-p"
+      - "0"
+    memoryRequest: 8Gi
+    memoryLimit: 80Gi
+
+  # Qwen3.6-35B-A3B MoE — dispatch/chat/HA/n8n (speed-primary). FA off (hybrid SSM
+  # fattn path broken in this build), q8_0 K + f16 V KV, -np 2 (128k per user),
+  # no MTP (draft path O(n) at length). Uses the vendored template.

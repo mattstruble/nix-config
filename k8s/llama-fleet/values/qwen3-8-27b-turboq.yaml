@@ -1,0 +1,59 @@
+models:
+  qwen3-8-27b-turboq:
+    enable: false
+    image: nvidia/cuda@sha256:af25d2ef68f7aedaf0eb179e67773e64feefc3b65a12f59a6cd604ca7c53bb57
+    gpu: "0"
+    port: 8557
+    nixBinary: true
+    command: ["/nix/store/hcjwnnl6g6hycvm6qa17dc8nc7x8hxpp-llama-cpp-turboq-0.3.0-8f2b243/bin/llama-server"]
+    chatTemplate: true
+    args:
+      - "-m"
+      - "/models/Qwen3.8-27B-UD-Q4_K_XL.gguf"
+      - "--alias"
+      - "qwen3.8-27b-turboq"
+      - "-ngl"
+      - "99"
+      - "-c"
+      - "131072"
+      - "--cache-type-k"
+      - "tbq4_0"
+      - "--cache-type-v"
+      - "tbq4_0"
+      - "--override-kv"
+      - "qwen35.attention.sliding_window=int:4096,qwen35.attention.swa_global_layers=int:8"
+      - "--jinja"
+      - "--chat-template-file"
+      - "/app/qwen3-chat-template.jinja"
+      - "--chat-template-kwargs"
+      - '{"reasoning_effort":"medium","preserve_thinking":true}'
+      - "--reasoning-budget"
+      - "8192"
+      - "--spec-type"
+      - "draft-mtp"
+      - "--spec-draft-n-max"
+      - "2"
+      - "--spec-draft-n-min"
+      - "1"
+      - "-ub"
+      - "256"
+      - "-np"
+      - "1"
+      - "--flash-attn"
+      - "on"
+      - "-cram"
+      - "16384"
+      - "--temp"
+      - "0.8"
+      - "--top-k"
+      - "40"
+      - "--top-p"
+      - "0.95"
+      - "--min-p"
+      - "0"
+    memoryRequest: 4Gi
+    memoryLimit: 32Gi
+
+# The vendored Qwen chat template (mounted for models with chatTemplate: true).
+# Content lives in qwen3-chat-template.jinja at the chart root (kept in sync with
+# modules/hosts/mjolnir/qwen3-chat-template.jinja).

@@ -1,0 +1,49 @@
+models:
+  qwen3-6-35b-iq4xs:
+    enable: false
+    image: ghcr.io/ggml-org/llama.cpp@sha256:41ebf873c2e085dcc3186dc4717ce8112bf8011aabd98038b6bb2b1fe66c86b9
+    gpu: "1"
+    port: 8555
+    nixBinary: false
+    chatTemplate: true
+    args:
+      - "-m"
+      - "/models/Qwen3.6-35B-A3B-MTP-UD-IQ4_XS.gguf"
+      - "--alias"
+      - "Qwen3.6-35B-A3B"
+      - "-ngl"
+      - "99"
+      - "-c"
+      - "262144"
+      - "--cache-type-k"
+      - "q8_0"
+      - "--cache-type-v"
+      - "f16"
+      - "--jinja"
+      - "--chat-template-file"
+      - "/app/qwen3-chat-template.jinja"
+      - "--chat-template-kwargs"
+      - '{"reasoning_effort":"medium","preserve_thinking":true}'
+      - "--reasoning-budget"
+      - "8192"
+      - "-ub"
+      - "256"
+      - "-np"
+      - "2"
+      - "--flash-attn"
+      - "off"
+      - "--temp"
+      - "0.8"
+      - "--top-k"
+      - "40"
+      - "--top-p"
+      - "0.95"
+      - "--min-p"
+      - "0"
+    memoryRequest: 4Gi
+    memoryLimit: 32Gi
+
+  # Qwen3.8-27B — dense 27B (qwen35 arch), the "smart" coder. Runs the Indras-Mirror
+  # turboq FORK. NO SWA override (it created a window that destroyed recall —
+  # nix-config-qjz). q8_0 KV, MTP n-max 2, FA on, -cram 16384 (prompt-cache fix).
+  # Takes 8556 (the coding endpoint) when it replaces Flash-Next.

@@ -1,0 +1,59 @@
+models:
+  swift-qwen3-8-27b:
+    enable: false
+    image: ghcr.io/ggml-org/llama.cpp@sha256:6ac921528d613deb0fd142c654735e594a446a1c37a069eeab08d8fd974d4bec
+    gpu: "0"
+    port: 8556
+    nixBinary: false
+    chatTemplate: true
+    args:
+      - "-m"
+      - "/models/Swift-Qwen3.8-27B-Q4_K_M.gguf"
+      - "--alias"
+      - "swift-qwen3.8-27b"
+      - "-ngl"
+      - "99"
+      - "-c"
+      - "131072"
+      - "--cache-type-k"
+      - "q8_0"
+      - "--cache-type-v"
+      - "q8_0"
+      - "--jinja"
+      - "--chat-template-file"
+      - "/app/qwen3-chat-template.jinja"
+      - "--chat-template-kwargs"
+      - '{"reasoning_effort":"xhigh","preserve_thinking":true}'
+      - "--reasoning-budget"
+      - "8192"
+      - "--reasoning-format"
+      - "deepseek"
+      - "--spec-type"
+      - "draft-mtp"
+      - "--spec-draft-n-max"
+      - "2"
+      - "--spec-draft-n-min"
+      - "1"
+      - "-ub"
+      - "1024"
+      - "-np"
+      - "1"
+      - "--flash-attn"
+      - "on"
+      - "-cram"
+      - "16384"
+      - "--repeat-penalty"
+      - "1.0"
+      - "--temp"
+      - "0.6"
+      - "--top-k"
+      - "20"
+      - "--top-p"
+      - "0.8"
+      - "--min-p"
+      - "0"
+    memoryRequest: 4Gi
+    memoryLimit: 32Gi
+
+  # DORMANT: TBQ4 KV variant of the 27B (turboq fork). Measured SLOWER than q8_0 KV
+  # at every depth + drops MTP acceptance. Kept inert per the switchboard rule.

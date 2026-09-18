@@ -1,0 +1,44 @@
+models:
+  gemma-4-26b-a4b-longctx:
+    enable: false
+    image: ghcr.io/ggml-org/llama.cpp@sha256:6ac921528d613deb0fd142c654735e594a446a1c37a069eeab08d8fd974d4bec
+    gpu: "1"
+    port: 8557
+    nixBinary: false
+    args:
+      - "-m"
+      - "/models/gemma-4-26B-A4B-it-UD-Q4_K_XL.gguf"
+      - "--alias"
+      - "gemma-4-26b-a4b-longctx"
+      - "-ngl"
+      - "99"
+      - "-c"
+      - "262144"
+      - "-np"
+      - "1"
+      - "-ub"
+      - "2048"
+      - "--cache-type-k"
+      - "q8_0"
+      - "--cache-type-v"
+      - "q8_0"
+      - "--flash-attn"
+      - "on"
+      - "--jinja"
+      - "--reasoning"
+      - "off"
+      - "--temp"
+      - "0.6"
+      - "--top-k"
+      - "20"
+      - "--top-p"
+      - "0.8"
+      - "--min-p"
+      - "0"
+    memoryRequest: 4Gi
+    memoryLimit: 32Gi
+
+  # Qwen3.8-Flash-Next (125B-class hybrid-SSM MoE) — coding/agentic. Requires the
+  # mjungnickel18 FORK (qwen4exp). Q3_K_XL with MoE experts split hot64 (VRAM) /
+  # cold (CPU via -ot exps_cold=CPU). FA on is a hard requirement (q8_0 KV).
+  # Needs lots of host RAM for the cold experts -> high memoryLimit.
