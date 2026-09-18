@@ -36,6 +36,9 @@ spec:
             - "0.0.0.0"
             - "--port"
             - {{ $m.port | quote }}
+            # the running model name: single source of truth (also the gateway's model_name)
+            - "--alias"
+            - {{ $m.modelName | quote }}
           env:
             - name: NVIDIA_VISIBLE_DEVICES
               value: {{ $m.gpu | quote }}

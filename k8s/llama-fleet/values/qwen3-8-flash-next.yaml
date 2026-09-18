@@ -4,6 +4,7 @@ models:
     image: nvidia/cuda@sha256:af25d2ef68f7aedaf0eb179e67773e64feefc3b65a12f59a6cd604ca7c53bb57
     gpu: "0"
     port: 8556
+    modelName: "qwen3.8-flash-next"
     nixBinary: true
     command: ["/nix/store/21rw2mnyx2wcf6dvag6bzi90chbj3a4y-llama-cpp-qwen4exp-0.3.0-0384f5c/bin/llama-server"]
     args:
@@ -21,8 +22,6 @@ models:
       - "0.75"
       - "--load-mode"
       - "none"
-      - "--alias"
-      - "qwen3.8-flash-next"
       - "-ot"
       - "exps_cold=CPU"
       - "-ngl"

@@ -10,9 +10,9 @@ data:
     model_list:
       {{- range $name, $m := .Values.models }}
       {{- if $m.enable }}
-      - model_name: {{ $name }}
+      - model_name: {{ $m.modelName }}
         litellm_params:
-          model: openai/{{ $name }}
+          model: openai/{{ $m.modelName }}
           api_base: http://{{ $name }}.default.svc.cluster.local:{{ $m.port }}/v1
           api_key: {{ $.Values.gateway.podApiKey }}
       {{- end }}

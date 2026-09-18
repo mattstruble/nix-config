@@ -4,14 +4,13 @@ models:
     image: nvidia/cuda@sha256:af25d2ef68f7aedaf0eb179e67773e64feefc3b65a12f59a6cd604ca7c53bb57
     gpu: "0"
     port: 8556
+    modelName: "qwen3.8-27b"
     nixBinary: true
     command: ["/nix/store/hcjwnnl6g6hycvm6qa17dc8nc7x8hxpp-llama-cpp-turboq-0.3.0-8f2b243/bin/llama-server"]
     chatTemplate: true
     args:
       - "-m"
       - "/models/Qwen3.8-27B-UD-Q4_K_XL.gguf"
-      - "--alias"
-      - "qwen3.8-27b"
       - "-ngl"
       - "99"
       - "-c"

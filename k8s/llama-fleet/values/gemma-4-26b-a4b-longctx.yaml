@@ -4,12 +4,11 @@ models:
     image: ghcr.io/ggml-org/llama.cpp@sha256:6ac921528d613deb0fd142c654735e594a446a1c37a069eeab08d8fd974d4bec
     gpu: "1"
     port: 8557
+    modelName: "gemma-4-26b-a4b-longctx"
     nixBinary: false
     args:
       - "-m"
       - "/models/gemma-4-26B-A4B-it-UD-Q4_K_XL.gguf"
-      - "--alias"
-      - "gemma-4-26b-a4b-longctx"
       - "-ngl"
       - "99"
       - "-c"
