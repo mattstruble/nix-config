@@ -1,56 +1,56 @@
-{{- range .Values.models }}
-{{- if .enable }}
+{{- range $name, $m := .Values.models }}
+{{- if $m.enable }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: {{ .name }}
+  name: {{ $name }}
   labels:
-    app: {{ .name }}
+    app: {{ $name }}
     app.kubernetes.io/part-of: llama-fleet
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: {{ .name }}
+      app: {{ $name }}
   template:
     metadata:
       labels:
-        app: {{ .name }}
+        app: {{ $name }}
         app.kubernetes.io/part-of: llama-fleet
     spec:
       runtimeClassName: nvidia
       containers:
         - name: llama-server
-          image: {{ .image }}
-          {{- with .command }}
+          image: {{ $m.image }}
+          {{- with $m.command }}
           command: {{ toYaml . | nindent 12 }}
           {{- end }}
           # the fleet appends --host/--port (llama-server defaults to :8080)
           # quote every arg: YAML parses on/off as booleans and bare numbers as ints,
           # and k8s args must all be strings.
           args:
-            {{- range .args }}
+            {{- range $m.args }}
             - {{ . | quote }}
             {{- end }}
             - "--host"
             - "0.0.0.0"
             - "--port"
-            - {{ .port | quote }}
+            - {{ $m.port | quote }}
           env:
             - name: NVIDIA_VISIBLE_DEVICES
-              value: {{ .gpu | quote }}
+              value: {{ $m.gpu | quote }}
           ports:
-            - containerPort: {{ .port }}
+            - containerPort: {{ $m.port }}
           volumeMounts:
             - name: models
               mountPath: /models
               readOnly: true
-            {{- if .nixBinary }}
+            {{- if $m.nixBinary }}
             - name: nix-store
               mountPath: /nix/store
               readOnly: true
             {{- end }}
-            {{- if .chatTemplate }}
+            {{- if $m.chatTemplate }}
             # single-file subPath mount: adds /app/qwen3-chat-template.jinja without
             # shadowing the image's /app (where the llama-server binary lives).
             - name: chat-template
@@ -58,7 +58,7 @@ spec:
               subPath: qwen3-chat-template.jinja
               readOnly: true
             {{- end }}
-            {{- range .extraMounts }}
+            {{- range $m.extraMounts }}
             - name: {{ .name }}
               mountPath: {{ .mountPath }}
               readOnly: {{ .readOnly | default false }}
@@ -67,24 +67,24 @@ spec:
               mountPath: /dev/shm
           resources:
             requests:
-              memory: {{ .memoryRequest }}
+              memory: {{ $m.memoryRequest }}
             limits:
-              memory: {{ .memoryLimit }}
+              memory: {{ $m.memoryLimit }}
       volumes:
         - name: models
           persistentVolumeClaim:
             claimName: llama-models-pvc
-        {{- if .nixBinary }}
+        {{- if $m.nixBinary }}
         - name: nix-store
           persistentVolumeClaim:
             claimName: nix-store-pvc
         {{- end }}
-        {{- if .chatTemplate }}
+        {{- if $m.chatTemplate }}
         - name: chat-template
           configMap:
             name: qwen3-chat-template
         {{- end }}
-        {{- range .extraVolumes }}
+        {{- range $m.extraVolumes }}
         - name: {{ .name }}
           {{- if .emptyDir }}
           emptyDir: {{ toYaml .emptyDir | nindent 12 }}

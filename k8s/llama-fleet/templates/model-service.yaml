@@ -1,18 +1,18 @@
-{{- range .Values.models }}
-{{- if .enable }}
+{{- range $name, $m := .Values.models }}
+{{- if $m.enable }}
 apiVersion: v1
 kind: Service
 metadata:
-  name: {{ .name }}
+  name: {{ $name }}
   labels:
-    app: {{ .name }}
+    app: {{ $name }}
     app.kubernetes.io/part-of: llama-fleet
 spec:
   selector:
-    app: {{ .name }}
+    app: {{ $name }}
   ports:
-    - port: {{ .port }}
-      targetPort: {{ .port }}
+    - port: {{ $m.port }}
+      targetPort: {{ $m.port }}
 ---
 {{- end }}
 {{- end }}

@@ -17,7 +17,7 @@
 models:
   # Gemma 4 26B-A4B (MoE, 4B active) — voice + n8n classification. --reasoning off
   # is load-bearing (thinking on triples output and breaks enum compliance).
-  - name: gemma-4-26b-a4b
+  gemma-4-26b-a4b:
     enable: true
     image: ghcr.io/ggml-org/llama.cpp@sha256:6ac921528d613deb0fd142c654735e594a446a1c37a069eeab08d8fd974d4bec
     gpu: "1"
@@ -68,7 +68,7 @@ models:
   # enable ONE thinking mode per model at a time (two gemma pods on GPU1 won't fit).
   # (Qwen doesn't need a 2nd entry — its thinking is per-request via
   #  chat_template_kwargs.reasoning_effort, which the vendored template honours.)
-  - name: gemma-4-26b-a4b-think
+  gemma-4-26b-a4b-think:
     enable: false
     image: ghcr.io/ggml-org/llama.cpp@sha256:6ac921528d613deb0fd142c654735e594a446a1c37a069eeab08d8fd974d4bec
     gpu: "1"
@@ -118,7 +118,7 @@ models:
   # Same gemma weights, 256k context, no drafter (MTP + 256k KV does not fit 24GB).
   # grounding from the system prompt is LOST at 200k (fine for "read a long doc",
   # not for an agentic session). Do not enable together with gemma-4-26b-a4b (same GPU).
-  - name: gemma-4-26b-a4b-longctx
+  gemma-4-26b-a4b-longctx:
     enable: false
     image: ghcr.io/ggml-org/llama.cpp@sha256:6ac921528d613deb0fd142c654735e594a446a1c37a069eeab08d8fd974d4bec
     gpu: "1"
@@ -161,7 +161,7 @@ models:
   # mjungnickel18 FORK (qwen4exp). Q3_K_XL with MoE experts split hot64 (VRAM) /
   # cold (CPU via -ot exps_cold=CPU). FA on is a hard requirement (q8_0 KV).
   # Needs lots of host RAM for the cold experts -> high memoryLimit.
-  - name: qwen3-8-flash-next
+  qwen3-8-flash-next:
     enable: false
     image: nvidia/cuda@sha256:af25d2ef68f7aedaf0eb179e67773e64feefc3b65a12f59a6cd604ca7c53bb57
     gpu: "0"
@@ -231,7 +231,7 @@ models:
 
   # Same Flash-Next model, 256k context, NO MTP (MTP + 256k KV + FA = 24.05GB > 24GB).
   # Mutually exclusive with qwen3-8-flash-next (same GPU).
-  - name: qwen3-8-flash-next-256k
+  qwen3-8-flash-next-256k:
     enable: false
     image: nvidia/cuda@sha256:af25d2ef68f7aedaf0eb179e67773e64feefc3b65a12f59a6cd604ca7c53bb57
     gpu: "0"
@@ -276,7 +276,7 @@ models:
   # Qwen3.6-35B-A3B MoE — dispatch/chat/HA/n8n (speed-primary). FA off (hybrid SSM
   # fattn path broken in this build), q8_0 K + f16 V KV, -np 2 (128k per user),
   # no MTP (draft path O(n) at length). Uses the vendored template.
-  - name: qwen3-6-35b-iq4xs
+  qwen3-6-35b-iq4xs:
     enable: false
     image: ghcr.io/ggml-org/llama.cpp@sha256:41ebf873c2e085dcc3186dc4717ce8112bf8011aabd98038b6bb2b1fe66c86b9
     gpu: "1"
@@ -324,7 +324,7 @@ models:
   # turboq FORK. NO SWA override (it created a window that destroyed recall —
   # nix-config-qjz). q8_0 KV, MTP n-max 2, FA on, -cram 16384 (prompt-cache fix).
   # Takes 8556 (the coding endpoint) when it replaces Flash-Next.
-  - name: qwen3-8-27b
+  qwen3-8-27b:
     enable: false
     image: nvidia/cuda@sha256:af25d2ef68f7aedaf0eb179e67773e64feefc3b65a12f59a6cd604ca7c53bb57
     gpu: "0"
@@ -384,7 +384,7 @@ models:
   # Swift-Qwen3.8-27B-Q4_K_M — reasoning-efficient fine-tune of the 27B. A/B verdict
   # (2026-09-15): parity with qwen3-8-27b, NOT adopted. Kept inert so the comparison
   # can be re-run. MTP head is embedded (no -md). reasoning_effort xhigh (vendor default).
-  - name: swift-qwen3-8-27b
+  swift-qwen3-8-27b:
     enable: false
     image: ghcr.io/ggml-org/llama.cpp@sha256:6ac921528d613deb0fd142c654735e594a446a1c37a069eeab08d8fd974d4bec
     gpu: "0"
@@ -442,7 +442,7 @@ models:
 
   # DORMANT: TBQ4 KV variant of the 27B (turboq fork). Measured SLOWER than q8_0 KV
   # at every depth + drops MTP acceptance. Kept inert per the switchboard rule.
-  - name: qwen3-8-27b-turboq
+  qwen3-8-27b-turboq:
     enable: false
     image: nvidia/cuda@sha256:af25d2ef68f7aedaf0eb179e67773e64feefc3b65a12f59a6cd604ca7c53bb57
     gpu: "0"
