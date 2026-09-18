@@ -55,6 +55,57 @@ models:
     memoryRequest: 4Gi
     memoryLimit: 32Gi
 
+  # gemma thinking variant — same weights, --reasoning on. enable: false by default;
+  # enable ONE thinking mode per model at a time (two gemma pods on GPU1 won't fit).
+  # (Qwen doesn't need a 2nd entry — its thinking is per-request via
+  #  chat_template_kwargs.reasoning_effort, which the vendored template honours.)
+  - name: gemma-4-26b-a4b-think
+    enable: false
+    image: ghcr.io/ggml-org/llama.cpp@sha256:6ac921528d613deb0fd142c654735e594a446a1c37a069eeab08d8fd974d4bec
+    gpu: "1"
+    port: 8558
+    nixBinary: false
+    args:
+      - "-m"
+      - "/models/gemma-4-26B-A4B-it-UD-Q4_K_XL.gguf"
+      - "--alias"
+      - "gemma-4-26b-a4b-think"
+      - "-md"
+      - "/models/mtp-gemma-4-26B-A4B-it-Q8_0.gguf"
+      - "--spec-type"
+      - "draft-mtp"
+      - "--spec-draft-n-max"
+      - "2"
+      - "--spec-draft-p-min"
+      - "0.75"
+      - "-ngl"
+      - "99"
+      - "-c"
+      - "131072"
+      - "-np"
+      - "1"
+      - "-ub"
+      - "2048"
+      - "--cache-type-k"
+      - "q8_0"
+      - "--cache-type-v"
+      - "q8_0"
+      - "--flash-attn"
+      - "on"
+      - "--jinja"
+      - "--reasoning"
+      - "on"
+      - "--temp"
+      - "0.6"
+      - "--top-k"
+      - "20"
+      - "--top-p"
+      - "0.8"
+      - "--min-p"
+      - "0"
+    memoryRequest: 4Gi
+    memoryLimit: 32Gi
+
   # swift (GPU0) — disabled while it runs in docker; enable at cutover (gfr.6).
   # nixBinary: true (the fork binary from /nix/store).
   - name: qwen3-8-27b
