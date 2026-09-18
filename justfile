@@ -34,3 +34,11 @@ darwin-switch $host="MacStruble":
 
 darwin-build $host="MacStruble":
 	nix build .#darwinConfigurations.{{host}}.system
+
+# render the llama-fleet chart with all per-model values files (one -f each; maps merge)
+k8s-render:
+	F=(-f k8s/llama-fleet/values.yaml); for f in k8s/llama-fleet/values/*.yaml; do F+=(-f "$f"); done; helm template llama-fleet k8s/llama-fleet "${F[@]}"
+
+# render + apply to mjolnir k3s
+k8s-deploy:
+	F=(-f k8s/llama-fleet/values.yaml); for f in k8s/llama-fleet/values/*.yaml; do F+=(-f "$f"); done; helm template llama-fleet k8s/llama-fleet "${F[@]}" > /tmp/llama-fleet-rendered.yaml && scp /tmp/llama-fleet-rendered.yaml mjolnir:/tmp/llama-fleet-rendered.yaml && ssh mjolnir 'sudo k3s kubectl apply -f /tmp/llama-fleet-rendered.yaml'
