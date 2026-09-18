@@ -50,6 +50,19 @@ spec:
               mountPath: /nix/store
               readOnly: true
             {{- end }}
+            {{- if .chatTemplate }}
+            # single-file subPath mount: adds /app/qwen3-chat-template.jinja without
+            # shadowing the image's /app (where the llama-server binary lives).
+            - name: chat-template
+              mountPath: /app/qwen3-chat-template.jinja
+              subPath: qwen3-chat-template.jinja
+              readOnly: true
+            {{- end }}
+            {{- range .extraMounts }}
+            - name: {{ .name }}
+              mountPath: {{ .mountPath }}
+              readOnly: {{ .readOnly | default false }}
+            {{- end }}
             - name: shm
               mountPath: /dev/shm
           resources:
@@ -65,6 +78,22 @@ spec:
         - name: nix-store
           persistentVolumeClaim:
             claimName: nix-store-pvc
+        {{- end }}
+        {{- if .chatTemplate }}
+        - name: chat-template
+          configMap:
+            name: qwen3-chat-template
+        {{- end }}
+        {{- range .extraVolumes }}
+        - name: {{ .name }}
+          {{- if .emptyDir }}
+          emptyDir: {{ toYaml .emptyDir | nindent 12 }}
+          {{- end }}
+          {{- if .hostPath }}
+          hostPath:
+            path: {{ .hostPath }}
+            type: DirectoryOrCreate
+          {{- end }}
         {{- end }}
         - name: shm
           emptyDir:

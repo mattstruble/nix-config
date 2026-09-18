@@ -1,13 +1,22 @@
 # One entry per model. enable: false = no pod, no gateway route (mirrors the
-# nix switchboard). Adding a model = adding one entry here; the chart renders a
-# Deployment + Service for it AND adds it to the LiteLLM gateway model_list.
+# nix switchboard in modules/hosts/mjolnir/_llama-models.nix). Adding a model =
+# adding one entry here; the chart renders a Deployment + Service for it AND adds
+# it to the LiteLLM gateway model_list.
 #
 #   image:      digest-pinned. Image models use the image's /app/llama-server;
 #               fork models set nixBinary: true + command: [/nix/store/<hash>/bin/llama-server]
 #   gpu:        "0" or "1" (CDI-mode nvidia runtime honours NVIDIA_VISIBLE_DEVICES)
 #   port:       the port llama-server listens on (in-pod + Service)
 #   nixBinary:  true = mount /nix/store (fork binary); false = image entrypoint
+#   chatTemplate: true = mount the vendored Qwen jinja (reads reasoning_effort per-request)
+#   extraVolumes / extraMounts: extra volumes (e.g. flash-next's /slots-save)
+#
+# NOTE on fork binary paths: the store hash is pinned to the current build
+# (qwen4exp @0384f5c, turboq @8f2b243). If the fork is rebuilt, update the
+# command: path below. These entries are disabled, so a stale path is inert.
 models:
+  # Gemma 4 26B-A4B (MoE, 4B active) — voice + n8n classification. --reasoning off
+  # is load-bearing (thinking on triples output and breaks enum compliance).
   - name: gemma-4-26b-a4b
     enable: true
     image: ghcr.io/ggml-org/llama.cpp@sha256:6ac921528d613deb0fd142c654735e594a446a1c37a069eeab08d8fd974d4bec
@@ -106,20 +115,393 @@ models:
     memoryRequest: 4Gi
     memoryLimit: 32Gi
 
-  # swift (GPU0) — disabled while it runs in docker; enable at cutover (gfr.6).
-  # nixBinary: true (the fork binary from /nix/store).
+  # Same gemma weights, 256k context, no drafter (MTP + 256k KV does not fit 24GB).
+  # grounding from the system prompt is LOST at 200k (fine for "read a long doc",
+  # not for an agentic session). Do not enable together with gemma-4-26b-a4b (same GPU).
+  - name: gemma-4-26b-a4b-longctx
+    enable: false
+    image: ghcr.io/ggml-org/llama.cpp@sha256:6ac921528d613deb0fd142c654735e594a446a1c37a069eeab08d8fd974d4bec
+    gpu: "1"
+    port: 8557
+    nixBinary: false
+    args:
+      - "-m"
+      - "/models/gemma-4-26B-A4B-it-UD-Q4_K_XL.gguf"
+      - "--alias"
+      - "gemma-4-26b-a4b-longctx"
+      - "-ngl"
+      - "99"
+      - "-c"
+      - "262144"
+      - "-np"
+      - "1"
+      - "-ub"
+      - "2048"
+      - "--cache-type-k"
+      - "q8_0"
+      - "--cache-type-v"
+      - "q8_0"
+      - "--flash-attn"
+      - "on"
+      - "--jinja"
+      - "--reasoning"
+      - "off"
+      - "--temp"
+      - "0.6"
+      - "--top-k"
+      - "20"
+      - "--top-p"
+      - "0.8"
+      - "--min-p"
+      - "0"
+    memoryRequest: 4Gi
+    memoryLimit: 32Gi
+
+  # Qwen3.8-Flash-Next (125B-class hybrid-SSM MoE) — coding/agentic. Requires the
+  # mjungnickel18 FORK (qwen4exp). Q3_K_XL with MoE experts split hot64 (VRAM) /
+  # cold (CPU via -ot exps_cold=CPU). FA on is a hard requirement (q8_0 KV).
+  # Needs lots of host RAM for the cold experts -> high memoryLimit.
+  - name: qwen3-8-flash-next
+    enable: false
+    image: nvidia/cuda@sha256:af25d2ef68f7aedaf0eb179e67773e64feefc3b65a12f59a6cd604ca7c53bb57
+    gpu: "0"
+    port: 8556
+    nixBinary: true
+    command: ["/nix/store/21rw2mnyx2wcf6dvag6bzi90chbj3a4y-llama-cpp-qwen4exp-0.3.0-0384f5c/bin/llama-server"]
+    args:
+      - "-m"
+      - "/models/UD-Q3_K_XL-split96/Qwen3.8-Flash-Next-UD-Q3_K_XL-hot64.gguf"
+      - "-md"
+      - "/models/mtp-fn-jockeupptaget-Q8_0.gguf"
+      - "--spec-type"
+      - "draft-mtp"
+      - "--spec-draft-n-max"
+      - "3"
+      - "--spec-draft-n-min"
+      - "2"
+      - "--spec-draft-p-min"
+      - "0.75"
+      - "--load-mode"
+      - "none"
+      - "--alias"
+      - "qwen3.8-flash-next"
+      - "-ot"
+      - "exps_cold=CPU"
+      - "-ngl"
+      - "99"
+      - "-c"
+      - "131072"
+      - "-np"
+      - "1"
+      - "-ub"
+      - "1024"
+      - "--cache-type-k"
+      - "q8_0"
+      - "--cache-type-v"
+      - "q8_0"
+      - "--flash-attn"
+      - "on"
+      - "--jinja"
+      - "--reasoning-budget"
+      - "8192"
+      - "-cms"
+      - "1024"
+      - "--checkpoint-pos-step"
+      - "4096"
+      - "-ctxcp"
+      - "16"
+      - "--slot-save-path"
+      - "/slots-save"
+      - "--temp"
+      - "0.8"
+      - "--top-k"
+      - "40"
+      - "--top-p"
+      - "0.95"
+      - "--min-p"
+      - "0"
+    extraVolumes:
+      - name: slots-save
+        emptyDir: {}
+    extraMounts:
+      - name: slots-save
+        mountPath: /slots-save
+    memoryRequest: 8Gi
+    memoryLimit: 80Gi
+
+  # Same Flash-Next model, 256k context, NO MTP (MTP + 256k KV + FA = 24.05GB > 24GB).
+  # Mutually exclusive with qwen3-8-flash-next (same GPU).
+  - name: qwen3-8-flash-next-256k
+    enable: false
+    image: nvidia/cuda@sha256:af25d2ef68f7aedaf0eb179e67773e64feefc3b65a12f59a6cd604ca7c53bb57
+    gpu: "0"
+    port: 8557
+    nixBinary: true
+    command: ["/nix/store/21rw2mnyx2wcf6dvag6bzi90chbj3a4y-llama-cpp-qwen4exp-0.3.0-0384f5c/bin/llama-server"]
+    args:
+      - "-m"
+      - "/models/UD-Q3_K_XL-split96/Qwen3.8-Flash-Next-UD-Q3_K_XL-hot64.gguf"
+      - "--alias"
+      - "qwen3.8-flash-next"
+      - "-ot"
+      - "exps_cold=CPU"
+      - "-ngl"
+      - "99"
+      - "-c"
+      - "262144"
+      - "-np"
+      - "1"
+      - "-ub"
+      - "256"
+      - "--cache-type-k"
+      - "q8_0"
+      - "--cache-type-v"
+      - "q8_0"
+      - "--flash-attn"
+      - "on"
+      - "--jinja"
+      - "--reasoning-budget"
+      - "8192"
+      - "--temp"
+      - "0.8"
+      - "--top-k"
+      - "40"
+      - "--top-p"
+      - "0.95"
+      - "--min-p"
+      - "0"
+    memoryRequest: 8Gi
+    memoryLimit: 80Gi
+
+  # Qwen3.6-35B-A3B MoE — dispatch/chat/HA/n8n (speed-primary). FA off (hybrid SSM
+  # fattn path broken in this build), q8_0 K + f16 V KV, -np 2 (128k per user),
+  # no MTP (draft path O(n) at length). Uses the vendored template.
+  - name: qwen3-6-35b-iq4xs
+    enable: false
+    image: ghcr.io/ggml-org/llama.cpp@sha256:41ebf873c2e085dcc3186dc4717ce8112bf8011aabd98038b6bb2b1fe66c86b9
+    gpu: "1"
+    port: 8555
+    nixBinary: false
+    chatTemplate: true
+    args:
+      - "-m"
+      - "/models/Qwen3.6-35B-A3B-MTP-UD-IQ4_XS.gguf"
+      - "--alias"
+      - "Qwen3.6-35B-A3B"
+      - "-ngl"
+      - "99"
+      - "-c"
+      - "262144"
+      - "--cache-type-k"
+      - "q8_0"
+      - "--cache-type-v"
+      - "f16"
+      - "--jinja"
+      - "--chat-template-file"
+      - "/app/qwen3-chat-template.jinja"
+      - "--chat-template-kwargs"
+      - '{"reasoning_effort":"medium","preserve_thinking":true}'
+      - "--reasoning-budget"
+      - "8192"
+      - "-ub"
+      - "256"
+      - "-np"
+      - "2"
+      - "--flash-attn"
+      - "off"
+      - "--temp"
+      - "0.8"
+      - "--top-k"
+      - "40"
+      - "--top-p"
+      - "0.95"
+      - "--min-p"
+      - "0"
+    memoryRequest: 4Gi
+    memoryLimit: 32Gi
+
+  # Qwen3.8-27B — dense 27B (qwen35 arch), the "smart" coder. Runs the Indras-Mirror
+  # turboq FORK. NO SWA override (it created a window that destroyed recall —
+  # nix-config-qjz). q8_0 KV, MTP n-max 2, FA on, -cram 16384 (prompt-cache fix).
+  # Takes 8556 (the coding endpoint) when it replaces Flash-Next.
   - name: qwen3-8-27b
     enable: false
     image: nvidia/cuda@sha256:af25d2ef68f7aedaf0eb179e67773e64feefc3b65a12f59a6cd604ca7c53bb57
     gpu: "0"
     port: 8556
     nixBinary: true
-    command: ["/nix/store/PLACEHOLDER/bin/llama-server"]
+    command: ["/nix/store/hcjwnnl6g6hycvm6qa17dc8nc7x8hxpp-llama-cpp-turboq-0.3.0-8f2b243/bin/llama-server"]
+    chatTemplate: true
     args:
       - "-m"
-      - "/models/qwen3-8-27b-UD-Q4_K_M.gguf"
+      - "/models/Qwen3.8-27B-UD-Q4_K_XL.gguf"
+      - "--alias"
+      - "qwen3.8-27b"
+      - "-ngl"
+      - "99"
+      - "-c"
+      - "131072"
+      - "--cache-type-k"
+      - "q8_0"
+      - "--cache-type-v"
+      - "q8_0"
+      - "--jinja"
+      - "--chat-template-file"
+      - "/app/qwen3-chat-template.jinja"
+      - "--chat-template-kwargs"
+      - '{"reasoning_effort":"medium","preserve_thinking":true}'
+      - "--reasoning-budget"
+      - "8192"
+      - "--spec-type"
+      - "draft-mtp"
+      - "--spec-draft-n-max"
+      - "2"
+      - "--spec-draft-n-min"
+      - "1"
+      - "-ub"
+      - "1024"
+      - "-np"
+      - "1"
+      - "--flash-attn"
+      - "on"
+      - "-cram"
+      - "16384"
+      - "--reasoning-format"
+      - "deepseek"
+      - "--repeat-penalty"
+      - "1.0"
+      - "--temp"
+      - "0.6"
+      - "--top-k"
+      - "20"
+      - "--top-p"
+      - "0.8"
+      - "--min-p"
+      - "0"
     memoryRequest: 4Gi
     memoryLimit: 32Gi
+
+  # Swift-Qwen3.8-27B-Q4_K_M — reasoning-efficient fine-tune of the 27B. A/B verdict
+  # (2026-09-15): parity with qwen3-8-27b, NOT adopted. Kept inert so the comparison
+  # can be re-run. MTP head is embedded (no -md). reasoning_effort xhigh (vendor default).
+  - name: swift-qwen3-8-27b
+    enable: false
+    image: ghcr.io/ggml-org/llama.cpp@sha256:6ac921528d613deb0fd142c654735e594a446a1c37a069eeab08d8fd974d4bec
+    gpu: "0"
+    port: 8556
+    nixBinary: false
+    chatTemplate: true
+    args:
+      - "-m"
+      - "/models/Swift-Qwen3.8-27B-Q4_K_M.gguf"
+      - "--alias"
+      - "swift-qwen3.8-27b"
+      - "-ngl"
+      - "99"
+      - "-c"
+      - "131072"
+      - "--cache-type-k"
+      - "q8_0"
+      - "--cache-type-v"
+      - "q8_0"
+      - "--jinja"
+      - "--chat-template-file"
+      - "/app/qwen3-chat-template.jinja"
+      - "--chat-template-kwargs"
+      - '{"reasoning_effort":"xhigh","preserve_thinking":true}'
+      - "--reasoning-budget"
+      - "8192"
+      - "--reasoning-format"
+      - "deepseek"
+      - "--spec-type"
+      - "draft-mtp"
+      - "--spec-draft-n-max"
+      - "2"
+      - "--spec-draft-n-min"
+      - "1"
+      - "-ub"
+      - "1024"
+      - "-np"
+      - "1"
+      - "--flash-attn"
+      - "on"
+      - "-cram"
+      - "16384"
+      - "--repeat-penalty"
+      - "1.0"
+      - "--temp"
+      - "0.6"
+      - "--top-k"
+      - "20"
+      - "--top-p"
+      - "0.8"
+      - "--min-p"
+      - "0"
+    memoryRequest: 4Gi
+    memoryLimit: 32Gi
+
+  # DORMANT: TBQ4 KV variant of the 27B (turboq fork). Measured SLOWER than q8_0 KV
+  # at every depth + drops MTP acceptance. Kept inert per the switchboard rule.
+  - name: qwen3-8-27b-turboq
+    enable: false
+    image: nvidia/cuda@sha256:af25d2ef68f7aedaf0eb179e67773e64feefc3b65a12f59a6cd604ca7c53bb57
+    gpu: "0"
+    port: 8557
+    nixBinary: true
+    command: ["/nix/store/hcjwnnl6g6hycvm6qa17dc8nc7x8hxpp-llama-cpp-turboq-0.3.0-8f2b243/bin/llama-server"]
+    chatTemplate: true
+    args:
+      - "-m"
+      - "/models/Qwen3.8-27B-UD-Q4_K_XL.gguf"
+      - "--alias"
+      - "qwen3.8-27b-turboq"
+      - "-ngl"
+      - "99"
+      - "-c"
+      - "131072"
+      - "--cache-type-k"
+      - "tbq4_0"
+      - "--cache-type-v"
+      - "tbq4_0"
+      - "--override-kv"
+      - "qwen35.attention.sliding_window=int:4096,qwen35.attention.swa_global_layers=int:8"
+      - "--jinja"
+      - "--chat-template-file"
+      - "/app/qwen3-chat-template.jinja"
+      - "--chat-template-kwargs"
+      - '{"reasoning_effort":"medium","preserve_thinking":true}'
+      - "--reasoning-budget"
+      - "8192"
+      - "--spec-type"
+      - "draft-mtp"
+      - "--spec-draft-n-max"
+      - "2"
+      - "--spec-draft-n-min"
+      - "1"
+      - "-ub"
+      - "256"
+      - "-np"
+      - "1"
+      - "--flash-attn"
+      - "on"
+      - "-cram"
+      - "16384"
+      - "--temp"
+      - "0.8"
+      - "--top-k"
+      - "40"
+      - "--top-p"
+      - "0.95"
+      - "--min-p"
+      - "0"
+    memoryRequest: 4Gi
+    memoryLimit: 32Gi
+
+# The vendored Qwen chat template (mounted for models with chatTemplate: true).
+# Content lives in qwen3-chat-template.jinja at the chart root (kept in sync with
+# modules/hosts/mjolnir/qwen3-chat-template.jinja).
+chatTemplate:
+  enable: true
 
 # LiteLLM gateway: one OpenAI-compatible endpoint, routes by the `model` field
 # to the right pod Service. hostPort exposes it on the host (the single endpoint
