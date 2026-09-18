@@ -1,0 +1,18 @@
+{{- range .Values.models }}
+{{- if .enable }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .name }}
+  labels:
+    app: {{ .name }}
+    app.kubernetes.io/part-of: llama-fleet
+spec:
+  selector:
+    app: {{ .name }}
+  ports:
+    - port: {{ .port }}
+      targetPort: {{ .port }}
+---
+{{- end }}
+{{- end }}

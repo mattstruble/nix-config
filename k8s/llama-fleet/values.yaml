@@ -1,0 +1,80 @@
+# One entry per model. enable: false = no pod, no gateway route (mirrors the
+# nix switchboard). Adding a model = adding one entry here; the chart renders a
+# Deployment + Service for it AND adds it to the LiteLLM gateway model_list.
+#
+#   image:      digest-pinned. Image models use the image's /app/llama-server;
+#               fork models set nixBinary: true + command: [/nix/store/<hash>/bin/llama-server]
+#   gpu:        "0" or "1" (CDI-mode nvidia runtime honours NVIDIA_VISIBLE_DEVICES)
+#   port:       the port llama-server listens on (in-pod + Service)
+#   nixBinary:  true = mount /nix/store (fork binary); false = image entrypoint
+models:
+  - name: gemma-4-26b-a4b
+    enable: true
+    image: ghcr.io/ggml-org/llama.cpp@sha256:6ac921528d613deb0fd142c654735e594a446a1c37a069eeab08d8fd974d4bec
+    gpu: "1"
+    port: 8555
+    nixBinary: false
+    args:
+      - "-m"
+      - "/models/gemma-4-26B-A4B-it-UD-Q4_K_XL.gguf"
+      - "--alias"
+      - "gemma-4-26b-a4b"
+      - "-md"
+      - "/models/mtp-gemma-4-26B-A4B-it-Q8_0.gguf"
+      - "--spec-type"
+      - "draft-mtp"
+      - "--spec-draft-n-max"
+      - "2"
+      - "--spec-draft-p-min"
+      - "0.75"
+      - "-ngl"
+      - "99"
+      - "-c"
+      - "131072"
+      - "-np"
+      - "1"
+      - "-ub"
+      - "2048"
+      - "--cache-type-k"
+      - "q8_0"
+      - "--cache-type-v"
+      - "q8_0"
+      - "--flash-attn"
+      - "on"
+      - "--jinja"
+      - "--reasoning"
+      - "off"
+      - "--temp"
+      - "0.6"
+      - "--top-k"
+      - "20"
+      - "--top-p"
+      - "0.8"
+      - "--min-p"
+      - "0"
+    memoryRequest: 4Gi
+    memoryLimit: 32Gi
+
+  # swift (GPU0) — disabled while it runs in docker; enable at cutover (gfr.6).
+  # nixBinary: true (the fork binary from /nix/store).
+  - name: qwen3-8-27b
+    enable: false
+    image: nvidia/cuda@sha256:af25d2ef68f7aedaf0eb179e67773e64feefc3b65a12f59a6cd604ca7c53bb57
+    gpu: "0"
+    port: 8556
+    nixBinary: true
+    command: ["/nix/store/PLACEHOLDER/bin/llama-server"]
+    args:
+      - "-m"
+      - "/models/qwen3-8-27b-UD-Q4_K_M.gguf"
+    memoryRequest: 4Gi
+    memoryLimit: 32Gi
+
+# LiteLLM gateway: one OpenAI-compatible endpoint, routes by the `model` field
+# to the right pod Service. hostPort exposes it on the host (the single endpoint
+# pi/opencode point to).
+gateway:
+  enable: true
+  image: ghcr.io/berriai/litellm@sha256:f1e994bd98ccccb65ff0d3e4b99ae563baf7499cb5d0ef319b78f2d3114fb3fc
+  hostPort: 8000
+  podApiKey: foo # pragma: allowlist secret (placeholder, matches the pods' --api-key)

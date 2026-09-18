@@ -1,0 +1,6 @@
+apiVersion: v2
+name: llama-fleet
+description: llama.cpp model fleet + LiteLLM gateway for mjolnir (one endpoint, model-name routing)
+type: application
+version: 0.1.0
+appVersion: "1.0"

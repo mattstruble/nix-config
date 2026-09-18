@@ -1,0 +1,75 @@
+{{- range .Values.models }}
+{{- if .enable }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .name }}
+  labels:
+    app: {{ .name }}
+    app.kubernetes.io/part-of: llama-fleet
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: {{ .name }}
+  template:
+    metadata:
+      labels:
+        app: {{ .name }}
+        app.kubernetes.io/part-of: llama-fleet
+    spec:
+      runtimeClassName: nvidia
+      containers:
+        - name: llama-server
+          image: {{ .image }}
+          {{- with .command }}
+          command: {{ toYaml . | nindent 12 }}
+          {{- end }}
+          # the fleet appends --host/--port (llama-server defaults to :8080)
+          # quote every arg: YAML parses on/off as booleans and bare numbers as ints,
+          # and k8s args must all be strings.
+          args:
+            {{- range .args }}
+            - {{ . | quote }}
+            {{- end }}
+            - "--host"
+            - "0.0.0.0"
+            - "--port"
+            - {{ .port | quote }}
+          env:
+            - name: NVIDIA_VISIBLE_DEVICES
+              value: {{ .gpu | quote }}
+          ports:
+            - containerPort: {{ .port }}
+          volumeMounts:
+            - name: models
+              mountPath: /models
+              readOnly: true
+            {{- if .nixBinary }}
+            - name: nix-store
+              mountPath: /nix/store
+              readOnly: true
+            {{- end }}
+            - name: shm
+              mountPath: /dev/shm
+          resources:
+            requests:
+              memory: {{ .memoryRequest }}
+            limits:
+              memory: {{ .memoryLimit }}
+      volumes:
+        - name: models
+          persistentVolumeClaim:
+            claimName: llama-models-pvc
+        {{- if .nixBinary }}
+        - name: nix-store
+          persistentVolumeClaim:
+            claimName: nix-store-pvc
+        {{- end }}
+        - name: shm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 32Gi
+---
+{{- end }}
+{{- end }}

@@ -1,0 +1,21 @@
+{{- if .Values.gateway.enable }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: litellm-config
+  labels:
+    app.kubernetes.io/part-of: llama-fleet
+data:
+  config.yaml: |
+    model_list:
+      {{- range .Values.models }}
+      {{- if .enable }}
+      - model_name: {{ .name }}
+        litellm_params:
+          model: openai/{{ .name }}
+          api_base: http://{{ .name }}.default.svc.cluster.local:{{ .port }}/v1
+          api_key: {{ $.Values.gateway.podApiKey }}
+      {{- end }}
+      {{- end }}
+---
+{{- end }}
