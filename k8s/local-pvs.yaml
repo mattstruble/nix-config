@@ -1,6 +1,9 @@
-# Local PVs so model pods mount the nix store (binaries) and model weights without
-# raw hostPath — keeps the model pods PSS `restricted` (see topics/k8s-local-pv-pss-restricted).
-# Both are read-only and shared by many pods -> ReadOnlyMany.
+# Local PVs + PVCs so model pods mount the nix store (binaries) and model weights
+# without raw hostPath — keeps the model pods PSS `restricted` (see
+# topics/k8s-local-pv-pss-restricted). Both are read-only and shared by many pods
+# -> ReadOnlyMany. The PVCs are what the llama-fleet chart binds to; without them
+# the chart is not reproducible on a fresh cluster (they were created by hand on
+# mjolnir).
 apiVersion: v1
 kind: PersistentVolume
 metadata:
@@ -48,3 +51,31 @@ spec:
               operator: In
               values:
                 - mjolnir
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: nix-store-pvc
+  labels:
+    app.kubernetes.io/part-of: llama-fleet
+spec:
+  accessModes:
+    - ReadOnlyMany
+  storageClassName: nix-store
+  resources:
+    requests:
+      storage: 100Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: llama-models-pvc
+  labels:
+    app.kubernetes.io/part-of: llama-fleet
+spec:
+  accessModes:
+    - ReadOnlyMany
+  storageClassName: llama-models
+  resources:
+    requests:
+      storage: 500Gi
