@@ -1,6 +1,6 @@
 models:
   swift-qwen3-8-27b:
-    enable: false
+    enable: true
     image: ghcr.io/ggml-org/llama.cpp@sha256:6ac921528d613deb0fd142c654735e594a446a1c37a069eeab08d8fd974d4bec
     gpu: "0"
     port: 8556
