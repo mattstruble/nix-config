@@ -166,7 +166,7 @@
       # See decisions/2026-09-14-thinking-is-an-endpoint-property: thinking cannot be
       # requested per call, so an agentic flow that wants deliberation needs its own GPU.
       llama.models.gemma-4-26b-a4b = {
-        enable = true;
+        enable = false;
         gpu = 1;
       };
       llama.models.gemma-4-26b-a4b-longctx = {
@@ -181,7 +181,7 @@
       # the one that costs the tool-choice probe. Args, numbers and the arm-B sampler trap live in
       # ./_llama-models.nix:swift-qwen3-8-27b and tools/gpu1-model-selection/SWIFT-AB.md.
       llama.models.swift-qwen3-8-27b = {
-        enable = true;
+        enable = false;
         gpu = 0;
       };
 
