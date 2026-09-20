@@ -32,8 +32,6 @@ spec:
             # the environment; the pods expect --api-key foo.
             - name: OPENAI_API_KEY
               value: {{ .Values.gateway.podApiKey | quote }}
-            - name: AZURE_OPENAI_API_KEY
-              value: {{ .Values.gateway.podApiKey | quote }}
           volumeMounts:
             - name: config
               # the image entrypoint is `litellm --config ./proxy_server_config.yaml`
