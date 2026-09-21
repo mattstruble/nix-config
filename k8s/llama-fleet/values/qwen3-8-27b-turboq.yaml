@@ -54,5 +54,5 @@ models:
     memoryLimit: 32Gi
 
 # The vendored Qwen chat template (mounted for models with chatTemplate: true).
-# Content lives in qwen3-chat-template.jinja at the chart root (kept in sync with
-# modules/hosts/mjolnir/qwen3-chat-template.jinja).
+# Content lives in qwen3-chat-template.jinja at the chart root; the nix side
+# (modules/hosts/mjolnir/qwen3-chat-template.jinja) is a symlink to it.

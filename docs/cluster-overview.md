@@ -56,8 +56,7 @@ MTP + MoE expert residency) — built from source by nix
 | Reasoning | `reasoning_effort=medium`, budget 8192 |
 | Chat template | Vendored (same as GPU 0) |
 
-Took over GPU 1 from Qwen3.6-35B-A3B on 2026-09-04 (switchboard flip; the 3.6
-config is still in `_llama-models.nix`, `enable = false`). Its 256k context and
+Took over GPU 1 from Qwen3.6-35B-A3B on 2026-09-04. Its 256k context and
 `-np 2` are what 3.6 traded for: 27B runs 128k single-slot with MTP.
 Not benched on this swap — the throughput table below has no 27B row, so don't
 quote it for GPU 1.
@@ -183,17 +182,10 @@ These hard limits shaped every decision:
 - **Deploy:** `just deploy mjolnir` (deploy-rs, magic rollback disabled)
 - **Kernel/NVIDIA driver bumps:** cannot activate in place — use `nix run .#deploy-rs -- --boot .#mjolnir` then `ssh mjolnir 'sudo reboot'`. In-place `nixos-rebuild switch` leaves the old kernel module loaded, CDI generator hits 'Driver/library version mismatch', and containers exit 125 with auto-rollback.
 - **Model storage:** `/var/lib/llama-models/` (GGUF files)
-- **Which model runs where:** the switchboard in
-  `modules/hosts/mjolnir/default.nix` (`llama.models.<name> = { enable, gpu,
-  port; }`). Model definitions — image, GGUF, flags — live in
-  `modules/hosts/mjolnir/_llama-models.nix` and are inert when disabled, so a
-  retired config stays on disk and is one line away from running again.
-  Retire/bring back by flipping `enable`; never delete the definition.
-  Two enabled models on one GPU, or publishing the same host port, fails
-  evaluation with the culprits named. `port` is `mkDefault` in the definition,
-  so override it when a model shares the host with another one (8556 belongs to
-  flash-next). Deploy with `just deploy mjolnir`; a swap restarts that GPU's
-  container and the model reloads from page cache (~90s).
+- **Which model runs where:** the helm chart in `k8s/llama-fleet/` — one
+  values file per model (`enable`, `gpu`, `port`, flags), rendered and applied
+  by `just k8s-deploy`. A swap edits the values files; the pod restarts and
+  the model reloads from page cache (~90s).
 - **New files must be `git add`ed before deploying:** deploy-rs runs
   `nix flake check`, which evaluates the git tree and skips untracked files —
   a brand-new module reads as "undefined variable" until staged.
