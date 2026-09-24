@@ -1,7 +1,9 @@
 # Mjolnir — LLM Serving Cluster
 
-NixOS GPU host serving two Qwen models concurrently via llama.cpp, optimized for
-agentic coding and multi-user dispatch workloads on Turing-era hardware.
+NixOS GPU host serving the LLM fleet as k3s pods behind one LiteLLM gateway
+(`http://mjolnir:8000/v1`), optimized for agentic coding and voice workloads on
+Turing-era hardware. The docker serving layer was retired 2026-09-20 (b595279);
+the sections below the throughput tables are the historical docker-era record.
 
 ## Hardware
 
@@ -15,10 +17,66 @@ agentic coding and multi-user dispatch workloads on Turing-era hardware.
 | GPU interconnect | NVLink (2 bonded links, ~100 GB/s) |
 | Storage | 1.8 TB NVMe |
 
-## Serving configuration
+## Serving configuration (current — k3s, since 2026-09-17)
+
+One k3s cluster (`modules/services/k3s.nix`), one Deployment per model from the
+helm chart in `k8s/apps/ai/` (one values file per model; `just k8s-deploy`
+renders + applies). All clients (pi, opencode, HA, n8n) hit the LiteLLM gateway
+at `:8000` and name the model in the request — model ID = real running name
+(`--alias` = gateway `model_name`, no masking). Models PV = `/var/lib/llama-models`
+(local PV, PSS-restricted); `nixBinary: true` models also mount `/nix/store:ro`
+and run the nix-built fork binary (store path hardcoded in the values file).
+
+### GPU 0 — swift-qwen3.8-27b (coding / agentic)
+
+Swift-Qwen3.8-27B (gated Swift Open v1.0 license; GGUF hand-pulled, not
+flake-reproducible). b10920 upstream image (digest pinned), `--reasoning` baked
+into the vendored template at `xhigh` — not per-request.
+
+| Setting | Value |
+|---------|-------|
+| Model | `Swift-Qwen3.8-27B-Q4_K_M.gguf` (18 GB; ssm_out/attn_gate/output/token_embd lifted to Q6_K) |
+| Context | 131,072 tokens, `-ub 1024` |
+| KV cache | q8_0 K + q8_0 V |
+| MTP | `draft-mtp`, n-max 2, n-min 1 (head embedded in the GGUF at Q8_0) |
+| Flash attention | on |
+| Sampling | temp 0.6, top-k 20, top-p 0.8, repeat-penalty 1.0 (Qwen coding preset) |
+| Chat template | vendored `qwen3-chat-template.jinja` (chart configmap) |
+
+### GPU 1 — gemma-4-26b-a4b (voice / HA / n8n)
+
+Gemma 4 26B-A4B, `--reasoning off` (voice: 0.06s speakable TTFT; reasoning is
+binary on this build and `low` is 40–200× too slow — see the gemma note).
+
+| Setting | Value |
+|---------|-------|
+| Model | `gemma-4-26B-A4B-it-UD-Q4_K_XL.gguf` + MTP drafter `mtp-gemma-4-26B-A4B-it-Q8_0.gguf` |
+| Context | 131,072 tokens, `-ub 2048` |
+| KV cache | q8_0 K + q8_0 V |
+| MTP | `draft-mtp`, n-max 2, p-min 0.75 |
+| Flash attention | on |
+| Reasoning | **off** (server-level; per-request `reasoning_effort` is a no-op) |
+
+### Dormant chart models (enable: false)
+qwen3-8-flash-next (+256k), qwen3-8-27b (+turboq), qwen3-6-35b-iq4xs,
+gemma-4-26b-a4b-longctx. The four `nixBinary: true` ones need the nix-built
+forks (`_llama-fork.nix`, `_llama-turboq.nix` — kept after the docker-layer
+deletion because their store paths are hardcoded in the chart values).
+
+### Endpoints (current)
+
+| Endpoint | Model ID | Role |
+|----------|----------|------|
+| `http://mjolnir:8000/v1` | `swift-qwen3.8-27b` | Coding, agentic workflows (GPU0) |
+| `http://mjolnir:8000/v1` | `gemma-4-26b-a4b` | Voice, HA intents, n8n (GPU1) |
+
+Pod-internal ports (8556/8555) are not published; only the gateway hostPort
+8000 is. Historical docker endpoints: 8556 = flash-next/27B, 8555 = 3.6/27B/gemma.
+
+## Historical: docker-era fleet (through 2026-09-17)
 
 Two Docker containers, one model per GPU, managed via NixOS
-`virtualisation.oci-containers` in `modules/hosts/mjolnir/default.nix`.
+`virtualisation.oci-containers` (deleted 2026-09-20).
 
 ### GPU 0 — Qwen3.8-Flash-Next (coding / agentic)
 
@@ -56,8 +114,7 @@ MTP + MoE expert residency) — built from source by nix
 | Reasoning | `reasoning_effort=medium`, budget 8192 |
 | Chat template | Vendored (same as GPU 0) |
 
-Took over GPU 1 from Qwen3.6-35B-A3B on 2026-09-04 (switchboard flip; the 3.6
-config is still in `_llama-models.nix`, `enable = false`). Its 256k context and
+Took over GPU 1 from Qwen3.6-35B-A3B on 2026-09-04. Its 256k context and
 `-np 2` are what 3.6 traded for: 27B runs 128k single-slot with MTP.
 Not benched on this swap — the throughput table below has no 27B row, so don't
 quote it for GPU 1.
@@ -76,15 +133,8 @@ quote it for GPU 1.
   re-prefill without any flag.
 - Full GPU offload (`-ngl 99`) on both models
 - Tool calling via vendored chat template (coalesces multiple system messages,
-  handles `reasoning_effort` levels, preserves `<think>` blocks)
+  handles `reasoning_effort` levels, preserves `think` blocks)
 - API key: `foo` on both endpoints
-
-### Endpoints
-
-| Port | Model | Role |
-|------|-------|------|
-| 8556 | Qwen3.8-Flash-Next (alias `qwen3.8-flash-next`) | Coding, agentic workflows |
-| 8555 | Qwen3.8-27B (alias `qwen3.8-27b`) | Chat, dispatch, HA intents, n8n |
 
 ## Throughput
 
@@ -183,17 +233,10 @@ These hard limits shaped every decision:
 - **Deploy:** `just deploy mjolnir` (deploy-rs, magic rollback disabled)
 - **Kernel/NVIDIA driver bumps:** cannot activate in place — use `nix run .#deploy-rs -- --boot .#mjolnir` then `ssh mjolnir 'sudo reboot'`. In-place `nixos-rebuild switch` leaves the old kernel module loaded, CDI generator hits 'Driver/library version mismatch', and containers exit 125 with auto-rollback.
 - **Model storage:** `/var/lib/llama-models/` (GGUF files)
-- **Which model runs where:** the switchboard in
-  `modules/hosts/mjolnir/default.nix` (`llama.models.<name> = { enable, gpu,
-  port; }`). Model definitions — image, GGUF, flags — live in
-  `modules/hosts/mjolnir/_llama-models.nix` and are inert when disabled, so a
-  retired config stays on disk and is one line away from running again.
-  Retire/bring back by flipping `enable`; never delete the definition.
-  Two enabled models on one GPU, or publishing the same host port, fails
-  evaluation with the culprits named. `port` is `mkDefault` in the definition,
-  so override it when a model shares the host with another one (8556 belongs to
-  flash-next). Deploy with `just deploy mjolnir`; a swap restarts that GPU's
-  container and the model reloads from page cache (~90s).
+- **Which model runs where:** the helm chart in `k8s/apps/ai/` — one
+  values file per model (`enable`, `gpu`, `port`, flags), rendered and applied
+  by `just k8s-deploy`. A swap edits the values files; the pod restarts and
+  the model reloads from page cache (~90s).
 - **New files must be `git add`ed before deploying:** deploy-rs runs
   `nix flake check`, which evaluates the git tree and skips untracked files —
   a brand-new module reads as "undefined variable" until staged.

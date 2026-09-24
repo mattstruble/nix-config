@@ -1,0 +1,72 @@
+models:
+  # Qwen3.8-Flash-Next (125B-class hybrid-SSM MoE) — coding/agentic. Requires the
+  # mjungnickel18 FORK (qwen4exp). Q3_K_XL with MoE experts split hot64 (VRAM) /
+  # cold (CPU via -ot exps_cold=CPU). FA on is a hard requirement (q8_0 KV).
+  # Needs lots of host RAM for the cold experts -> high memoryLimit.
+  qwen3-8-flash-next:
+    enable: false
+    image: nvidia/cuda:12.6.0-devel-ubuntu22.04
+    gpu: "0"
+    port: 8556
+    modelName: "qwen3.8-flash-next"
+    nixBinary: true
+    command: ["/nix/store/21rw2mnyx2wcf6dvag6bzi90chbj3a4y-llama-cpp-qwen4exp-0.3.0-0384f5c/bin/llama-server"]
+    args:
+      - "-m"
+      - "/models/UD-Q3_K_XL-split96/Qwen3.8-Flash-Next-UD-Q3_K_XL-hot64.gguf"
+      - "-md"
+      - "/models/mtp-fn-jockeupptaget-Q8_0.gguf"
+      - "--spec-type"
+      - "draft-mtp"
+      - "--spec-draft-n-max"
+      - "3"
+      - "--spec-draft-n-min"
+      - "2"
+      - "--spec-draft-p-min"
+      - "0.75"
+      - "--load-mode"
+      - "none"
+      - "-ot"
+      - "exps_cold=CPU"
+      - "-ngl"
+      - "99"
+      - "-c"
+      - "131072"
+      - "-np"
+      - "1"
+      - "-ub"
+      - "1024"
+      - "--cache-type-k"
+      - "q8_0"
+      - "--cache-type-v"
+      - "q8_0"
+      - "--flash-attn"
+      - "on"
+      - "--jinja"
+      - "--reasoning-budget"
+      - "8192"
+      - "-cms"
+      - "1024"
+      - "--checkpoint-pos-step"
+      - "4096"
+      - "-ctxcp"
+      - "16"
+      - "--slot-save-path"
+      - "/slots-save"
+      - "--temp"
+      - "0.8"
+      - "--top-k"
+      - "40"
+      - "--top-p"
+      - "0.95"
+      - "--min-p"
+      - "0"
+    extraVolumes:
+      - name: slots-save
+        emptyDir:
+          sizeLimit: 8Gi
+    extraMounts:
+      - name: slots-save
+        mountPath: /slots-save
+    memoryRequest: 8Gi
+    memoryLimit: 80Gi

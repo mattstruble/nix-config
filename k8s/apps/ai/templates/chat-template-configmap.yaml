@@ -1,0 +1,15 @@
+{{- if .Values.chatTemplate.enable }}
+# The vendored Qwen chat template (reads reasoning_effort per-request). Mounted
+# at /app/qwen3-chat-template.jinja for the models that set chatTemplate: true.
+# Content comes from qwen3-chat-template.jinja in the chart dir via .Files.Get
+# (inserted verbatim, so the jinja actions are not re-templated by helm).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: qwen3-chat-template
+  labels:
+    app.kubernetes.io/part-of: ai
+data:
+  qwen3-chat-template.jinja: |
+{{ .Files.Get "qwen3-chat-template.jinja" | indent 4 }}
+{{- end }}

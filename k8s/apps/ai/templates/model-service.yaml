@@ -1,0 +1,18 @@
+{{- range $name, $m := .Values.models }}
+{{- if $m.enable }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+  labels:
+    app: {{ $name }}
+    app.kubernetes.io/part-of: ai
+spec:
+  selector:
+    app: {{ $name }}
+  ports:
+    - port: {{ $m.port }}
+      targetPort: {{ $m.port }}
+---
+{{- end }}
+{{- end }}

@@ -1,0 +1,67 @@
+name: k8s-manifest-diff
+
+on:
+  pull_request:
+    paths:
+      - "k8s/**"
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  manifest-diff:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: azure/setup-helm@v4
+        with:
+          version: v4.3.0
+
+      - name: Render PR and base, build comment
+        run: |
+          render() {
+            # same values-file glob as `just k8s-render` and the nix render
+            # derivation (modules/services/k3s.nix); the chart dir is detected
+            # so the base (pre-rename) renders too
+            CHART=k8s/apps/ai; [ -d "$CHART" ] || CHART=k8s/llama-fleet
+            F=(-f "$CHART/values.yaml")
+            for f in "$CHART"/values/*.yaml; do F+=(-f "$f"); done
+            helm template "$(basename "$CHART")" "$CHART" "${F[@]}"
+          }
+          render > /tmp/pr.yaml
+          if git cat-file -e "${{ github.event.pull_request.base.sha }}:k8s" 2>/dev/null; then
+            git restore --source="${{ github.event.pull_request.base.sha }}" -- k8s/
+            render > /tmp/base.yaml
+          else
+            : > /tmp/base.yaml  # base has no k8s/ — everything is new
+          fi
+          {
+            echo "## Rendered manifest diff"
+            echo
+            if diff -u /tmp/base.yaml /tmp/pr.yaml > /tmp/diff.txt; then
+              echo "No changes to the rendered manifests."
+            else
+              echo '```diff'
+              cat /tmp/diff.txt
+              echo '```'
+            fi
+          } > /tmp/comment.md
+
+      - name: Find existing comment
+        id: fc
+        uses: peter-evans/find-comment@v4
+        with:
+          issue-number: ${{ github.event.pull_request.number }}
+          direction: last
+
+      - name: Post or update comment
+        uses: peter-evans/create-or-update-comment@v4
+        with:
+          comment-id: ${{ steps.fc.outputs.comment-id }}
+          issue-number: ${{ github.event.pull_request.number }}
+          body-path: /tmp/comment.md
+          reactions: "+1"

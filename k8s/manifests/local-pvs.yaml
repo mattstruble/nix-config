@@ -1,0 +1,80 @@
+# Local PVs + PVCs so model pods mount the nix store (binaries) and model weights
+# without raw hostPath — keeps the model pods PSS `restricted` (see
+# topics/k8s-local-pv-pss-restricted). Both are read-only and shared by many pods
+# -> ReadOnlyMany. The PVCs are what the ai chart binds to; without
+# them the chart is not reproducible on a fresh cluster.
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: nix-store
+  labels:
+    app.kubernetes.io/part-of: ai
+spec:
+  capacity:
+    storage: 100Gi
+  accessModes:
+    - ReadOnlyMany
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: nix-store
+  local:
+    path: /nix/store
+  nodeAffinity:
+    required:
+      nodeSelectorTerms:
+        - matchExpressions:
+            - key: kubernetes.io/hostname
+              operator: In
+              values:
+                - mjolnir
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: llama-models
+  labels:
+    app.kubernetes.io/part-of: ai
+spec:
+  capacity:
+    storage: 500Gi
+  accessModes:
+    - ReadOnlyMany
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: llama-models
+  local:
+    path: /var/lib/llama-models
+  nodeAffinity:
+    required:
+      nodeSelectorTerms:
+        - matchExpressions:
+            - key: kubernetes.io/hostname
+              operator: In
+              values:
+                - mjolnir
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: nix-store-pvc
+  labels:
+    app.kubernetes.io/part-of: ai
+spec:
+  accessModes:
+    - ReadOnlyMany
+  storageClassName: nix-store
+  resources:
+    requests:
+      storage: 100Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: llama-models-pvc
+  labels:
+    app.kubernetes.io/part-of: ai
+spec:
+  accessModes:
+    - ReadOnlyMany
+  storageClassName: llama-models
+  resources:
+    requests:
+      storage: 500Gi

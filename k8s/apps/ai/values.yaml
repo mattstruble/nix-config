@@ -1,0 +1,27 @@
+# One entry per model. enable: false = no pod, no gateway route. Adding a model
+# = adding one entry here; the chart renders a Deployment + Service for it AND
+# adds it to the LiteLLM gateway model_list.
+#
+#   image:      digest-pinned. Image models use the image's /app/llama-server;
+#               fork models set nixBinary: true + command: [/nix/store/<hash>/bin/llama-server]
+#   gpu:        "0" or "1" (CDI-mode nvidia runtime honours NVIDIA_VISIBLE_DEVICES)
+#   port:       the port llama-server listens on (in-pod + Service)
+#   nixBinary:  true = mount /nix/store (fork binary); false = image entrypoint
+#   chatTemplate: true = mount the vendored Qwen jinja (reads reasoning_effort per-request)
+#   extraVolumes / extraMounts: extra volumes (e.g. flash-next's /slots-save)
+#
+# NOTE on fork binary paths: the store hash is pinned to the current build
+# (qwen4exp @0384f5c, turboq @8f2b243). If the fork is rebuilt, update the
+# command: path below. These entries are disabled, so a stale path is inert.
+models: {}  # populated by values/*.yaml (one file per model; maps merge across -f)
+chatTemplate:
+  enable: true
+
+# LiteLLM gateway: one OpenAI-compatible endpoint, routes by the `model` field
+# to the right pod Service. hostPort exposes it on the host (the single endpoint
+# pi/opencode point to).
+gateway:
+  enable: true
+  image: ghcr.io/berriai/litellm:v1.102.1
+  hostPort: 8000
+  podApiKey: foo # pragma: allowlist secret (placeholder, matches the pods' --api-key)

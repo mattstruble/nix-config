@@ -1,0 +1,166 @@
+{{- range $name, $m := .Values.models }}
+{{- if $m.enable }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  labels:
+    app: {{ $name }}
+    app.kubernetes.io/part-of: ai
+spec:
+  # Recreate: each model owns its whole GPU (20+ GiB of 24 GiB), so a
+  # RollingUpdate would run old + new pods concurrently and OOM the load.
+  strategy:
+    type: Recreate
+  replicas: 1
+  selector:
+    matchLabels:
+      app: {{ $name }}
+  template:
+    metadata:
+      labels:
+        app: {{ $name }}
+        app.kubernetes.io/part-of: ai
+    spec:
+      runtimeClassName: nvidia
+      # let in-flight generations finish on shutdown/rollout (default 30s
+      # SIGKILLs mid-token)
+      terminationGracePeriodSeconds: 120
+      # The pinned images declare no non-root USER, so an explicit non-zero UID
+      # forces the process off root (runAsNonRoot alone would be rejected).
+      # /models, /nix/store and the GGUFs are world-readable.
+      securityContext:
+        runAsUser: 1000
+        runAsGroup: 1000
+        runAsNonRoot: true
+      automountServiceAccountToken: false
+      containers:
+        - name: llama-server
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            seccompProfile:
+              type: RuntimeDefault
+            # image layers read-only; the only writable scratch is the /tmp
+            # emptyDir (dies with the pod). Validated on gemma 2026-09-24:
+            # clean logs, /tmp writable, completions OK. Container-level, not
+            # pod-level: this k3s build's PodSecurityContext struct drops the
+            # field (unknown-field rejection), the container SecurityContext
+            # keeps it.
+            readOnlyRootFilesystem: true
+          image: {{ $m.image }}
+          {{- with $m.command }}
+          command: {{ toYaml . | nindent 12 }}
+          {{- end }}
+          # the fleet appends --host/--port (llama-server defaults to :8080)
+          # quote every arg: YAML parses on/off as booleans and bare numbers as ints,
+          # and k8s args must all be strings.
+          args:
+            {{- range $m.args }}
+            - {{ . | quote }}
+            {{- end }}
+            - "--host"
+            - "0.0.0.0"
+            - "--port"
+            - {{ $m.port | quote }}
+            # the running model name: single source of truth (also the gateway's model_name)
+            - "--alias"
+            - {{ $m.modelName | quote }}
+            # authenticates the LiteLLM gateway (and any direct caller)
+            - "--api-key"
+            - {{ $.Values.gateway.podApiKey | quote }}
+          env:
+            - name: NVIDIA_VISIBLE_DEVICES
+              value: {{ $m.gpu | quote }}
+            # CORRECTNESS guard, not perf: CUDA graphs + spec decode + a
+            # prefix-cache hit corrupt output (repetition collapse / empty
+            # completions).
+            - name: GGML_CUDA_DISABLE_GRAPHS
+              value: "1"
+          ports:
+            - containerPort: {{ $m.port }}
+          # llama-server serves /health from before the model is loaded and
+          # returns 503 "Loading model" until load_model() completes, so
+          # /health is a correct ready signal. startupProbe covers the
+          # multi-minute 20GB load (30 x 10s = 5 min); readinessProbe gates
+          # gateway traffic. No livenessProbe: it would kill pods mid-generation
+          # on long prompts.
+          startupProbe:
+            httpGet:
+              path: /health
+              port: {{ $m.port }}
+            periodSeconds: 10
+            failureThreshold: 30
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: {{ $m.port }}
+            periodSeconds: 10
+          volumeMounts:
+            - name: models
+              mountPath: /models
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+            {{- if $m.nixBinary }}
+            - name: nix-store
+              mountPath: /nix/store
+              readOnly: true
+            {{- end }}
+            {{- if $m.chatTemplate }}
+            # single-file subPath mount: adds /app/qwen3-chat-template.jinja without
+            # shadowing the image's /app (where the llama-server binary lives).
+            - name: chat-template
+              mountPath: /app/qwen3-chat-template.jinja
+              subPath: qwen3-chat-template.jinja
+              readOnly: true
+            {{- end }}
+            {{- range $m.extraMounts }}
+            - name: {{ .name }}
+              mountPath: {{ .mountPath }}
+              readOnly: {{ .readOnly | default false }}
+            {{- end }}
+            - name: shm
+              mountPath: /dev/shm
+          resources:
+            requests:
+              memory: {{ $m.memoryRequest }}
+            limits:
+              memory: {{ $m.memoryLimit }}
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 1Gi
+        - name: models
+          persistentVolumeClaim:
+            claimName: llama-models-pvc
+        {{- if $m.nixBinary }}
+        - name: nix-store
+          persistentVolumeClaim:
+            claimName: nix-store-pvc
+        {{- end }}
+        {{- if $m.chatTemplate }}
+        - name: chat-template
+          configMap:
+            name: qwen3-chat-template
+        {{- end }}
+        {{- range $m.extraVolumes }}
+        - name: {{ .name }}
+          {{- if .emptyDir }}
+          emptyDir: {{ toYaml .emptyDir | nindent 12 }}
+          {{- end }}
+          {{- if .hostPath }}
+          hostPath:
+            path: {{ .hostPath }}
+            type: DirectoryOrCreate
+          {{- end }}
+        {{- end }}
+        - name: shm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 32Gi
+---
+{{- end }}
+{{- end }}

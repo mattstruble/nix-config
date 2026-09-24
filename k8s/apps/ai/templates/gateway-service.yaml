@@ -1,0 +1,16 @@
+{{- if .Values.gateway.enable }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: litellm
+  labels:
+    app: litellm
+    app.kubernetes.io/part-of: ai
+spec:
+  selector:
+    app: litellm
+  ports:
+    - port: 4000
+      targetPort: 4000
+---
+{{- end }}

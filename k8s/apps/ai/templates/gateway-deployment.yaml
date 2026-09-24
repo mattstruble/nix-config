@@ -1,0 +1,78 @@
+{{- if .Values.gateway.enable }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: litellm
+  labels:
+    app: litellm
+    app.kubernetes.io/part-of: ai
+spec:
+  replicas: 1
+  # Recreate: the gateway binds a hostPort, so the old pod must terminate before
+  # the new one can bind it (a RollingUpdate deadlocks on the port).
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: litellm
+  template:
+    metadata:
+      labels:
+        app: litellm
+        app.kubernetes.io/part-of: ai
+    spec:
+      # Same image-USER constraint as the model pods (see model-deployment).
+      securityContext:
+        runAsUser: 1000
+        runAsGroup: 1000
+        runAsNonRoot: true
+      automountServiceAccountToken: false
+      containers:
+        - name: litellm
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            seccompProfile:
+              type: RuntimeDefault
+            # container-level: this k3s build drops the field from the pod-level
+            # struct (see model-deployment).
+            readOnlyRootFilesystem: true
+          image: {{ .Values.gateway.image }}
+          args: ["--config", "/app/proxy_server_config.yaml"]
+          ports:
+            - containerPort: 4000
+              hostPort: {{ .Values.gateway.hostPort }}
+          env:
+            # The openai/ prefix routes through a client that reads the key from
+            # the environment; the pods expect --api-key foo.
+            - name: OPENAI_API_KEY
+              value: {{ .Values.gateway.podApiKey | quote }}
+          volumeMounts:
+            - name: config
+              # the image entrypoint is `litellm --config ./proxy_server_config.yaml`
+              mountPath: /app/proxy_server_config.yaml
+              subPath: config.yaml
+            - name: tmp
+              mountPath: /tmp
+          readinessProbe:
+            httpGet:
+              path: /health/readiness
+              port: 4000
+            initialDelaySeconds: 20
+            periodSeconds: 10
+          resources:
+            requests:
+              memory: 512Mi
+            limits:
+              memory: 2Gi
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 1Gi
+        - name: config
+          configMap:
+            name: litellm-config
+---
+{{- end }}
