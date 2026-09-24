@@ -18,7 +18,7 @@
       # hardcoded — generalize to a chart list when a second app lands.
       aiChartRendered = pkgs.runCommand "ai-chart-rendered" {
         src = k8sDir;
-        nativeBuildInputs = [ pkgs.helm ];
+        nativeBuildInputs = [ pkgs.kubernetes-helm ];
       } ''
         mkdir -p $out
         helm template ai $src/apps/ai \
