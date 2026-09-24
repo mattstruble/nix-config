@@ -3,7 +3,7 @@ models:
   # Mutually exclusive with qwen3-8-flash-next (same GPU).
   qwen3-8-flash-next-256k:
     enable: false
-    image: nvidia/cuda@sha256:af25d2ef68f7aedaf0eb179e67773e64feefc3b65a12f59a6cd604ca7c53bb57
+    image: nvidia/cuda:12.6.0-devel-ubuntu22.04
     gpu: "0"
     port: 8557
     modelName: "qwen3.8-flash-next"

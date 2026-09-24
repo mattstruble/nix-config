@@ -22,6 +22,6 @@ chatTemplate:
 # pi/opencode point to).
 gateway:
   enable: true
-  image: ghcr.io/berriai/litellm@sha256:f8043697479513b9ae6f3abac8e62d61b908cfd31541cc3c3c994e16a28d784e
+  image: ghcr.io/berriai/litellm:v1.102.1
   hostPort: 8000
   podApiKey: foo # pragma: allowlist secret (placeholder, matches the pods' --api-key)
