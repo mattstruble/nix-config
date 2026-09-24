@@ -60,6 +60,12 @@
           };
         };
 
+        # Expose the rendered chart as a toplevel dependency so it lands in the
+        # system closure. The activation script below references it only inside
+        # a string, which Nix does NOT track as a dependency on its own — without
+        # this the path is never built and the apply fails at deploy time.
+        system.build.aiChartRendered = aiChartRendered;
+
         # Apply the rendered ai chart after activation. k3s may still be coming
         # up (fresh install / upgrade), hence the retry loop. Runs as root,
         # `k3s kubectl` picks up /etc/rancher/k3s/k3s.yaml itself.
