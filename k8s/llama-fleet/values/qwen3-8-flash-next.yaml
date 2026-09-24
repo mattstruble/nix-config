@@ -59,7 +59,8 @@ models:
       - "0"
     extraVolumes:
       - name: slots-save
-        emptyDir: {}
+        emptyDir:
+          sizeLimit: 8Gi
     extraMounts:
       - name: slots-save
         mountPath: /slots-save

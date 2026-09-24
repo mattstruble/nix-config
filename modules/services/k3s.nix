@@ -48,6 +48,12 @@
         };
 
         networking.firewall.allowedTCPPorts = [ 6443 ];
+        # NOTE: the LiteLLM gateway's hostPort 8000 is NOT covered by the
+        # firewall above — hostPort traffic is DNAT'd via PREROUTING to the
+        # pod CNI interface and never traverses the INPUT chain that
+        # networking.firewall controls. Exposure is LAN+tailscale, same as the
+        # docker era. The pods themselves are ClusterIP-only and require the
+        # --api-key set in the chart.
       };
     };
 }

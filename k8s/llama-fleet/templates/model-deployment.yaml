@@ -19,8 +19,27 @@ spec:
         app.kubernetes.io/part-of: llama-fleet
     spec:
       runtimeClassName: nvidia
+      # let in-flight generations finish on shutdown/rollout (default 30s
+      # SIGKILLs mid-token)
+      terminationGracePeriodSeconds: 120
+      # The pinned images declare no non-root USER, so runAsNonRoot (full PSS
+      # restricted) is rejected by the kubelet; an explicit non-zero UID is the
+      # honest maximum. /models, /nix/store and the GGUFs are world-readable.
+      # ponytail: full PSS-restricted needs a non-root llama.cpp image.
+      securityContext:
+        runAsUser: 1000
+        runAsGroup: 1000
+        runAsNonRoot: true
+      automountServiceAccountToken: false
       containers:
         - name: llama-server
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            seccompProfile:
+              type: RuntimeDefault
           image: {{ $m.image }}
           {{- with $m.command }}
           command: {{ toYaml . | nindent 12 }}
@@ -39,11 +58,38 @@ spec:
             # the running model name: single source of truth (also the gateway's model_name)
             - "--alias"
             - {{ $m.modelName | quote }}
+            # authenticates the LiteLLM gateway (and any direct caller); the
+            # docker era passed --api-key foo to every container.
+            - "--api-key"
+            - {{ $.Values.gateway.podApiKey | quote }}
           env:
             - name: NVIDIA_VISIBLE_DEVICES
               value: {{ $m.gpu | quote }}
+            # CORRECTNESS guard, not perf: CUDA graphs + spec decode + a
+            # prefix-cache hit corrupt output (repetition collapse / empty
+            # completions). Was the docker-era fleet default; keep it on every
+            # model pod.
+            - name: GGML_CUDA_DISABLE_GRAPHS
+              value: "1"
           ports:
             - containerPort: {{ $m.port }}
+          # llama-server serves /health from before the model is loaded and
+          # returns 503 "Loading model" until load_model() completes, so
+          # /health is a correct ready signal. startupProbe covers the
+          # multi-minute 20GB load (30 x 10s = 5 min); readinessProbe gates
+          # gateway traffic. No livenessProbe: it would kill pods mid-generation
+          # on long prompts.
+          startupProbe:
+            httpGet:
+              path: /health
+              port: {{ $m.port }}
+            periodSeconds: 10
+            failureThreshold: 30
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: {{ $m.port }}
+            periodSeconds: 10
           volumeMounts:
             - name: models
               mountPath: /models

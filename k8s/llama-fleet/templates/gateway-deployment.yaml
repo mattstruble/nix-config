@@ -21,8 +21,21 @@ spec:
         app: litellm
         app.kubernetes.io/part-of: llama-fleet
     spec:
+      # Same image-USER constraint as the model pods (see model-deployment).
+      securityContext:
+        runAsUser: 1000
+        runAsGroup: 1000
+        runAsNonRoot: true
+      automountServiceAccountToken: false
       containers:
         - name: litellm
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            seccompProfile:
+              type: RuntimeDefault
           image: {{ .Values.gateway.image }}
           ports:
             - containerPort: 4000

@@ -106,6 +106,14 @@
       # (_llama-fork.nix, _llama-turboq.nix) and mounted into the pods.
       services.k3s.enable = true;
 
+      # The k3s nvidia runtime (k3s.nix) is CDI-mode: it reads the host's CDI
+      # spec (/var/run/cdi/nvidia-container-toolkit.json), which only the
+      # toolkit's cdi-generator service produces. b595279 removed this line
+      # with the docker block, which would drop the generator on the next
+      # deploy and break every GPU pod. Host-specific, so it lives here, not
+      # in the host-agnostic k3s module.
+      hardware.nvidia-container-toolkit.enable = true;
+
       hardware.nvidia.cudaCapabilities = [ "7.5" ];
       hardware.cpu.amd.updateMicrocode = true;
 
