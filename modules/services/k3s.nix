@@ -24,7 +24,7 @@
         # one -f per values file (a bare glob expands to positional chart args)
         F=(-f $src/apps/ai/values.yaml)
         for f in $src/apps/ai/values/*.yaml; do F+=(-f "$f"); done
-        helm template ai $src/apps/ai "${F[@]}" > $out/rendered.yaml
+        helm template ai $src/apps/ai "''${F[@]}" > $out/rendered.yaml
       '';
     in
     {
