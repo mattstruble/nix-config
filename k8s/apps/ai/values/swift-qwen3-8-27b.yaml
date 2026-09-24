@@ -4,7 +4,7 @@ models:
   # can be re-run. MTP head is embedded (no -md). reasoning_effort xhigh (vendor default).
   swift-qwen3-8-27b:
     enable: true
-    image: ghcr.io/ggml-org/llama.cpp:server-cuda12-b10920
+    image: ghcr.io/ggml-org/llama.cpp:server-cuda12-b11151
     gpu: "0"
     port: 8556
     modelName: "swift-qwen3.8-27b"

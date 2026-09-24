@@ -1,7 +1,7 @@
 models:
   gemma-4-26b-a4b:
     enable: true
-    image: ghcr.io/ggml-org/llama.cpp:server-cuda12-b10920
+    image: ghcr.io/ggml-org/llama.cpp:server-cuda12-b11151
     gpu: "1"
     port: 8555
     modelName: "gemma-4-26b-a4b"
