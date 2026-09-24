@@ -6,7 +6,7 @@ metadata:
   name: {{ $name }}
   labels:
     app: {{ $name }}
-    app.kubernetes.io/part-of: llama-fleet
+    app.kubernetes.io/part-of: ai
 spec:
   selector:
     app: {{ $name }}

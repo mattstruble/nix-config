@@ -20,7 +20,7 @@ the sections below the throughput tables are the historical docker-era record.
 ## Serving configuration (current — k3s, since 2026-09-17)
 
 One k3s cluster (`modules/services/k3s.nix`), one Deployment per model from the
-helm chart in `k8s/llama-fleet/` (one values file per model; `just k8s-deploy`
+helm chart in `k8s/apps/ai/` (one values file per model; `just k8s-deploy`
 renders + applies). All clients (pi, opencode, HA, n8n) hit the LiteLLM gateway
 at `:8000` and name the model in the request — model ID = real running name
 (`--alias` = gateway `model_name`, no masking). Models PV = `/var/lib/llama-models`
@@ -233,7 +233,7 @@ These hard limits shaped every decision:
 - **Deploy:** `just deploy mjolnir` (deploy-rs, magic rollback disabled)
 - **Kernel/NVIDIA driver bumps:** cannot activate in place — use `nix run .#deploy-rs -- --boot .#mjolnir` then `ssh mjolnir 'sudo reboot'`. In-place `nixos-rebuild switch` leaves the old kernel module loaded, CDI generator hits 'Driver/library version mismatch', and containers exit 125 with auto-rollback.
 - **Model storage:** `/var/lib/llama-models/` (GGUF files)
-- **Which model runs where:** the helm chart in `k8s/llama-fleet/` — one
+- **Which model runs where:** the helm chart in `k8s/apps/ai/` — one
   values file per model (`enable`, `gpu`, `port`, flags), rendered and applied
   by `just k8s-deploy`. A swap edits the values files; the pod restarts and
   the model reloads from page cache (~90s).

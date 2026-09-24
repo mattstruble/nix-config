@@ -5,7 +5,7 @@ metadata:
   name: litellm
   labels:
     app: litellm
-    app.kubernetes.io/part-of: llama-fleet
+    app.kubernetes.io/part-of: ai
 spec:
   selector:
     app: litellm

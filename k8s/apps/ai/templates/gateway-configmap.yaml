@@ -4,7 +4,7 @@ kind: ConfigMap
 metadata:
   name: litellm-config
   labels:
-    app.kubernetes.io/part-of: llama-fleet
+    app.kubernetes.io/part-of: ai
 data:
   config.yaml: |
     model_list:

@@ -99,7 +99,7 @@
 
       # ── k3s (LLM fleet as k8s pods) ────────────────────────────────────
       # Server + nvidia runtime + local PVs: modules/services/k3s.nix (keyed
-      # off this flag). Model pods + LiteLLM gateway: k8s/llama-fleet chart
+      # off this flag). Model pods + LiteLLM gateway: k8s/apps/ai chart
       # (`just k8s-deploy`). Fork binaries are nix-built (_llama-fork.nix,
       # _llama-turboq.nix) and mounted into the pods.
       services.k3s.enable = true;

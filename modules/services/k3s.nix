@@ -38,10 +38,10 @@
           # /var/lib/llama-models (PSS-restricted safe, no raw hostPath in pods).
           manifests = {
             nvidia-runtimeclass = {
-              source = "${k8sDir}/nvidia-runtimeclass.yaml";
+              source = "${k8sDir}/manifests/nvidia-runtimeclass.yaml";
             };
             local-pvs = {
-              source = "${k8sDir}/local-pvs.yaml";
+              source = "${k8sDir}/manifests/local-pvs.yaml";
             };
           };
         };

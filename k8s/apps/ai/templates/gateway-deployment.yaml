@@ -5,7 +5,7 @@ metadata:
   name: litellm
   labels:
     app: litellm
-    app.kubernetes.io/part-of: llama-fleet
+    app.kubernetes.io/part-of: ai
 spec:
   replicas: 1
   # Recreate: the gateway binds a hostPort, so the old pod must terminate before
@@ -19,7 +19,7 @@ spec:
     metadata:
       labels:
         app: litellm
-        app.kubernetes.io/part-of: llama-fleet
+        app.kubernetes.io/part-of: ai
     spec:
       # Same image-USER constraint as the model pods (see model-deployment).
       securityContext:

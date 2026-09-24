@@ -8,7 +8,7 @@ repos:
       - id: check-yaml # verify yaml syntax
         args: [--allow-multiple-documents]
         # helm templates are Go templates ({{ }}), not plain YAML — helm lint covers them
-        exclude: k8s/llama-fleet/templates/
+        exclude: k8s/apps/ai/templates/
       - id: check-added-large-files # prevent extremely large files from being committed
         args: [--maxkb=10000]
       - id: mixed-line-ending # force linux line endings

@@ -6,7 +6,7 @@ metadata:
   name: {{ $name }}
   labels:
     app: {{ $name }}
-    app.kubernetes.io/part-of: llama-fleet
+    app.kubernetes.io/part-of: ai
 spec:
   # Recreate: each model owns its whole GPU (20+ GiB of 24 GiB), so a
   # RollingUpdate would run old + new pods concurrently and OOM the load.
@@ -20,7 +20,7 @@ spec:
     metadata:
       labels:
         app: {{ $name }}
-        app.kubernetes.io/part-of: llama-fleet
+        app.kubernetes.io/part-of: ai
     spec:
       runtimeClassName: nvidia
       # let in-flight generations finish on shutdown/rollout (default 30s
