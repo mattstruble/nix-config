@@ -8,6 +8,10 @@ metadata:
     app: {{ $name }}
     app.kubernetes.io/part-of: llama-fleet
 spec:
+  # Recreate: each model owns its whole GPU (20+ GiB of 24 GiB), so a
+  # RollingUpdate would run old + new pods concurrently and OOM the load.
+  strategy:
+    type: Recreate
   replicas: 1
   selector:
     matchLabels:
