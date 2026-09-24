@@ -26,14 +26,18 @@ spec:
       # let in-flight generations finish on shutdown/rollout (default 30s
       # SIGKILLs mid-token)
       terminationGracePeriodSeconds: 120
-      # The pinned images declare no non-root USER, so runAsNonRoot (full PSS
-      # restricted) is rejected by the kubelet; an explicit non-zero UID is the
-      # honest maximum. /models, /nix/store and the GGUFs are world-readable.
-      # ponytail: full PSS-restricted needs a non-root llama.cpp image.
+      # The pinned images declare no non-root USER, so an explicit non-zero UID
+      # forces the process off root (runAsNonRoot alone would be rejected).
+      # /models, /nix/store and the GGUFs are world-readable. Together with
+      # readOnlyRootFilesystem this is the full PSS-restricted set.
       securityContext:
         runAsUser: 1000
         runAsGroup: 1000
         runAsNonRoot: true
+        # image layers read-only; the only writable scratch is the /tmp
+        # emptyDir below (dies with the pod). Validated on gemma 2026-09-24:
+        # clean logs, /tmp writable, completions OK.
+        readOnlyRootFilesystem: true
       automountServiceAccountToken: false
       containers:
         - name: llama-server
@@ -98,6 +102,8 @@ spec:
             - name: models
               mountPath: /models
               readOnly: true
+            - name: tmp
+              mountPath: /tmp
             {{- if $m.nixBinary }}
             - name: nix-store
               mountPath: /nix/store
@@ -124,6 +130,9 @@ spec:
             limits:
               memory: {{ $m.memoryLimit }}
       volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 1Gi
         - name: models
           persistentVolumeClaim:
             claimName: llama-models-pvc

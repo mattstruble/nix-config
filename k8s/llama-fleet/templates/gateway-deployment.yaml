@@ -22,10 +22,12 @@ spec:
         app.kubernetes.io/part-of: llama-fleet
     spec:
       # Same image-USER constraint as the model pods (see model-deployment).
+      # readOnlyRootFilesystem + /tmp emptyDir = full PSS-restricted set.
       securityContext:
         runAsUser: 1000
         runAsGroup: 1000
         runAsNonRoot: true
+        readOnlyRootFilesystem: true
       automountServiceAccountToken: false
       containers:
         - name: litellm
@@ -50,6 +52,8 @@ spec:
               # the image entrypoint is `litellm --config ./proxy_server_config.yaml`
               mountPath: /app/proxy_server_config.yaml
               subPath: config.yaml
+            - name: tmp
+              mountPath: /tmp
           readinessProbe:
             httpGet:
               path: /health/readiness
@@ -62,6 +66,9 @@ spec:
             limits:
               memory: 2Gi
       volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 1Gi
         - name: config
           configMap:
             name: litellm-config
