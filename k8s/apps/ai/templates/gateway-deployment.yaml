@@ -40,6 +40,7 @@ spec:
             # struct (see model-deployment).
             readOnlyRootFilesystem: true
           image: {{ .Values.gateway.image }}
+          args: ["--config", "/app/proxy_server_config.yaml"]
           ports:
             - containerPort: 4000
               hostPort: {{ .Values.gateway.hostPort }}
