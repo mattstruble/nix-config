@@ -1,4 +1,8 @@
 models:
+  # Qwen3.8-Flash-Next (125B-class hybrid-SSM MoE) — coding/agentic. Requires the
+  # mjungnickel18 FORK (qwen4exp). Q3_K_XL with MoE experts split hot64 (VRAM) /
+  # cold (CPU via -ot exps_cold=CPU). FA on is a hard requirement (q8_0 KV).
+  # Needs lots of host RAM for the cold experts -> high memoryLimit.
   qwen3-8-flash-next:
     enable: false
     image: nvidia/cuda@sha256:af25d2ef68f7aedaf0eb179e67773e64feefc3b65a12f59a6cd604ca7c53bb57
@@ -66,6 +70,3 @@ models:
         mountPath: /slots-save
     memoryRequest: 8Gi
     memoryLimit: 80Gi
-
-  # Same Flash-Next model, 256k context, NO MTP (MTP + 256k KV + FA = 24.05GB > 24GB).
-  # Mutually exclusive with qwen3-8-flash-next (same GPU).

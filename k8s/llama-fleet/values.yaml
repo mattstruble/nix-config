@@ -1,7 +1,6 @@
-# One entry per model. enable: false = no pod, no gateway route (mirrors the
-# nix switchboard in modules/hosts/mjolnir/_llama-models.nix). Adding a model =
-# adding one entry here; the chart renders a Deployment + Service for it AND adds
-# it to the LiteLLM gateway model_list.
+# One entry per model. enable: false = no pod, no gateway route. Adding a model
+# = adding one entry here; the chart renders a Deployment + Service for it AND
+# adds it to the LiteLLM gateway model_list.
 #
 #   image:      digest-pinned. Image models use the image's /app/llama-server;
 #               fork models set nixBinary: true + command: [/nix/store/<hash>/bin/llama-server]

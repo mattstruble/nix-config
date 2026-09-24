@@ -1,4 +1,7 @@
 models:
+  # Qwen3.6-35B-A3B MoE — dispatch/chat/HA/n8n (speed-primary). FA off (hybrid SSM
+  # fattn path broken in this build), q8_0 K + f16 V KV, -np 2 (128k per user),
+  # no MTP (draft path O(n) at length). Uses the vendored template.
   qwen3-6-35b-iq4xs:
     enable: false
     image: ghcr.io/ggml-org/llama.cpp@sha256:41ebf873c2e085dcc3186dc4717ce8112bf8011aabd98038b6bb2b1fe66c86b9
@@ -41,8 +44,3 @@ models:
       - "0"
     memoryRequest: 4Gi
     memoryLimit: 32Gi
-
-  # Qwen3.8-27B — dense 27B (qwen35 arch), the "smart" coder. Runs the Indras-Mirror
-  # turboq FORK. NO SWA override (it created a window that destroyed recall —
-  # nix-config-qjz). q8_0 KV, MTP n-max 2, FA on, -cram 16384 (prompt-cache fix).
-  # Takes 8556 (the coding endpoint) when it replaces Flash-Next.

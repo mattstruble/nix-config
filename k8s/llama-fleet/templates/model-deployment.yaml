@@ -68,8 +68,7 @@ spec:
             # the running model name: single source of truth (also the gateway's model_name)
             - "--alias"
             - {{ $m.modelName | quote }}
-            # authenticates the LiteLLM gateway (and any direct caller); the
-            # docker era passed --api-key foo to every container.
+            # authenticates the LiteLLM gateway (and any direct caller)
             - "--api-key"
             - {{ $.Values.gateway.podApiKey | quote }}
           env:
@@ -77,8 +76,7 @@ spec:
               value: {{ $m.gpu | quote }}
             # CORRECTNESS guard, not perf: CUDA graphs + spec decode + a
             # prefix-cache hit corrupt output (repetition collapse / empty
-            # completions). Was the docker-era fleet default; keep it on every
-            # model pod.
+            # completions).
             - name: GGML_CUDA_DISABLE_GRAPHS
               value: "1"
           ports:

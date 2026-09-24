@@ -44,8 +44,3 @@ models:
       - "0"
     memoryRequest: 4Gi
     memoryLimit: 32Gi
-
-  # gemma thinking variant — same weights, --reasoning on. enable: false by default;
-  # enable ONE thinking mode per model at a time (two gemma pods on GPU1 won't fit).
-  # (Qwen doesn't need a 2nd entry — its thinking is per-request via
-  #  chat_template_kwargs.reasoning_effort, which the vendored template honours.)

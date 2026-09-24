@@ -6,12 +6,11 @@
       cfg = config.services.k3s;
       # k8s/ lives at the repo root; this module is in modules/services/.
       k8sDir = ../../k8s;
-      # The nvidia-container-runtime in CDI mode: reads the host's nvidia CDI spec
+      # nvidia-container-runtime in CDI mode: reads the host's nvidia CDI spec
       # (which carries the nix-store driver-lib mounts + the nvidia-cdi-hook) and
-      # injects the GPU selected by NVIDIA_VISIBLE_DEVICES — the containerd
-      # equivalent of docker's --gpus. The hook-mode runtime is unusable here (it
-      # needs nvidia-ctk inside the container, which the nix store doesn't provide).
-      # Lives in the toolkit's `tools` output.
+      # injects the GPU selected by NVIDIA_VISIBLE_DEVICES. The hook-mode runtime
+      # is unusable here (it needs nvidia-ctk inside the container, which the nix
+      # store doesn't provide). Lives in the toolkit's `tools` output.
       nvidiaRuntime = "${pkgs.nvidia-container-toolkit.tools}/bin/nvidia-container-runtime.cdi";
     in
     {
@@ -24,7 +23,7 @@
 
           # containerd nvidia runtime: pods set runtimeClassName: nvidia +
           # env NVIDIA_VISIBLE_DEVICES=<gpu> to get a SPECIFIC GPU (the runtime
-          # injects the nix-store driver libs, exactly like docker --gpus does).
+          # injects the nix-store driver libs).
           containerdConfigTemplate = ''
             {{ template "base" . }}
 
@@ -51,8 +50,8 @@
         # NOTE: the LiteLLM gateway's hostPort 8000 is NOT covered by the
         # firewall above — hostPort traffic is DNAT'd via PREROUTING to the
         # pod CNI interface and never traverses the INPUT chain that
-        # networking.firewall controls. Exposure is LAN+tailscale, same as the
-        # docker era. The pods themselves are ClusterIP-only and require the
+        # networking.firewall controls. The pods themselves are ClusterIP-only
+        # and require the
         # --api-key set in the chart.
       };
     };

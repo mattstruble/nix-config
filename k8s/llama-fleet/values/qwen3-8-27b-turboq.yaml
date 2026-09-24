@@ -1,4 +1,6 @@
 models:
+  # DORMANT: TBQ4 KV variant of the 27B (turboq fork). Measured SLOWER than q8_0 KV
+  # at every depth + drops MTP acceptance. Kept inert per the switchboard rule.
   qwen3-8-27b-turboq:
     enable: false
     image: nvidia/cuda@sha256:af25d2ef68f7aedaf0eb179e67773e64feefc3b65a12f59a6cd604ca7c53bb57
@@ -52,7 +54,3 @@ models:
       - "0"
     memoryRequest: 4Gi
     memoryLimit: 32Gi
-
-# The vendored Qwen chat template (mounted for models with chatTemplate: true).
-# Content lives in qwen3-chat-template.jinja at the chart root; the nix side
-# (modules/hosts/mjolnir/qwen3-chat-template.jinja) is a symlink to it.

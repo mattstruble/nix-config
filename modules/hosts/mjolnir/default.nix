@@ -98,20 +98,17 @@
       };
 
       # ── k3s (LLM fleet as k8s pods) ────────────────────────────────────
-      # The server + nvidia runtime + CDI plugin + local PVs all live in
-      # modules/services/k3s.nix (keyed off this enable flag). Model pods +
-      # the LiteLLM gateway are the helm chart in k8s/llama-fleet (deploy:
-      # `just k8s-deploy`). The old docker switchboard (llama.models.*) was
-      # retired 2026-09-19; fork binaries are still nix-built
-      # (_llama-fork.nix, _llama-turboq.nix) and mounted into the pods.
+      # Server + nvidia runtime + local PVs: modules/services/k3s.nix (keyed
+      # off this flag). Model pods + LiteLLM gateway: k8s/llama-fleet chart
+      # (`just k8s-deploy`). Fork binaries are nix-built (_llama-fork.nix,
+      # _llama-turboq.nix) and mounted into the pods.
       services.k3s.enable = true;
 
-      # The k3s nvidia runtime (k3s.nix) is CDI-mode: it reads the host's CDI
-      # spec (/var/run/cdi/nvidia-container-toolkit.json), which only the
-      # toolkit's cdi-generator service produces. b595279 removed this line
-      # with the docker block, which would drop the generator on the next
-      # deploy and break every GPU pod. Host-specific, so it lives here, not
-      # in the host-agnostic k3s module.
+      # Required by the k3s nvidia runtime (k3s.nix), which is CDI-mode: it
+      # reads the host's CDI spec (/var/run/cdi/nvidia-container-toolkit.json),
+      # which only the toolkit's cdi-generator service produces. Dropping this
+      # breaks every GPU pod. Host-specific, so it lives here, not in the
+      # host-agnostic k3s module.
       hardware.nvidia-container-toolkit.enable = true;
 
       hardware.nvidia.cudaCapabilities = [ "7.5" ];

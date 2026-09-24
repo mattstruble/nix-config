@@ -1,4 +1,6 @@
 models:
+  # Same Flash-Next model, 256k context, NO MTP (MTP + 256k KV + FA = 24.05GB > 24GB).
+  # Mutually exclusive with qwen3-8-flash-next (same GPU).
   qwen3-8-flash-next-256k:
     enable: false
     image: nvidia/cuda@sha256:af25d2ef68f7aedaf0eb179e67773e64feefc3b65a12f59a6cd604ca7c53bb57
@@ -39,7 +41,3 @@ models:
       - "0"
     memoryRequest: 8Gi
     memoryLimit: 80Gi
-
-  # Qwen3.6-35B-A3B MoE — dispatch/chat/HA/n8n (speed-primary). FA off (hybrid SSM
-  # fattn path broken in this build), q8_0 K + f16 V KV, -np 2 (128k per user),
-  # no MTP (draft path O(n) at length). Uses the vendored template.
