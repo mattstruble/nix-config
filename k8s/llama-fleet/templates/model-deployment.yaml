@@ -28,16 +28,11 @@ spec:
       terminationGracePeriodSeconds: 120
       # The pinned images declare no non-root USER, so an explicit non-zero UID
       # forces the process off root (runAsNonRoot alone would be rejected).
-      # /models, /nix/store and the GGUFs are world-readable. Together with
-      # readOnlyRootFilesystem this is the full PSS-restricted set.
+      # /models, /nix/store and the GGUFs are world-readable.
       securityContext:
         runAsUser: 1000
         runAsGroup: 1000
         runAsNonRoot: true
-        # image layers read-only; the only writable scratch is the /tmp
-        # emptyDir below (dies with the pod). Validated on gemma 2026-09-24:
-        # clean logs, /tmp writable, completions OK.
-        readOnlyRootFilesystem: true
       automountServiceAccountToken: false
       containers:
         - name: llama-server
@@ -48,6 +43,13 @@ spec:
                 - ALL
             seccompProfile:
               type: RuntimeDefault
+            # image layers read-only; the only writable scratch is the /tmp
+            # emptyDir (dies with the pod). Validated on gemma 2026-09-24:
+            # clean logs, /tmp writable, completions OK. Container-level, not
+            # pod-level: this k3s build's PodSecurityContext struct drops the
+            # field (unknown-field rejection), the container SecurityContext
+            # keeps it.
+            readOnlyRootFilesystem: true
           image: {{ $m.image }}
           {{- with $m.command }}
           command: {{ toYaml . | nindent 12 }}

@@ -22,12 +22,10 @@ spec:
         app.kubernetes.io/part-of: llama-fleet
     spec:
       # Same image-USER constraint as the model pods (see model-deployment).
-      # readOnlyRootFilesystem + /tmp emptyDir = full PSS-restricted set.
       securityContext:
         runAsUser: 1000
         runAsGroup: 1000
         runAsNonRoot: true
-        readOnlyRootFilesystem: true
       automountServiceAccountToken: false
       containers:
         - name: litellm
@@ -38,6 +36,9 @@ spec:
                 - ALL
             seccompProfile:
               type: RuntimeDefault
+            # container-level: this k3s build drops the field from the pod-level
+            # struct (see model-deployment).
+            readOnlyRootFilesystem: true
           image: {{ .Values.gateway.image }}
           ports:
             - containerPort: 4000
