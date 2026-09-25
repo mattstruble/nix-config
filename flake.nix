@@ -33,10 +33,6 @@
       url = "github:serokell/deploy-rs";
       inputs.nixpkgs.follows = "nixpkgs";
     };
-    nix-darwin = {
-      url = "github:LnL7/nix-darwin";
-      inputs.nixpkgs.follows = "nixpkgs";
-    };
     disko = {
       url = "github:nix-community/disko";
       inputs.nixpkgs.follows = "nixpkgs";
@@ -53,7 +49,7 @@
   };
 
   outputs = inputs:
-    inputs.flake-parts.lib.mkFlake { inherit inputs; } ((inputs.import-tree ./modules) // {
+    inputs.flake-parts.lib.mkFlake { inherit inputs; } ((inputs.import-tree ./nix) // {
       perSystem = { system, ... }: {
         apps.deploy-rs = inputs.deploy-rs.apps.${system}.deploy-rs;
       };

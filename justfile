@@ -29,12 +29,6 @@ build-rpi-images:
 
 build: build-rpi-images
 
-darwin-switch $host="MacStruble":
-	darwin-rebuild switch --flake .#{{host}}
-
-darwin-build $host="MacStruble":
-	nix build .#darwinConfigurations.{{host}}.system
-
 # render the ai chart with all per-model values files (one -f each; maps merge)
 k8s-render:
 	F=(-f k8s/apps/ai/values.yaml); for f in k8s/apps/ai/values/*.yaml; do F+=(-f "$f"); done; helm template ai k8s/apps/ai "${F[@]}"

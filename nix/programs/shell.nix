@@ -2,10 +2,6 @@
 {
   flake.modules.homeManager.shell =
     { config, pkgs, lib, ... }:
-    let
-      isDarwin = pkgs.stdenv.isDarwin;
-      brew_path = "/opt/homebrew/bin";
-    in
     {
       programs.nix-index = {
         enable = true;
@@ -31,20 +27,6 @@
         enableZshIntegration = true;
         enableBashIntegration = true;
         options = [ "--cmd cd" ];
-      };
-
-      programs.bash = lib.mkIf isDarwin {
-        enable = true;
-        bashrcExtra = lib.mkBefore ''
-          source /etc/bashrc
-
-          export PATH="$HOME/.pyenv:$PATH"
-          export PYENV_VIRTUALENV_DISABLE_PROMPT=1
-
-          eval "$(pyenv init --path)"
-          eval "$(pyenv init -)"
-          eval "$(pyenv virtualenv-init -)"
-        '';
       };
 
       programs.zsh = {
@@ -76,8 +58,6 @@
           PAGER = "less";
           TINC_USE_NIX = "yes";
           WORDCHARS = "";
-        } // lib.optionalAttrs isDarwin {
-          SSH_AUTH_SOCK = "~/Library/Group\\ Containers/2BUA8C4S2C.com.1password/t/agent.sock";
         };
 
         shellAliases = {
@@ -108,26 +88,6 @@
 
           [ -d "$HOME/bin" ] && PATH="$HOME/bin:$PATH"
           [ -d "$HOME/.local/bin" ] && PATH="$HOME/.local/bin:$PATH"
-        '' + lib.optionalString isDarwin ''
-
-          if type brew &>/dev/null; then
-            FPATH=$(brew --prefix)/share/zsh-completions:$FPATH
-          fi
-
-          if [ -d "$PYENV_ROOT/bin" ]; then
-            export PATH="$PYENV_ROOT/bin:$PATH"
-          fi
-          if command -v pyenv >/dev/null 2>&1; then
-            eval "$(pyenv init --path)"
-          fi
-
-          if [ $(command -v fortune) ] && [ $UID != '0' ] && [[ $- == *i* ]] && [ $TERM != 'dumb' ]; then
-              if [ $(command -v cowsay) ]; then
-                  fortune -a fortunes wisdom | cowsay
-              else
-                  fortune -a fortunes wisdom
-              fi
-          fi
         '';
 
         initContent = lib.mkMerge [
@@ -168,9 +128,6 @@
 
             [[ ! -f ~/.p10k.zsh ]] || source ~/.p10k.zsh
           ''
-          (lib.mkIf isDarwin ''
-            eval "$(${brew_path}/brew shellenv)"
-          '')
         ];
 
         plugins = [
@@ -237,12 +194,6 @@
         ];
       };
 
-      home.sessionPath = lib.optionals isDarwin [
-        "/usr/local/bin"
-        "/usr/local/zfs/bin"
-        "${brew_path}"
-      ];
-
       home.file =
         let
           mkLink = config.lib.file.mkOutOfStoreSymlink;
@@ -258,18 +209,6 @@
           ".local/bin/um".source = mkLink "${dotfiles}/commands/.local/bin/um";
         };
 
-      systemd.user.startServices = lib.mkIf (!isDarwin) "sd-switch";
-
-      news.display = lib.mkIf isDarwin "silent";
-      home.enableNixpkgsReleaseCheck = lib.mkIf isDarwin false;
-
-      targets.darwin = lib.mkIf isDarwin {
-        defaults = {
-          "com.apple.desktopservices" = {
-            DSDontWriteNetworkStores = true;
-            DSDontWriteUSBStores = true;
-          };
-        };
-      };
+      systemd.user.startServices = "sd-switch";
     };
 }
