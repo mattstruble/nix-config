@@ -6,6 +6,8 @@
 
   config = {
     systems = [
+      # aarch64-darwin is the local build machine that runs `nix run .#deploy-rs`
+      "aarch64-darwin"
       "aarch64-linux"
       "x86_64-linux"
     ];
