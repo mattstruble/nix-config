@@ -76,6 +76,10 @@
         # up (fresh install / upgrade), hence the retry loop. Runs as root,
         # `k3s kubectl` picks up /etc/rancher/k3s/k3s.yaml itself.
         system.activationScripts.aiChart = {
+          # k3s isn't on the activation script's default PATH — add it so the
+          # apply below can find the binary (previously failed with
+          # "k3s: command not found" and the chart was never re-applied).
+          deps = [ "${pkgs.k3s}/bin" ];
           text = ''
             for i in $(seq 1 30); do
               k3s kubectl apply -f ${aiChartRendered}/rendered.yaml && exit 0
