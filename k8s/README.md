@@ -11,7 +11,7 @@ k8s/
 │       ├── templates/
 │       ├── values.yaml        # shared values (gateway, chat template)
 │       └── values/<model>.yaml  # one file per model; maps merge across -f
-└── manifests/         # cluster-level yaml auto-applied by k3s (modules/services/k3s.nix)
+└── manifests/         # cluster-level yaml auto-applied by k3s (nix/services/k3s.nix)
 ```
 
 Adding an app: new dir under `apps/<domain>/` with its own chart. Adding a model

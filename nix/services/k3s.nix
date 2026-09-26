@@ -4,7 +4,7 @@
     { config, lib, pkgs, ... }:
     let
       cfg = config.services.k3s;
-      # k8s/ lives at the repo root; this module is in modules/services/.
+      # k8s/ lives at the repo root; this module is in nix/services/.
       k8sDir = ../../k8s;
       # nvidia-container-runtime in CDI mode: reads the host's nvidia CDI spec
       # (which carries the nix-store driver-lib mounts + the nvidia-cdi-hook) and
@@ -16,6 +16,12 @@
       # post-activation hook below applies it, so `just deploy mjolnir` ships
       # host config + cluster manifests in one generation. ponytail: one chart
       # hardcoded — generalize to a chart list when a second app lands.
+      # NOTE (h1j.1, 2026-09-24): we deliberately do NOT use
+      # services.k3s.autoDeployCharts — it only takes a remote-repo URL or a
+      # pre-packaged .tgz with a SINGLE values source, and can't do a local
+      # unpacked chart + 9 merged -f values files + .Files.Get. See
+      # docs/h1j.1-autodeploycharts.md. Use autoDeployCharts for future
+      # remote-repo charts only.
       aiChartRendered = pkgs.runCommand "ai-chart-rendered" {
         src = k8sDir;
         nativeBuildInputs = [ pkgs.kubernetes-helm ];
@@ -70,9 +76,11 @@
         # up (fresh install / upgrade), hence the retry loop. Runs as root,
         # `k3s kubectl` picks up /etc/rancher/k3s/k3s.yaml itself.
         system.activationScripts.aiChart = {
+          # k3s isn't on the activation script's default PATH, so use the full
+          # binary path. (A store path in `deps` is rejected by deploy-rs.)
           text = ''
             for i in $(seq 1 30); do
-              k3s kubectl apply -f ${aiChartRendered}/rendered.yaml && exit 0
+              ${pkgs.k3s}/bin/k3s kubectl apply -f ${aiChartRendered}/rendered.yaml && exit 0
               sleep 2
             done
             echo "warning: ai chart apply failed after 60s" >&2
