@@ -25,3 +25,14 @@ gateway:
   image: ghcr.io/berriai/litellm:v1.102.1
   hostPort: 8000
   podApiKey: foo # pragma: allowlist secret (placeholder, matches the pods' --api-key)
+  # Postgres for the LiteLLM key store (virtual keys require PostgreSQL).
+  postgresImage: postgres:16-alpine
+  postgresDataSize: 1Gi
+  # usePostgresKeys: switch the PROD gateway to the new config (master key +
+  # Postgres DB + per-source label). Keep false until the testPod is validated,
+  # so prod keeps running keyless and clients aren't broken mid-cutover.
+  usePostgresKeys: false
+  # testPod: render a throwaway gateway on :8001 with the new config, sharing
+  # the same Postgres, to validate key minting + the prometheus label before
+  # flipping usePostgresKeys. Delete by setting this back to false.
+  testPod: false

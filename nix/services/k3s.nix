@@ -112,6 +112,15 @@
           "services/monitoring/telegram-chat-id" = {
             sopsFile = ./homelab/homelab-secrets.yaml;
           };
+          # LiteLLM gateway: master key gates /key/* (just mint-key); the
+          # postgres password backs the key store. Both feed the litellm-keys
+          # Secret (default ns) the gateway + postgres pods read.
+          "services/ai/litellm/master-key" = {
+            sopsFile = ./homelab/homelab-secrets.yaml;
+          };
+          "services/ai/litellm/postgres-password" = {
+            sopsFile = ./homelab/homelab-secrets.yaml;
+          };
         };
         # Materialise secrets in the activation script (setupSecrets) instead of
         # a systemd oneshot at boot — the aiChart activation script below reads
@@ -184,6 +193,9 @@
             TG_TOKEN="$(cat ${config.sops.secrets."services/monitoring/telegram-bot-token".path})"
             TG_CHAT="$(cat ${config.sops.secrets."services/monitoring/telegram-chat-id".path})"
             GRAFANA_PW="$(cat ${config.sops.secrets."services/monitoring/grafana-admin-password".path})"
+            LITELLM_MASTER="$(cat ${config.sops.secrets."services/ai/litellm/master-key".path})"
+            PG_PASSWORD="$(cat ${config.sops.secrets."services/ai/litellm/postgres-password".path})"
+            LITELLM_DB_URL="postgresql://litellm:$PG_PASSWORD@postgres.default.svc.cluster.local:5432/litellm"
 
             # Fill the sops placeholders in the values, render kps, and build the
             # grafana admin Secret. Done in a temp dir so nothing leaks to the store.
@@ -229,7 +241,16 @@
               # awk/tr aren't on the activation PATH; $SED is.
               # Grafana dashboards: the sidecar picks up any ConfigMap in this
               # namespace labelled grafana_dashboard (labelValue empty = any).
-              $KCTL create secret generic monitoring-secrets \
+              # litellm-keys (default ns): master key + postgres password + the
+              # full DATABASE_URL (password embedded). The gateway pod reads
+              # database-url + master-key; the postgres pod reads postgres-password.
+              $KCTL create secret generic litellm-keys \
+                  --namespace default \
+                  --from-literal=master-key="$LITELLM_MASTER" \
+                  --from-literal=postgres-password="$PG_PASSWORD" \
+                  --from-literal=database-url="$LITELLM_DB_URL" \
+                  --dry-run=client -o yaml | $KCTL apply -f - \
+                && $KCTL create secret generic monitoring-secrets \
                   --namespace monitoring \
                   --from-literal=admin-user=admin \
                   --from-literal=admin-password="$GRAFANA_PW" \
