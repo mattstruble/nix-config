@@ -744,14 +744,27 @@
               ],
               "displayMode": "table",
               "placement": "bottom",
-              "showLegend": true
+              "showLegend": "{{gpu}}"
             },
             "tooltip": {
               "mode": "multi",
               "sort": "desc"
             }
           },
-          "targets": []
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "editorMode": "code",
+              "exemplar": true,
+              "expr": "DCGM_FI_DEV_GPU_UTIL",
+              "legendFormat": "{{gpu}}",
+              "range": true,
+              "refId": "A"
+            }
+          ]
         },
         {
           "type": "timeseries",
@@ -811,10 +824,7 @@
               ],
               "displayMode": "table",
               "placement": "bottom",
-              "showLegend": [
-                "DCGM_FI_DEV_FB_FREE",
-                "GPU {{gpu}} free"
-              ]
+              "showLegend": "GPU {{gpu}} free"
             },
             "tooltip": {
               "mode": "multi",
@@ -829,16 +839,22 @@
               },
               "editorMode": "code",
               "exemplar": true,
-              "expr": [
-                "DCGM_FI_DEV_FB_USED",
-                "GPU {{gpu}} used"
-              ],
-              "legendFormat": [
-                "DCGM_FI_DEV_FB_FREE",
-                "GPU {{gpu}} free"
-              ],
+              "expr": "DCGM_FI_DEV_FB_USED",
+              "legendFormat": "GPU {{gpu}} used",
               "range": true,
               "refId": "A"
+            },
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "editorMode": "code",
+              "exemplar": true,
+              "expr": "DCGM_FI_DEV_FB_FREE",
+              "legendFormat": "GPU {{gpu}} free",
+              "range": true,
+              "refId": "B"
             }
           ]
         }

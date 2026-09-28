@@ -79,14 +79,27 @@
               ],
               "displayMode": "table",
               "placement": "bottom",
-              "showLegend": true
+              "showLegend": "{{job}}"
             },
             "tooltip": {
               "mode": "multi",
               "sort": "desc"
             }
           },
-          "targets": []
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "editorMode": "code",
+              "exemplar": true,
+              "expr": "sum by (job) (rate(llamacpp:tokens_predicted_total{job=~\"$model\"}[5m]))",
+              "legendFormat": "{{job}}",
+              "range": true,
+              "refId": "A"
+            }
+          ]
         },
         {
           "type": "timeseries",
@@ -146,14 +159,27 @@
               ],
               "displayMode": "table",
               "placement": "bottom",
-              "showLegend": true
+              "showLegend": "{{job}}"
             },
             "tooltip": {
               "mode": "multi",
               "sort": "desc"
             }
           },
-          "targets": []
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "editorMode": "code",
+              "exemplar": true,
+              "expr": "sum by (job) (rate(llamacpp:prompt_tokens_total{job=~\"$model\"}[5m]))",
+              "legendFormat": "{{job}}",
+              "range": true,
+              "refId": "A"
+            }
+          ]
         },
         {
           "type": "timeseries",
@@ -213,14 +239,27 @@
               ],
               "displayMode": "table",
               "placement": "bottom",
-              "showLegend": true
+              "showLegend": "{{job}}"
             },
             "tooltip": {
               "mode": "multi",
               "sort": "desc"
             }
           },
-          "targets": []
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "editorMode": "code",
+              "exemplar": true,
+              "expr": "sum by (job) (rate(llamacpp:prompt_seconds_total{job=~\"$model\"}[5m])) / sum by (job) (rate(llamacpp:prompt_tokens_total{job=~\"$model\"}[5m]))",
+              "legendFormat": "{{job}}",
+              "range": true,
+              "refId": "A"
+            }
+          ]
         },
         {
           "type": "timeseries",
@@ -280,14 +319,27 @@
               ],
               "displayMode": "table",
               "placement": "bottom",
-              "showLegend": true
+              "showLegend": "{{job}}"
             },
             "tooltip": {
               "mode": "multi",
               "sort": "desc"
             }
           },
-          "targets": []
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "editorMode": "code",
+              "exemplar": true,
+              "expr": "sum by (job) (increase(llamacpp:tokens_predicted_total{job=~\"$model\"}[$__range]))",
+              "legendFormat": "{{job}}",
+              "range": true,
+              "refId": "A"
+            }
+          ]
         },
         {
           "type": "stat",
@@ -722,14 +774,27 @@
               ],
               "displayMode": "table",
               "placement": "bottom",
-              "showLegend": true
+              "showLegend": "GPU {{gpu}}"
             },
             "tooltip": {
               "mode": "multi",
               "sort": "desc"
             }
           },
-          "targets": []
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "editorMode": "code",
+              "exemplar": true,
+              "expr": "DCGM_FI_DEV_GPU_UTIL{gpu=~\"$gpu\"}",
+              "legendFormat": "GPU {{gpu}}",
+              "range": true,
+              "refId": "A"
+            }
+          ]
         },
         {
           "type": "timeseries",
@@ -789,10 +854,7 @@
               ],
               "displayMode": "table",
               "placement": "bottom",
-              "showLegend": [
-                "DCGM_FI_DEV_FB_FREE{gpu=~\"$gpu\"}",
-                "GPU {{gpu}} free"
-              ]
+              "showLegend": "GPU {{gpu}} free"
             },
             "tooltip": {
               "mode": "multi",
@@ -807,16 +869,22 @@
               },
               "editorMode": "code",
               "exemplar": true,
-              "expr": [
-                "DCGM_FI_DEV_FB_USED{gpu=~\"$gpu\"}",
-                "GPU {{gpu}} used"
-              ],
-              "legendFormat": [
-                "DCGM_FI_DEV_FB_FREE{gpu=~\"$gpu\"}",
-                "GPU {{gpu}} free"
-              ],
+              "expr": "DCGM_FI_DEV_FB_USED{gpu=~\"$gpu\"}",
+              "legendFormat": "GPU {{gpu}} used",
               "range": true,
               "refId": "A"
+            },
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "editorMode": "code",
+              "exemplar": true,
+              "expr": "DCGM_FI_DEV_FB_FREE{gpu=~\"$gpu\"}",
+              "legendFormat": "GPU {{gpu}} free",
+              "range": true,
+              "refId": "B"
             }
           ]
         },
@@ -878,10 +946,7 @@
               ],
               "displayMode": "table",
               "placement": "bottom",
-              "showLegend": [
-                "DCGM_FI_DEV_GPU_TEMP{gpu=~\"$gpu\"}",
-                "GPU {{gpu}} core"
-              ]
+              "showLegend": "GPU {{gpu}} core"
             },
             "tooltip": {
               "mode": "multi",
@@ -896,16 +961,22 @@
               },
               "editorMode": "code",
               "exemplar": true,
-              "expr": [
-                "DCGM_FI_DEV_MEMORY_TEMP{gpu=~\"$gpu\"}",
-                "GPU {{gpu}} mem"
-              ],
-              "legendFormat": [
-                "DCGM_FI_DEV_GPU_TEMP{gpu=~\"$gpu\"}",
-                "GPU {{gpu}} core"
-              ],
+              "expr": "DCGM_FI_DEV_MEMORY_TEMP{gpu=~\"$gpu\"}",
+              "legendFormat": "GPU {{gpu}} mem",
               "range": true,
               "refId": "A"
+            },
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "editorMode": "code",
+              "exemplar": true,
+              "expr": "DCGM_FI_DEV_GPU_TEMP{gpu=~\"$gpu\"}",
+              "legendFormat": "GPU {{gpu}} core",
+              "range": true,
+              "refId": "B"
             }
           ]
         },
@@ -967,14 +1038,27 @@
               ],
               "displayMode": "table",
               "placement": "bottom",
-              "showLegend": true
+              "showLegend": "GPU {{gpu}}"
             },
             "tooltip": {
               "mode": "multi",
               "sort": "desc"
             }
           },
-          "targets": []
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "editorMode": "code",
+              "exemplar": true,
+              "expr": "DCGM_FI_DEV_POWER_USAGE{gpu=~\"$gpu\"}",
+              "legendFormat": "GPU {{gpu}}",
+              "range": true,
+              "refId": "A"
+            }
+          ]
         }
       ]
     },
@@ -1048,14 +1132,27 @@
               ],
               "displayMode": "table",
               "placement": "bottom",
-              "showLegend": true
+              "showLegend": "{{requested_model}}"
             },
             "tooltip": {
               "mode": "multi",
               "sort": "desc"
             }
           },
-          "targets": []
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "editorMode": "code",
+              "exemplar": true,
+              "expr": "sum by (requested_model) (rate(litellm_proxy_total_requests_metric_total{requested_model=~\"$litellm_model\"}[5m]))",
+              "legendFormat": "{{requested_model}}",
+              "range": true,
+              "refId": "A"
+            }
+          ]
         },
         {
           "type": "timeseries",
@@ -1115,14 +1212,27 @@
               ],
               "displayMode": "table",
               "placement": "bottom",
-              "showLegend": true
+              "showLegend": "{{model}}"
             },
             "tooltip": {
               "mode": "multi",
               "sort": "desc"
             }
           },
-          "targets": []
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "editorMode": "code",
+              "exemplar": true,
+              "expr": "sum by (model) (rate(litellm_total_tokens_metric_total{model=~\"$litellm_model\"}[5m]))",
+              "legendFormat": "{{model}}",
+              "range": true,
+              "refId": "A"
+            }
+          ]
         },
         {
           "type": "timeseries",
@@ -1182,14 +1292,27 @@
               ],
               "displayMode": "table",
               "placement": "bottom",
-              "showLegend": true
+              "showLegend": "{{model}}"
             },
             "tooltip": {
               "mode": "multi",
               "sort": "desc"
             }
           },
-          "targets": []
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "editorMode": "code",
+              "exemplar": true,
+              "expr": "histogram_quantile(0.95, sum by (le, model) (rate(litellm_llm_api_time_to_first_token_metric_bucket{model=~\"$litellm_model\"}[5m])))",
+              "legendFormat": "{{model}}",
+              "range": true,
+              "refId": "A"
+            }
+          ]
         },
         {
           "type": "timeseries",
@@ -1249,14 +1372,27 @@
               ],
               "displayMode": "table",
               "placement": "bottom",
-              "showLegend": true
+              "showLegend": "{{model}}"
             },
             "tooltip": {
               "mode": "multi",
               "sort": "desc"
             }
           },
-          "targets": []
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "editorMode": "code",
+              "exemplar": true,
+              "expr": "histogram_quantile(0.95, sum by (le, model) (rate(litellm_request_total_latency_metric_bucket{model=~\"$litellm_model\"}[5m])))",
+              "legendFormat": "{{model}}",
+              "range": true,
+              "refId": "A"
+            }
+          ]
         }
       ]
     },
