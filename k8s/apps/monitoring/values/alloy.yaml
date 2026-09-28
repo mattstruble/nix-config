@@ -1,0 +1,47 @@
+# Grafana Alloy values for mjolnir (chart 1.13.0, Alloy v1.20.0).
+# DaemonSet log collector: scrapes /var/log/pods, ships to Loki.
+# Promtail is EOL — Alloy is the supported agent.
+
+alloy:
+  # Mount /var/log from the host (the standard log-collection exception to the
+  # no-hostPath convention — this is a node-level collector, not an app pod).
+  mounts:
+    varlog: true
+  # Ephemeral WAL is fine for a homelab (logs re-tail on restart).
+  storagePath: /tmp/alloy
+  enableReporting: false
+
+  configMap:
+    create: true
+    content: |
+      // Discover container log files and extract pod/namespace/container
+      // labels from the /var/log/pods path.
+      local.file_match "kubernetes_pods" {
+        path_targets = [{"__path__" = "/var/log/pods/*/*/*.log"}]
+      }
+
+      loki.source.file "kubernetes" {
+        targets    = local.file_match.kubernetes_pods.targets
+        forward_to = [loki.process.kubernetes.receiver]
+      }
+
+      loki.process "kubernetes" {
+        forward_to = [loki.write.kubernetes.receiver]
+        stage.regex {
+          source = "__path__"
+          expression = `^/var/log/pods/(?P<namespace>[^_]+)_(?P<pod>.+)_(?P<poduid>[0-9a-f-]+)/(?P<container>[^/]+)/(?P<id>\d+)\.log$`
+          labels_from_groups = true
+        }
+      }
+
+      loki.write "kubernetes" {
+        external_labels = {
+          cluster = "mjolnir",
+        }
+        endpoint {
+          url = "http://loki.monitoring.svc:3100/loki/api/v1/push"
+          http_headers = {
+            "X-Scope-OrgID" = ["loki"],
+          }
+        }
+      }

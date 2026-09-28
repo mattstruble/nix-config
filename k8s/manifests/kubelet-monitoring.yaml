@@ -1,0 +1,30 @@
+# Service account + RBAC for scraping kubelet /metrics (10250).
+#
+# k3s' kubelet requires a bearer token with the system:node-reader role. The
+# chart's default kubelet ServiceMonitor uses the Prometheus SA token, which
+# lacks that role -> 401 -> KubeletDown / KubeletInstanceUnreachable / TargetDown.
+#
+# The token secret (kubelet-monitoring-token) is minted at activation time
+# (see nix/services/k3s.nix) because k8s 1.24+ no longer auto-creates SA token
+# secrets. The kubelet ServiceMonitor's authorization points at this secret
+# (see k8s/apps/monitoring/values/kube-prometheus-stack.yaml).
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: kubelet-monitoring
+  namespace: monitoring
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: kubelet-monitoring-node-reader
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  # k3s has no system:node-reader; system:kubelet-api-admin grants nodes/proxy
+  # (the kubelet /metrics path) which is what the scrape needs.
+  name: system:kubelet-api-admin
+subjects:
+  - kind: ServiceAccount
+    name: kubelet-monitoring
+    namespace: monitoring

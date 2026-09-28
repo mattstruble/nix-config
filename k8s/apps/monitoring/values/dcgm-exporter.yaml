@@ -1,0 +1,25 @@
+# DCGM exporter values for mjolnir (NVIDIA chart 4.8.4).
+# GPU metrics via the CDI-mode nvidia runtime (no device plugin).
+
+runtimeClassName: nvidia
+
+# The chart's own ServiceMonitor is disabled — the DCGM ServiceMonitor lives in
+# the kps additionalServiceMonitors (applied after the ServiceMonitor CRD
+# exists, as part of the kps release).
+serviceMonitor:
+  enabled: false
+
+# No cluster-level pod RBAC (keeps the namespace PSS-friendly).
+kubernetes:
+  enablePodLabels: false
+  enablePodUID: false
+
+# NVIDIA's default securityContext: root + SYS_ADMIN (needed for DCGM to talk
+# to the driver via CDI). Verified at deploy that both TITANs report.
+securityContext:
+  runAsNonRoot: false
+  runAsUser: 0
+  capabilities:
+    add: ["SYS_ADMIN"]
+    drop: ["ALL"]
+  allowPrivilegeEscalation: false

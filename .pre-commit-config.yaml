@@ -28,7 +28,9 @@ repos:
     rev: v1.4.0
     hooks:
       - id: detect-secrets
-        exclude: (.*lock)|(secrets.yaml)
+        # kps values reference the grafana admin-password key name (not a value);
+        # the actual creds come from the monitoring-secrets Secret (sops-encrypted).
+        exclude: (.*lock)|(secrets.yaml)|(k8s/apps/monitoring/values/kube-prometheus-stack.yaml)
   # Ensure sops encryption
   - repo: https://github.com/yuvipanda/pre-commit-hook-ensure-sops
     rev: v1.0

@@ -1,0 +1,100 @@
+# kube-prometheus-stack values for mjolnir (chart 91.7.0, bundles Grafana 13.2.2).
+#
+# RENDERED AT BUILD TIME: __TELEGRAM_BOT_TOKEN__ and __TELEGRAM_CHAT_ID__ are
+# substituted from sops (see nix/services/k3s.nix -> kpsValuesRendered). Do not
+# commit real tokens to this file.
+
+# Let our additionalServiceMonitors be picked up without requiring the chart's
+# own helm labels on them.
+serviceMonitorSelectorNilUsesHelmValues: false
+podMonitorSelectorNilUsesHelmValues: false
+ruleSelectorNilUsesHelmValues: false
+
+# k3s' embedded etcd is not the chart's kubeEtcd kind — don't scrape it.
+kubeEtcd:
+  enabled: false
+
+# k3s runs the control plane (scheduler, controller-manager, proxy) as processes,
+# not pods, and doesn't expose their metrics endpoints in a scrapable way
+# (controller-manager is loopback-only, scheduler/proxy aren't exposed at all).
+# The chart's ServiceMonitors find no targets -> Kube*Down alerts fire. Disable them.
+kubeScheduler:
+  enabled: false
+kubeControllerManager:
+  enabled: false
+kubeProxy:
+  enabled: false
+
+# The kubelet (10250) requires a bearer token with system:node-reader. The
+# chart's default uses the Prometheus SA token (no such role -> 401). Point the
+# kubelet ServiceMonitor at the kubelet-monitoring SA's token secret (minted at
+# activation; see k8s/manifests/kubelet-monitoring.yaml).
+kubelet:
+  serviceMonitor:
+    authorization:
+      type: Bearer
+      credentials:
+        name: kubelet-monitoring-token
+        key: token
+
+prometheus:
+  # k3s doesn't expose scheduler/controller-manager/proxy metrics, so their
+  # ServiceMonitors find no targets -> absent(up{job=...}) fires Kube*Down.
+  # Disabling the ServiceMonitors alone is NOT enough (the targets are still
+  # absent); the alert rules must be disabled too.
+  rules:
+    kubeSchedulerAlerting: false
+    kubeSchedulerRecording: false
+    kubeControllerManager: false
+    kubeProxy: false
+  prometheusSpec:
+    retention: 30d
+    retentionSize: 20GB
+    storageSpec:
+      volumeClaimTemplate:
+        spec:
+          storageClassName: local-path
+          resources:
+            requests:
+              storage: 20Gi
+  # ServiceMonitors applied as part of the kps release (the ServiceMonitor CRD
+  # exists by then). DCGM is deployed in a later ticket; the monitor is harmless
+  # (no targets) until the dcgm-exporter Service exists.
+  additionalServiceMonitors:
+    - name: dcgm-exporter
+      namespace: monitoring
+      selector:
+        matchLabels:
+          app.kubernetes.io/name: dcgm-exporter
+      endpoints:
+        - port: metrics
+          interval: 30s
+
+grafana:
+  adminUser: admin
+  # Admin creds come from the monitoring-secrets Secret (rendered from sops,
+  # applied via extraDeploy so it exists before grafana starts).
+  admin:
+    existingSecret: monitoring-secrets
+    userKey: admin-user
+    passwordKey: admin-password # pragma: allowlist secret
+  ingress:
+    enabled: true
+    ingressClassName: traefik
+    hosts:
+      - grafana.mjolnir # pragma: allowlist secret
+
+
+alertmanager:
+  config:
+    route:
+      receiver: telegram
+      # The chart's default config adds a Watchdog sub-route with receiver "null",
+      # which is undefined and fails validation. Clear it.
+      routes: []
+    receivers:
+      - name: telegram
+        telegram_configs:
+          - bot_token: __TELEGRAM_BOT_TOKEN__
+            chat_id: __TELEGRAM_CHAT_ID__
+            api_url: https://api.telegram.org
