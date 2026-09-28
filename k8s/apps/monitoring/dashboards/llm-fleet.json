@@ -1301,7 +1301,7 @@
             "type": "loki",
             "uid": "loki"
           },
-          "expr": "{namespace=\"default\", pod=~\"$model.*\"}",
+          "expr": "{namespace=\"default\", pod=~\"($model).*\"}",
           "queryType": "range",
           "refId": "A"
         }
@@ -1329,7 +1329,11 @@
         "refresh": 2,
         "sort": 1,
         "includeAll": true,
-        "multi": true
+        "multi": true,
+        "current": {
+          "text": "All",
+          "value": "$__all"
+        }
       },
       {
         "name": "litellm_model",
@@ -1346,7 +1350,11 @@
         "refresh": 2,
         "sort": 1,
         "includeAll": true,
-        "multi": true
+        "multi": true,
+        "current": {
+          "text": "All",
+          "value": "$__all"
+        }
       },
       {
         "name": "gpu",
@@ -1363,7 +1371,11 @@
         "refresh": 2,
         "sort": 1,
         "includeAll": true,
-        "multi": true
+        "multi": true,
+        "current": {
+          "text": "All",
+          "value": "$__all"
+        }
       }
     ]
   },

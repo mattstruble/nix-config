@@ -1482,7 +1482,7 @@
           "uid": "prometheus"
         },
         "query": {
-          "qry": "label_values(kube_node_info, nodename)",
+          "qry": "label_values(kube_node_info, node)",
           "refId": "PrometheusVariableQueryEditor-VariableQuery"
         },
         "refresh": 2,
@@ -1509,7 +1509,11 @@
         "refresh": 2,
         "sort": 1,
         "includeAll": true,
-        "multi": true
+        "multi": true,
+        "current": {
+          "text": "All",
+          "value": "$__all"
+        }
       }
     ]
   },
