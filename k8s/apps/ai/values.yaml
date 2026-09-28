@@ -35,4 +35,4 @@ gateway:
   # testPod: render a throwaway gateway on :8001 with the new config, sharing
   # the same Postgres, to validate key minting + the prometheus label before
   # flipping usePostgresKeys. Delete by setting this back to false.
-  testPod: false
+  testPod: true
