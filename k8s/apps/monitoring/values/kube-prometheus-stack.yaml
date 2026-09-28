@@ -100,20 +100,17 @@ prometheus:
           bearerTokenFile: /prometheus/llm-api-key/token
 
 grafana:
-  # Loki for the LLM fleet dashboard's log panels. The dashboards sidecar's
-  # initDatasources rewrites ${DS_LOKI} to this datasource's uid.
+  # Loki for the LLM fleet dashboard's log panels. Fixed uids (prometheus/loki)
+  # are referenced directly in the dashboards — the chart's initDatasources
+  # rewrite runs a WATCH-mode init container that never exits and blocks the pod.
   additionalDataSources:
     - name: Loki
       type: loki
+      uid: loki
       access: proxy
       url: http://loki-gateway.monitoring.svc.cluster.local
       isDefault: false
       editable: true
-  # Rewrite ${DS_PROMETHEUS}/${DS_LOKI} in sidecar-picked-up dashboards to the
-  # provisioned datasource uids (off by default in the chart).
-  sidecar:
-    datasources:
-      initDatasources: true
   adminUser: admin
   # Admin creds come from the monitoring-secrets Secret (rendered from sops,
   # applied via extraDeploy so it exists before grafana starts).
