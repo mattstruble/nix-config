@@ -23,10 +23,5 @@ data:
         - prometheus
       # ClusterIP-only endpoint; the ServiceMonitor scrapes without a gateway key.
       require_auth_for_metrics_endpoint: false
-      # Label every metric with the calling key's alias (pi, opencode, ...) so
-      # the dashboard can break down requests/tokens per source. Requires
-      # per-source keys minted with an alias (just mint-key <name>).
-      prometheus_label_config:
-        - user_api_key_alias
 ---
 {{- end }}

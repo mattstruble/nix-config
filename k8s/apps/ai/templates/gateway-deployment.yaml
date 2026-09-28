@@ -49,17 +49,6 @@ spec:
             # the environment; the pods expect --api-key foo.
             - name: OPENAI_API_KEY
               value: {{ .Values.gateway.podApiKey | quote }}
-            # SQLite key store on the PVC: minted per-source keys persist across
-            # restarts. Four slashes = absolute path.
-            - name: DATABASE_URL
-              value: "sqlite:////app/data/litellm.db"
-            # Master key gates /key/* management endpoints; clients use their own
-            # minted keys (see just mint-key). From the litellm-keys Secret.
-            - name: LITELLM_MASTER_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: litellm-keys
-                  key: master-key
           volumeMounts:
             - name: config
               # the image entrypoint is `litellm --config ./proxy_server_config.yaml`
@@ -67,8 +56,6 @@ spec:
               subPath: config.yaml
             - name: tmp
               mountPath: /tmp
-            - name: data
-              mountPath: /app/data
           readinessProbe:
             httpGet:
               path: /health/readiness
@@ -87,8 +74,5 @@ spec:
         - name: config
           configMap:
             name: litellm-config
-        - name: data
-          persistentVolumeClaim:
-            claimName: litellm-data
 ---
 {{- end }}
