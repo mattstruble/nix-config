@@ -1463,13 +1463,14 @@
           "uid": "prometheus"
         },
         "query": {
-          "qry": "label_values(llamacpp:tokens_predicted_total, job)",
-          "refId": "PrometheusVariableQueryEditor-VariableQuery"
+          "query": "label_values(llamacpp:tokens_predicted_total, job)",
+          "refId": "StandardVariableQuery"
         },
         "refresh": 2,
         "sort": 1,
         "includeAll": true,
         "multi": true,
+        "allValue": ".*",
         "current": {
           "text": "All",
           "value": "$__all"
@@ -1484,13 +1485,14 @@
           "uid": "prometheus"
         },
         "query": {
-          "qry": "label_values(litellm_total_tokens_metric_total, model)",
-          "refId": "PrometheusVariableQueryEditor-VariableQuery"
+          "query": "label_values(litellm_total_tokens_metric_total, model)",
+          "refId": "StandardVariableQuery"
         },
         "refresh": 2,
         "sort": 1,
         "includeAll": true,
         "multi": true,
+        "allValue": ".*",
         "current": {
           "text": "All",
           "value": "$__all"
@@ -1505,13 +1507,14 @@
           "uid": "prometheus"
         },
         "query": {
-          "qry": "label_values(DCGM_FI_DEV_GPU_UTIL, gpu)",
-          "refId": "PrometheusVariableQueryEditor-VariableQuery"
+          "query": "label_values(DCGM_FI_DEV_GPU_UTIL, gpu)",
+          "refId": "StandardVariableQuery"
         },
         "refresh": 2,
         "sort": 1,
         "includeAll": true,
         "multi": true,
+        "allValue": ".*",
         "current": {
           "text": "All",
           "value": "$__all"

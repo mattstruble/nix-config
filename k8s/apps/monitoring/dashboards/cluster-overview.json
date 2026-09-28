@@ -1506,13 +1506,14 @@
           "uid": "prometheus"
         },
         "query": {
-          "qry": "label_values(kube_node_info, node)",
-          "refId": "PrometheusVariableQueryEditor-VariableQuery"
+          "query": "label_values(kube_node_info, node)",
+          "refId": "StandardVariableQuery"
         },
         "refresh": 2,
         "sort": 1,
         "includeAll": true,
         "multi": false,
+        "allValue": ".*",
         "current": {
           "text": "mjolnir",
           "value": "mjolnir"
@@ -1527,13 +1528,14 @@
           "uid": "prometheus"
         },
         "query": {
-          "qry": "label_values(kube_pod_info{node=~\"^$Node$\"}, namespace)",
-          "refId": "PrometheusVariableQueryEditor-VariableQuery"
+          "query": "label_values(kube_pod_info{node=~\"^$Node$\"}, namespace)",
+          "refId": "StandardVariableQuery"
         },
         "refresh": 2,
         "sort": 1,
         "includeAll": true,
         "multi": true,
+        "allValue": ".*",
         "current": {
           "text": "All",
           "value": "$__all"
