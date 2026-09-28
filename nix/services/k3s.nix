@@ -223,12 +223,22 @@
 
             for i in $(seq 1 30); do
               $KCTL get namespace monitoring >/dev/null 2>&1 || $KCTL create namespace monitoring
-              # grafana admin creds as a proper K8s Secret (idempotent apply)
+              # grafana admin creds as a proper K8s Secret (idempotent apply);
+              # llm-api-key: the pod API key for llama.cpp /metrics auth, extracted
+              # from the rendered ai chart (single source of truth: values.yaml podApiKey).
+              # awk/tr aren't on the activation PATH; $SED is.
               $KCTL create secret generic monitoring-secrets \
                   --namespace monitoring \
                   --from-literal=admin-user=admin \
                   --from-literal=admin-password="$GRAFANA_PW" \
                   --dry-run=client -o yaml | $KCTL apply -f - \
+                && LLM_KEY=$(grep -A1 -- '"--api-key"' ${aiChartRendered}/rendered.yaml \
+                        | grep -v -- '"--api-key"' | head -1 \
+                        | $SED 's/^[[:space:]]*- *"\(.*\)".*/\1/') \
+                && $KCTL create secret generic llm-api-key \
+                    --namespace monitoring \
+                    --from-literal=token="$LLM_KEY" \
+                    --dry-run=client -o yaml | $KCTL apply -f - \
                 && $KCTL apply -f ${lokiChartRendered}/rendered.yaml \
                 && $KCTL apply -f ${alloyChartRendered}/rendered.yaml \
                 && $KCTL apply -f ${aiChartRendered}/rendered.yaml \

@@ -65,6 +65,8 @@ spec:
             - "0.0.0.0"
             - "--port"
             - {{ $m.port | quote }}
+            # Prometheus metrics at /metrics (auth: same --api-key as the rest)
+            - "--metrics"
             # the running model name: single source of truth (also the gateway's model_name)
             - "--alias"
             - {{ $m.modelName | quote }}

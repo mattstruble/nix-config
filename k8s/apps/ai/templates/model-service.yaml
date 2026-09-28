@@ -11,7 +11,9 @@ spec:
   selector:
     app: {{ $name }}
   ports:
-    - port: {{ $m.port }}
+    # named so the kps ServiceMonitor (port: http) can reference it
+    - name: http
+      port: {{ $m.port }}
       targetPort: {{ $m.port }}
 ---
 {{- end }}

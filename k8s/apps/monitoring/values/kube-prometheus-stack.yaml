@@ -50,6 +50,16 @@ prometheus:
   prometheusSpec:
     retention: 30d
     retentionSize: 20GB
+    # Mount the LLM pod API key so the ai-fleet ServiceMonitor can auth to
+    # llama.cpp /metrics (bearerTokenFile reads it at scrape time).
+    volumes:
+      - name: llm-api-key
+        secret:
+          secretName: llm-api-key
+    volumeMounts:
+      - name: llm-api-key
+        mountPath: /prometheus/llm-api-key
+        readOnly: true
     storageSpec:
       volumeClaimTemplate:
         spec:
@@ -69,6 +79,25 @@ prometheus:
       endpoints:
         - port: metrics
           interval: 30s
+    # LLM fleet: llama.cpp model pods + LiteLLM gateway. One monitor selects
+    # every ai Service (app.kubernetes.io/part-of: ai), so new models are
+    # covered automatically. Model /metrics require the pod API key (the
+    # llm-api-key Secret, minted in the activation script from the rendered
+    # chart, mounted into Prometheus below); the gateway ignores the token
+    # (require_auth_for_metrics_endpoint: false).
+    - name: ai-fleet
+      # the monitor lives in monitoring/; the ai Services are in default/
+      namespaceSelector:
+        matchNames:
+          - default
+      selector:
+        matchLabels:
+          app.kubernetes.io/part-of: ai
+      endpoints:
+        - port: http
+          path: /metrics
+          interval: 30s
+          bearerTokenFile: /prometheus/llm-api-key/token
 
 grafana:
   adminUser: admin

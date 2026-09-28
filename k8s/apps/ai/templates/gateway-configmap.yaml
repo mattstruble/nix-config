@@ -17,5 +17,11 @@ data:
           api_key: {{ $.Values.gateway.podApiKey }}
       {{- end }}
       {{- end }}
+    # Prometheus metrics at /metrics (pre-installed in the image).
+    litellm_settings:
+      callbacks:
+        - prometheus
+      # ClusterIP-only endpoint; the ServiceMonitor scrapes without a gateway key.
+      require_auth_for_metrics_endpoint: false
 ---
 {{- end }}
