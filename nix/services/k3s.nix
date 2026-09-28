@@ -227,6 +227,8 @@
               # llm-api-key: the pod API key for llama.cpp /metrics auth, extracted
               # from the rendered ai chart (single source of truth: values.yaml podApiKey).
               # awk/tr aren't on the activation PATH; $SED is.
+              # Grafana dashboards: the sidecar picks up any ConfigMap in this
+              # namespace labelled grafana_dashboard (labelValue empty = any).
               $KCTL create secret generic monitoring-secrets \
                   --namespace monitoring \
                   --from-literal=admin-user=admin \
@@ -243,6 +245,12 @@
                 && $KCTL apply -f ${alloyChartRendered}/rendered.yaml \
                 && $KCTL apply -f ${aiChartRendered}/rendered.yaml \
                 && $KCTL apply -f ${dcgmChartRendered}/rendered.yaml \
+                && $KCTL create configmap mjolnir-dashboards \
+                    --namespace monitoring \
+                    --from-file=cluster-overview.json=${k8sDir}/apps/monitoring/dashboards/cluster-overview.json \
+                    --from-file=llm-fleet.json=${k8sDir}/apps/monitoring/dashboards/llm-fleet.json \
+                    --dry-run=client -o yaml | $KCTL apply -f - \
+                && $KCTL label configmap mjolnir-dashboards --namespace monitoring grafana_dashboard=1 --overwrite \
                 && $KCTL apply --server-side --force-conflicts -f "$KPS_CRDS" \
                 && $KCTL apply -f "$T/kps-rendered.yaml" \
                 && $KCTL rollout restart deploy/kps-kube-prometheus-stack-operator --namespace monitoring \
