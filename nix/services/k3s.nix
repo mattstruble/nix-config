@@ -112,6 +112,11 @@
           "services/monitoring/telegram-chat-id" = {
             sopsFile = ./homelab/homelab-secrets.yaml;
           };
+          # LiteLLM gateway master key: gates /key/* so `just mint-key` can mint
+          # per-source keys. Consumed by the litellm-keys Secret (default ns).
+          "services/ai/litellm/master-key" = {
+            sopsFile = ./homelab/homelab-secrets.yaml;
+          };
         };
         # Materialise secrets in the activation script (setupSecrets) instead of
         # a systemd oneshot at boot — the aiChart activation script below reads
@@ -184,6 +189,7 @@
             TG_TOKEN="$(cat ${config.sops.secrets."services/monitoring/telegram-bot-token".path})"
             TG_CHAT="$(cat ${config.sops.secrets."services/monitoring/telegram-chat-id".path})"
             GRAFANA_PW="$(cat ${config.sops.secrets."services/monitoring/grafana-admin-password".path})"
+            LITELLM_MASTER="$(cat ${config.sops.secrets."services/ai/litellm/master-key".path})"
 
             # Fill the sops placeholders in the values, render kps, and build the
             # grafana admin Secret. Done in a temp dir so nothing leaks to the store.
@@ -229,7 +235,14 @@
               # awk/tr aren't on the activation PATH; $SED is.
               # Grafana dashboards: the sidecar picks up any ConfigMap in this
               # namespace labelled grafana_dashboard (labelValue empty = any).
-              $KCTL create secret generic monitoring-secrets \
+              # litellm-keys (default ns): master key for the gateway's /key/*
+              # management endpoints. The gateway pod reads LITELLM_MASTER_KEY
+              # from it; `just mint-key` uses the same value to mint per-source keys.
+              $KCTL create secret generic litellm-keys \
+                  --namespace default \
+                  --from-literal=master-key="$LITELLM_MASTER" \
+                  --dry-run=client -o yaml | $KCTL apply -f - \
+                && $KCTL create secret generic monitoring-secrets \
                   --namespace monitoring \
                   --from-literal=admin-user=admin \
                   --from-literal=admin-password="$GRAFANA_PW" \

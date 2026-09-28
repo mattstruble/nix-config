@@ -1,0 +1,17 @@
+{{- if .Values.gateway.enable }}
+# LiteLLM key store (SQLite). Persists minted API keys across pod restarts so
+# per-source keys (pi, opencode, ...) survive deploys. local-path is the only
+# dynamic StorageClass on this cluster.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: litellm-data
+  labels:
+    app.kubernetes.io/part-of: ai
+spec:
+  accessModes: ["ReadWriteOnce"]
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: {{ .Values.gateway.dataSize | default "1Gi" }}
+{{- end }}
