@@ -24,6 +24,11 @@ backend:
   replicas: 0
 
 loki:
+  commonConfig:
+    # Monolithic single instance: a 1-member ring can never satisfy the chart
+    # default RF=3 → every query fails with "too many unhealthy instances in
+    # the ring".
+    replication_factor: 1
   storage:
     # filesystem (not the default s3) — renders a `filesystem:` storage block.
     type: filesystem

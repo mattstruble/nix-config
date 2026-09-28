@@ -28,7 +28,8 @@ alloy:
       loki.process "kubernetes" {
         forward_to = [loki.write.kubernetes.receiver]
         stage.regex {
-          source = "__path__"
+          // loki.source.file exposes the path as `filename`, not `__path__`.
+          source = "filename"
           expression = `^/var/log/pods/(?P<namespace>[^_]+)_(?P<pod>.+)_(?P<poduid>[0-9a-f-]+)/(?P<container>[^/]+)/(?P<id>\d+)\.log$`
           labels_from_groups = true
         }
