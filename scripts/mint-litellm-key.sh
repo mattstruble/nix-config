@@ -3,8 +3,8 @@
 #
 #   just mint-key <name>
 #
-# The key's alias == <name>, which becomes the `user_api_key_alias` prometheus
-# label (per-source breakdown on the LLM fleet dashboard). The key is persisted
+# The key's alias == <name>, which becomes the `api_key_alias` prometheus label
+# (per-source breakdown on the LLM fleet dashboard). The key is persisted
 # in the gateway's Postgres key store AND encrypted into homelab-secrets.yaml so
 # it survives a fresh PVC and can be handed to the client.
 set -euo pipefail
@@ -24,7 +24,7 @@ MASTER="$(sops decrypt "$F" | "${YQ[@]}" -r '.services.ai.litellm."master-key"')
 RESP="$(curl -fsS -X POST "$GATEWAY/key/generate" \
   -H "Authorization: Bearer $MASTER" \
   -H "Content-Type: application/json" \
-  -d "{\"alias\":\"$NAME\",\"key_name\":\"$NAME\"}")"
+  -d "{\"key_alias\":\"$NAME\",\"key_name\":\"$NAME\"}")"
 KEY="$(printf '%s' "$RESP" | jq -r '.key // .token // empty')"
 if [[ -z "$KEY" ]]; then
   echo "mint failed from $GATEWAY:" >&2
