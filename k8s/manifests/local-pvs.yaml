@@ -51,6 +51,34 @@ spec:
               values:
                 - mjolnir
 ---
+# Postgres data for the LiteLLM key store. Static hostPath PV (not local-path)
+# because the postgres pod runs non-root (uid 999) and the cluster's non-root
+# policy forbids a root chown initContainer; the host dir is pre-created owned
+# by 999 (see systemd.tmpfiles.rules in k3s.nix) so the pod can write it.
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: postgres-data
+  labels:
+    app.kubernetes.io/part-of: ai
+spec:
+  capacity:
+    storage: 1Gi
+  accessModes:
+    - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: postgres-data
+  local:
+    path: /var/lib/postgres-data
+  nodeAffinity:
+    required:
+      nodeSelectorTerms:
+        - matchExpressions:
+            - key: kubernetes.io/hostname
+              operator: In
+              values:
+                - mjolnir
+---
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:

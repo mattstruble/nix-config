@@ -100,6 +100,14 @@
     in
     {
       config = lib.mkIf cfg.enable {
+        # Host dir for the Postgres static PV (LiteLLM key store). Pre-owned by
+        # uid 999 (the postgres image user) so the non-root pod can write it —
+        # the cluster's non-root policy forbids a root chown initContainer, and
+        # local-path PVs are root-owned. See k8s/manifests/local-pvs.yaml.
+        systemd.tmpfiles.rules = [
+          "d /var/lib/postgres-data 0700 999 999 -"
+        ];
+
         # Monitoring secrets (mjolnir-decryptable). Consumed by the rendered
         # kps values (telegram) + the grafana admin Secret (grafanaPw) above.
         sops.secrets = {

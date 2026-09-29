@@ -10,7 +10,8 @@ metadata:
     app.kubernetes.io/part-of: ai
 spec:
   accessModes: ["ReadWriteOnce"]
-  storageClassName: local-path
+  # Static hostPath PV (pre-owned by uid 999); see k8s/manifests/local-pvs.yaml.
+  storageClassName: postgres-data
   resources:
     requests:
       storage: {{ .Values.gateway.postgresDataSize | default "1Gi" }}
