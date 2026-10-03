@@ -20,6 +20,8 @@ kind: PrometheusRule
 metadata:
   name: cloud-model-rates
   namespace: monitoring
+  labels:
+    release: kps
 spec:
   groups:
     - name: cloud-model-rates
