@@ -28,11 +28,10 @@ gateway:
   # Postgres for the LiteLLM key store (virtual keys require PostgreSQL).
   postgresImage: postgres:16-alpine
   postgresDataSize: 1Gi
-  # usePostgresKeys: switch the PROD gateway to the new config (master key +
-  # Postgres DB + per-source label). Keep false until the testPod is validated,
-  # so prod keeps running keyless and clients aren't broken mid-cutover.
-  usePostgresKeys: false
-  # testPod: render a throwaway gateway on :8001 with the new config, sharing
-  # the same Postgres, to validate key minting + the prometheus label before
-  # flipping usePostgresKeys. Delete by setting this back to false.
-  testPod: true
+  # usePostgresKeys: true = prod gateway uses the master key + Postgres key
+  # store + per-source api_key_alias label. Clients must present a minted key
+  # (just mint-key <name>); the keyless "foo" no longer works.
+  usePostgresKeys: true
+  # testPod: throwaway gateway on :8001 sharing the same Postgres, used to
+  # validate key minting before the cutover. Now that prod is live, it's off.
+  testPod: false
