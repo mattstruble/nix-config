@@ -256,7 +256,7 @@
               "datasource": { "type": "prometheus", "uid": "prometheus" },
               "editorMode": "code",
               "exemplar": true,
-              "expr": "sum(rate(litellm_total_tokens_metric_total[5m]))",
+              "expr": "sum(rate(litellm_total_tokens_metric_total[10m]))",
               "legendFormat": "tokens/s",
               "range": true,
               "refId": "A"
