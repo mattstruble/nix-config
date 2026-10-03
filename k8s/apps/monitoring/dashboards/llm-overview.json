@@ -316,24 +316,26 @@
       "id": 216,
       "panels": [
         {
-          "type": "table",
+          "type": "bargauge",
           "title": "Input tokens by app",
           "datasource": { "type": "prometheus", "uid": "prometheus" },
           "fieldConfig": {
-            "defaults": { "unit": "short" },
-            "overrides": [
-              {
-                "matcher": { "id": "byName", "options": "Value" },
-                "properties": [
-                  { "id": "custom.displayMode", "value": "gauge" },
-                  { "id": "color", "value": { "mode": "palette-classic" } }
-                ]
-              }
-            ]
+            "defaults": {
+              "color": { "mode": "palette-classic" },
+              "mappings": [],
+              "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null } ] },
+              "unit": "short"
+            },
+            "overrides": []
           },
           "gridPos": { "h": 4, "w": 12, "x": 0, "y": 13 },
           "id": 209,
-          "options": { "showHeader": true, "footer": { "show": false }, "sortBy": [ { "displayName": "Value", "desc": true } ] },
+          "options": {
+            "orientation": "horizontal",
+            "displayValues": true,
+            "valueMode": "color",
+            "legend": { "displayMode": "list", "placement": "bottom", "showLegend": false }
+          },
           "targets": [
             {
               "datasource": { "type": "prometheus", "uid": "prometheus" },
@@ -346,24 +348,26 @@
           ]
         },
         {
-          "type": "table",
+          "type": "bargauge",
           "title": "Output tokens by app",
           "datasource": { "type": "prometheus", "uid": "prometheus" },
           "fieldConfig": {
-            "defaults": { "unit": "short" },
-            "overrides": [
-              {
-                "matcher": { "id": "byName", "options": "Value" },
-                "properties": [
-                  { "id": "custom.displayMode", "value": "gauge" },
-                  { "id": "color", "value": { "mode": "palette-classic" } }
-                ]
-              }
-            ]
+            "defaults": {
+              "color": { "mode": "palette-classic" },
+              "mappings": [],
+              "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null } ] },
+              "unit": "short"
+            },
+            "overrides": []
           },
           "gridPos": { "h": 4, "w": 12, "x": 12, "y": 13 },
           "id": 210,
-          "options": { "showHeader": true, "footer": { "show": false }, "sortBy": [ { "displayName": "Value", "desc": true } ] },
+          "options": {
+            "orientation": "horizontal",
+            "displayValues": true,
+            "valueMode": "color",
+            "legend": { "displayMode": "list", "placement": "bottom", "showLegend": false }
+          },
           "targets": [
             {
               "datasource": { "type": "prometheus", "uid": "prometheus" },
@@ -376,24 +380,26 @@
           ]
         },
         {
-          "type": "table",
+          "type": "bargauge",
           "title": "Input tokens by model",
           "datasource": { "type": "prometheus", "uid": "prometheus" },
           "fieldConfig": {
-            "defaults": { "unit": "short" },
-            "overrides": [
-              {
-                "matcher": { "id": "byName", "options": "Value" },
-                "properties": [
-                  { "id": "custom.displayMode", "value": "gauge" },
-                  { "id": "color", "value": { "mode": "palette-classic" } }
-                ]
-              }
-            ]
+            "defaults": {
+              "color": { "mode": "palette-classic" },
+              "mappings": [],
+              "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null } ] },
+              "unit": "short"
+            },
+            "overrides": []
           },
           "gridPos": { "h": 4, "w": 12, "x": 0, "y": 17 },
           "id": 211,
-          "options": { "showHeader": true, "footer": { "show": false }, "sortBy": [ { "displayName": "Value", "desc": true } ] },
+          "options": {
+            "orientation": "horizontal",
+            "displayValues": true,
+            "valueMode": "color",
+            "legend": { "displayMode": "list", "placement": "bottom", "showLegend": false }
+          },
           "targets": [
             {
               "datasource": { "type": "prometheus", "uid": "prometheus" },
@@ -406,24 +412,26 @@
           ]
         },
         {
-          "type": "table",
+          "type": "bargauge",
           "title": "Output tokens by model",
           "datasource": { "type": "prometheus", "uid": "prometheus" },
           "fieldConfig": {
-            "defaults": { "unit": "short" },
-            "overrides": [
-              {
-                "matcher": { "id": "byName", "options": "Value" },
-                "properties": [
-                  { "id": "custom.displayMode", "value": "gauge" },
-                  { "id": "color", "value": { "mode": "palette-classic" } }
-                ]
-              }
-            ]
+            "defaults": {
+              "color": { "mode": "palette-classic" },
+              "mappings": [],
+              "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null } ] },
+              "unit": "short"
+            },
+            "overrides": []
           },
           "gridPos": { "h": 4, "w": 12, "x": 12, "y": 17 },
           "id": 212,
-          "options": { "showHeader": true, "footer": { "show": false }, "sortBy": [ { "displayName": "Value", "desc": true } ] },
+          "options": {
+            "orientation": "horizontal",
+            "displayValues": true,
+            "valueMode": "color",
+            "legend": { "displayMode": "list", "placement": "bottom", "showLegend": false }
+          },
           "targets": [
             {
               "datasource": { "type": "prometheus", "uid": "prometheus" },
