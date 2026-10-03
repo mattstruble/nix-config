@@ -278,6 +278,7 @@
                     --namespace monitoring \
                     --from-file=cluster-overview.json=${k8sDir}/apps/monitoring/dashboards/cluster-overview.json \
                     --from-file=llm-fleet.json=${k8sDir}/apps/monitoring/dashboards/llm-fleet.json \
+                    --from-file=llm-overview.json=${k8sDir}/apps/monitoring/dashboards/llm-overview.json \
                     --dry-run=client -o yaml | $KCTL apply -f - \
                 && $KCTL label configmap mjolnir-dashboards --namespace monitoring grafana_dashboard=1 --overwrite \
                 && $KCTL apply --server-side --force-conflicts -f "$KPS_CRDS" \
