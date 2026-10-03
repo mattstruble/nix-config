@@ -2,7 +2,7 @@
   "annotations": {
     "list": []
   },
-  "description": "Command center for the mjolnir LLM inference fleet: aggregate usage + cost, workload distribution by app/model, and live inference load. Data: Prometheus (litellm gateway, llamacpp pods, DCGM). Cost figures are estimates driven by the Cloud $/1M-tokens and Electricity $/kWh variables.",
+  "description": "Command center for the mjolnir LLM inference fleet: aggregate usage + cost, workload distribution by app/model, and live inference load. Data: Prometheus (litellm gateway, llamacpp pods, DCGM). Cost figures are estimates driven by the Cloud rate profile dropdown (per-token-type cloud_model_rates) and Electricity $/kWh.",
   "editable": true,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 1,
@@ -108,7 +108,7 @@
             {
               "datasource": { "type": "prometheus", "uid": "prometheus" },
               "editorMode": "code",
-              "expr": "sum(increase(litellm_total_tokens_metric_total[$__range])) / 1e6 * $cloud_rate",
+              "expr": "sum(increase(litellm_input_tokens_metric_total[$__range]))/1e6 * sum(cloud_model_rates{profile=\"$rate_profile\", token_type=\"input\"}) + sum(increase(litellm_input_cached_tokens_metric_total[$__range]))/1e6 * sum(cloud_model_rates{profile=\"$rate_profile\", token_type=\"cached\"}) + sum(increase(litellm_output_tokens_metric_total[$__range]))/1e6 * sum(cloud_model_rates{profile=\"$rate_profile\", token_type=\"output\"})",
               "legendFormat": "",
               "instant": true,
               "refId": "A"
@@ -180,7 +180,7 @@
             {
               "datasource": { "type": "prometheus", "uid": "prometheus" },
               "editorMode": "code",
-              "expr": "sum(increase(litellm_total_tokens_metric_total[1h])) / 1e6 * 24 * $cloud_rate - avg_over_time(sum(DCGM_FI_DEV_POWER_USAGE)[1h:1m]) / 1000 * 24 * $elec_rate",
+              "expr": "sum(increase(litellm_input_tokens_metric_total[1h]))/1e6 * 24 * sum(cloud_model_rates{profile=\"$rate_profile\", token_type=\"input\"}) + sum(increase(litellm_input_cached_tokens_metric_total[1h]))/1e6 * 24 * sum(cloud_model_rates{profile=\"$rate_profile\", token_type=\"cached\"}) + sum(increase(litellm_output_tokens_metric_total[1h]))/1e6 * 24 * sum(cloud_model_rates{profile=\"$rate_profile\", token_type=\"output\"}) - avg_over_time(sum(DCGM_FI_DEV_POWER_USAGE)[1h:1m]) / 1000 * 24 * $elec_rate",
               "legendFormat": "",
               "instant": true,
               "refId": "A"
@@ -594,19 +594,21 @@
   "templating": {
     "list": [
       {
-        "name": "cloud_rate",
-        "label": "Cloud $/1M tokens",
-        "type": "textbox",
-        "query": "1",
-        "current": { "text": "1", "value": "1" },
-        "description": "Assumed cloud API price per 1M tokens used to estimate cost avoided. Tune to the comparable model you'd otherwise call."
+        "name": "rate_profile",
+        "label": "Cloud rate profile",
+        "type": "query",
+        "datasource": { "type": "prometheus", "uid": "prometheus" },
+        "query": "label_values(cloud_model_rates, profile)",
+        "refresh": 1,
+        "current": { "text": "glm-5.3", "value": "glm-5.3" },
+        "description": "Cloud API pricing profile (per-token-type rates from cloud_model_rates) used to estimate cost avoided. Pick the comparable model you'd otherwise call."
       },
       {
         "name": "elec_rate",
         "label": "Electricity $/kWh",
         "type": "textbox",
-        "query": "0.16",
-        "current": { "text": "0.16", "value": "0.16" },
+        "query": "0.215",
+        "current": { "text": "0.215", "value": "0.215" },
         "description": "Electricity price per kWh used to estimate GPU power cost."
       }
     ]
