@@ -334,7 +334,7 @@
             "orientation": "horizontal",
             "displayValues": true,
             "valueMode": "color",
-            "legend": { "displayMode": "list", "placement": "bottom", "showLegend": false }
+            "legend": { "displayMode": "list", "placement": "left", "showLegend": true }
           },
           "targets": [
             {
@@ -366,7 +366,7 @@
             "orientation": "horizontal",
             "displayValues": true,
             "valueMode": "color",
-            "legend": { "displayMode": "list", "placement": "bottom", "showLegend": false }
+            "legend": { "displayMode": "list", "placement": "left", "showLegend": true }
           },
           "targets": [
             {
@@ -398,7 +398,7 @@
             "orientation": "horizontal",
             "displayValues": true,
             "valueMode": "color",
-            "legend": { "displayMode": "list", "placement": "bottom", "showLegend": false }
+            "legend": { "displayMode": "list", "placement": "left", "showLegend": true }
           },
           "targets": [
             {
@@ -430,7 +430,7 @@
             "orientation": "horizontal",
             "displayValues": true,
             "valueMode": "color",
-            "legend": { "displayMode": "list", "placement": "bottom", "showLegend": false }
+            "legend": { "displayMode": "list", "placement": "left", "showLegend": true }
           },
           "targets": [
             {
