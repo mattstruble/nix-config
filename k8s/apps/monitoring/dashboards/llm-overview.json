@@ -334,7 +334,8 @@
             "orientation": "horizontal",
             "displayValues": true,
             "valueMode": "color",
-            "legend": { "displayMode": "list", "placement": "left", "showLegend": true }
+            "namePlacement": "left",
+            "legend": { "displayMode": "list", "placement": "bottom", "showLegend": false }
           },
           "targets": [
             {
@@ -366,7 +367,8 @@
             "orientation": "horizontal",
             "displayValues": true,
             "valueMode": "color",
-            "legend": { "displayMode": "list", "placement": "left", "showLegend": true }
+            "namePlacement": "left",
+            "legend": { "displayMode": "list", "placement": "bottom", "showLegend": false }
           },
           "targets": [
             {
@@ -398,7 +400,8 @@
             "orientation": "horizontal",
             "displayValues": true,
             "valueMode": "color",
-            "legend": { "displayMode": "list", "placement": "left", "showLegend": true }
+            "namePlacement": "left",
+            "legend": { "displayMode": "list", "placement": "bottom", "showLegend": false }
           },
           "targets": [
             {
@@ -430,7 +433,8 @@
             "orientation": "horizontal",
             "displayValues": true,
             "valueMode": "color",
-            "legend": { "displayMode": "list", "placement": "left", "showLegend": true }
+            "namePlacement": "left",
+            "legend": { "displayMode": "list", "placement": "bottom", "showLegend": false }
           },
           "targets": [
             {
