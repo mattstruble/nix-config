@@ -12,7 +12,7 @@ set -euo pipefail
 NAME="${1:?usage: just mint-key <name>}"
 F="nix/services/homelab/homelab-secrets.yaml"
 GATEWAY="${LITELLM_GATEWAY:-http://mjolnir:8000}"
-YQ=(nix run nixpkgs#yq)
+YQ=(nix run nixpkgs#yq --)
 
 command -v sops >/dev/null || { echo "sops not on PATH" >&2; exit 1; }
 
