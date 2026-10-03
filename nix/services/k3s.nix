@@ -281,6 +281,7 @@
                     --from-file=llm-overview.json=${k8sDir}/apps/monitoring/dashboards/llm-overview.json \
                     --dry-run=client -o yaml | $KCTL apply -f - \
                 && $KCTL label configmap mjolnir-dashboards --namespace monitoring grafana_dashboard=1 --overwrite \
+                && $KCTL apply -f ${k8sDir}/manifests/cloud-model-rates.yaml \
                 && $KCTL apply --server-side --force-conflicts -f "$KPS_CRDS" \
                 && $KCTL apply -f "$T/kps-rendered.yaml" \
                 && $KCTL rollout restart deploy/kps-kube-prometheus-stack-operator --namespace monitoring \

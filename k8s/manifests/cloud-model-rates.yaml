@@ -1,0 +1,63 @@
+# Recording rules exposing per-model API pricing as constant gauges:
+# cloud_model_rates{profile, token_type} in USD per 1M tokens.
+#
+# vector() produces an UNLABELED series, so each (profile, token_type) pair
+# needs its own rule with nested label_replace to attach the labels. Multiple
+# rules may share the same record name as long as their label sets differ.
+# token_type is pinned to {input, cached, output}.
+#
+# Rates as of 2026-07 (USD per 1M tokens):
+#   glm-5.3:        input 1.40, cached 0.26, output 4.40
+#   gpt-5:          input 1.25, cached 0.125, output 10.00
+#   claude-opus-5:  input 5.00, cached 0.50, output 25.00
+#   gemini-3.1-pro: input 2.00, cached 0.20, output 12.00
+#   grok-4.6:       input 2.00, cached 0.50, output 6.00
+#
+# Applied at activation time (see nix/services/k3s.nix), inside the retry
+# loop after the monitoring namespace is guaranteed to exist.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: cloud-model-rates
+  namespace: monitoring
+spec:
+  groups:
+    - name: cloud-model-rates
+      # Constants — a long interval keeps the eval cost negligible.
+      interval: 5m
+      rules:
+        # glm-5.3
+        - record: cloud_model_rates
+          expr: label_replace(label_replace(vector(1.40), "profile", "glm-5.3", "", ""), "token_type", "input", "", "")
+        - record: cloud_model_rates
+          expr: label_replace(label_replace(vector(0.26), "profile", "glm-5.3", "", ""), "token_type", "cached", "", "")
+        - record: cloud_model_rates
+          expr: label_replace(label_replace(vector(4.40), "profile", "glm-5.3", "", ""), "token_type", "output", "", "")
+        # gpt-5
+        - record: cloud_model_rates
+          expr: label_replace(label_replace(vector(1.25), "profile", "gpt-5", "", ""), "token_type", "input", "", "")
+        - record: cloud_model_rates
+          expr: label_replace(label_replace(vector(0.125), "profile", "gpt-5", "", ""), "token_type", "cached", "", "")
+        - record: cloud_model_rates
+          expr: label_replace(label_replace(vector(10.00), "profile", "gpt-5", "", ""), "token_type", "output", "", "")
+        # claude-opus-5
+        - record: cloud_model_rates
+          expr: label_replace(label_replace(vector(5.00), "profile", "claude-opus-5", "", ""), "token_type", "input", "", "")
+        - record: cloud_model_rates
+          expr: label_replace(label_replace(vector(0.50), "profile", "claude-opus-5", "", ""), "token_type", "cached", "", "")
+        - record: cloud_model_rates
+          expr: label_replace(label_replace(vector(25.00), "profile", "claude-opus-5", "", ""), "token_type", "output", "", "")
+        # gemini-3.1-pro
+        - record: cloud_model_rates
+          expr: label_replace(label_replace(vector(2.00), "profile", "gemini-3.1-pro", "", ""), "token_type", "input", "", "")
+        - record: cloud_model_rates
+          expr: label_replace(label_replace(vector(0.20), "profile", "gemini-3.1-pro", "", ""), "token_type", "cached", "", "")
+        - record: cloud_model_rates
+          expr: label_replace(label_replace(vector(12.00), "profile", "gemini-3.1-pro", "", ""), "token_type", "output", "", "")
+        # grok-4.6
+        - record: cloud_model_rates
+          expr: label_replace(label_replace(vector(2.00), "profile", "grok-4.6", "", ""), "token_type", "input", "", "")
+        - record: cloud_model_rates
+          expr: label_replace(label_replace(vector(0.50), "profile", "grok-4.6", "", ""), "token_type", "cached", "", "")
+        - record: cloud_model_rates
+          expr: label_replace(label_replace(vector(6.00), "profile", "grok-4.6", "", ""), "token_type", "output", "", "")
