@@ -108,7 +108,7 @@
             {
               "datasource": { "type": "prometheus", "uid": "prometheus" },
               "editorMode": "code",
-              "expr": "sum(increase(litellm_input_tokens_metric_total[$__range]))/1e6 * sum(cloud_model_rates{profile=\"$rate_profile\", token_type=\"input\"}) + sum(increase(litellm_input_cached_tokens_metric_total[$__range]))/1e6 * sum(cloud_model_rates{profile=\"$rate_profile\", token_type=\"cached\"}) + sum(increase(litellm_output_tokens_metric_total[$__range]))/1e6 * sum(cloud_model_rates{profile=\"$rate_profile\", token_type=\"output\"})",
+              "expr": "(sum(increase(litellm_input_tokens_metric_total[$__range])) - sum(increase(litellm_input_cached_tokens_metric_total[$__range])))/1e6 * sum(cloud_model_rates{profile=\"$rate_profile\", token_type=\"input\"}) + sum(increase(litellm_input_cached_tokens_metric_total[$__range]))/1e6 * sum(cloud_model_rates{profile=\"$rate_profile\", token_type=\"cached\"}) + sum(increase(litellm_output_tokens_metric_total[$__range]))/1e6 * sum(cloud_model_rates{profile=\"$rate_profile\", token_type=\"output\"})",
               "legendFormat": "",
               "instant": true,
               "refId": "A"
@@ -180,7 +180,7 @@
             {
               "datasource": { "type": "prometheus", "uid": "prometheus" },
               "editorMode": "code",
-              "expr": "sum(increase(litellm_input_tokens_metric_total[1h]))/1e6 * 24 * sum(cloud_model_rates{profile=\"$rate_profile\", token_type=\"input\"}) + sum(increase(litellm_input_cached_tokens_metric_total[1h]))/1e6 * 24 * sum(cloud_model_rates{profile=\"$rate_profile\", token_type=\"cached\"}) + sum(increase(litellm_output_tokens_metric_total[1h]))/1e6 * 24 * sum(cloud_model_rates{profile=\"$rate_profile\", token_type=\"output\"}) - avg_over_time(sum(DCGM_FI_DEV_POWER_USAGE)[1h:1m]) / 1000 * 24 * $elec_rate",
+              "expr": "(sum(increase(litellm_input_tokens_metric_total[1h])) - sum(increase(litellm_input_cached_tokens_metric_total[1h])))/1e6 * 24 * sum(cloud_model_rates{profile=\"$rate_profile\", token_type=\"input\"}) + sum(increase(litellm_input_cached_tokens_metric_total[1h]))/1e6 * 24 * sum(cloud_model_rates{profile=\"$rate_profile\", token_type=\"cached\"}) + sum(increase(litellm_output_tokens_metric_total[1h]))/1e6 * 24 * sum(cloud_model_rates{profile=\"$rate_profile\", token_type=\"output\"}) - avg_over_time(sum(DCGM_FI_DEV_POWER_USAGE)[1h:1m]) / 1000 * 24 * $elec_rate",
               "legendFormat": "",
               "instant": true,
               "refId": "A"
