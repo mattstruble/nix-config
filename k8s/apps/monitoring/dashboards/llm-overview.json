@@ -464,12 +464,16 @@
           "gridPos": { "h": 8, "w": 16, "x": 0, "y": 22 },
           "id": 213,
           "options": { "showHeader": true, "footer": { "show": false } },
-          "transformations": [ { "id": "reshape", "options": { "mode": "wide" } } ],
+          "transformations": [
+            { "id": "labelsToFields", "options": { "labelNames": [ "requested_model", "metric" ], "mode": "labelsToFields", "renameLabel": "" } },
+            { "id": "merge", "options": {} },
+            { "id": "pivot", "options": { "row": "requested_model", "column": "metric", "value": "Value", "aggregation": "lastNotNull" } }
+          ],
           "targets": [
             {
               "datasource": { "type": "prometheus", "uid": "prometheus" },
               "editorMode": "code",
-              "expr": "sum by (requested_model) (increase(litellm_proxy_total_requests_metric_total[$__range]))",
+              "expr": "label_replace(sum by (requested_model) (increase(litellm_proxy_total_requests_metric_total[$__range])), \"metric\", \"Requests (range)\", \"\", \"\")",
               "legendFormat": "Requests (range)",
               "instant": true,
               "refId": "A"
@@ -477,7 +481,7 @@
             {
               "datasource": { "type": "prometheus", "uid": "prometheus" },
               "editorMode": "code",
-              "expr": "sum by (requested_model) (increase(litellm_total_tokens_metric_total[$__range]))",
+              "expr": "label_replace(sum by (requested_model) (increase(litellm_total_tokens_metric_total[$__range])), \"metric\", \"Tokens (range)\", \"\", \"\")",
               "legendFormat": "Tokens (range)",
               "instant": true,
               "refId": "B"
@@ -485,7 +489,7 @@
             {
               "datasource": { "type": "prometheus", "uid": "prometheus" },
               "editorMode": "code",
-              "expr": "histogram_quantile(0.95, sum by (le, requested_model) (rate(litellm_llm_api_time_to_first_token_metric_bucket[5m])))",
+              "expr": "label_replace(histogram_quantile(0.95, sum by (le, requested_model) (rate(litellm_llm_api_time_to_first_token_metric_bucket[5m]))), \"metric\", \"TTFT p95 (s)\", \"\", \"\")",
               "legendFormat": "TTFT p95 (s)",
               "instant": true,
               "refId": "C"
@@ -493,7 +497,7 @@
             {
               "datasource": { "type": "prometheus", "uid": "prometheus" },
               "editorMode": "code",
-              "expr": "histogram_quantile(0.95, sum by (le, requested_model) (rate(litellm_request_total_latency_metric_bucket[5m])))",
+              "expr": "label_replace(histogram_quantile(0.95, sum by (le, requested_model) (rate(litellm_request_total_latency_metric_bucket[5m]))), \"metric\", \"Latency p95 (s)\", \"\", \"\")",
               "legendFormat": "Latency p95 (s)",
               "instant": true,
               "refId": "D"
