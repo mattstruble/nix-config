@@ -94,7 +94,7 @@
               },
               "editorMode": "code",
               "exemplar": true,
-              "expr": "sum by (job) (rate(llamacpp:tokens_predicted_total{job=~\"$model\"}[5m]))",
+              "expr": "sum by (job) (llamacpp:predicted_tokens_seconds{job=~\"$model\"})",
               "legendFormat": "{{job}}",
               "range": true,
               "refId": "A"
@@ -174,7 +174,7 @@
               },
               "editorMode": "code",
               "exemplar": true,
-              "expr": "sum by (job) (rate(llamacpp:prompt_tokens_total{job=~\"$model\"}[5m]))",
+              "expr": "sum by (job) (llamacpp:prompt_tokens_seconds{job=~\"$model\"})",
               "legendFormat": "{{job}}",
               "range": true,
               "refId": "A"
