@@ -332,6 +332,7 @@
           "id": 209,
           "options": {
             "orientation": "horizontal",
+            "sortDesc": true,
             "displayValues": true,
             "valueMode": "color",
             "namePlacement": "left",
@@ -365,6 +366,7 @@
           "id": 210,
           "options": {
             "orientation": "horizontal",
+            "sortDesc": true,
             "displayValues": true,
             "valueMode": "color",
             "namePlacement": "left",
@@ -398,6 +400,7 @@
           "id": 211,
           "options": {
             "orientation": "horizontal",
+            "sortDesc": true,
             "displayValues": true,
             "valueMode": "color",
             "namePlacement": "left",
@@ -431,6 +434,7 @@
           "id": 212,
           "options": {
             "orientation": "horizontal",
+            "sortDesc": true,
             "displayValues": true,
             "valueMode": "color",
             "namePlacement": "left",
@@ -474,7 +478,7 @@
               "datasource": { "type": "prometheus", "uid": "prometheus" },
               "editorMode": "code",
               "expr": "label_replace(sum by (requested_model) (increase(litellm_proxy_total_requests_metric_total[$__range])), \"metric\", \"Requests (range)\", \"\", \"\")",
-              "legendFormat": "Requests (range)",
+              "legendFormat": "Value",
               "instant": true,
               "refId": "A"
             },
@@ -482,7 +486,7 @@
               "datasource": { "type": "prometheus", "uid": "prometheus" },
               "editorMode": "code",
               "expr": "label_replace(sum by (requested_model) (increase(litellm_total_tokens_metric_total[$__range])), \"metric\", \"Tokens (range)\", \"\", \"\")",
-              "legendFormat": "Tokens (range)",
+              "legendFormat": "Value",
               "instant": true,
               "refId": "B"
             },
@@ -490,7 +494,7 @@
               "datasource": { "type": "prometheus", "uid": "prometheus" },
               "editorMode": "code",
               "expr": "label_replace(histogram_quantile(0.95, sum by (le, requested_model) (rate(litellm_llm_api_time_to_first_token_metric_bucket[5m]))), \"metric\", \"TTFT p95 (s)\", \"\", \"\")",
-              "legendFormat": "TTFT p95 (s)",
+              "legendFormat": "Value",
               "instant": true,
               "refId": "C"
             },
@@ -498,7 +502,7 @@
               "datasource": { "type": "prometheus", "uid": "prometheus" },
               "editorMode": "code",
               "expr": "label_replace(histogram_quantile(0.95, sum by (le, requested_model) (rate(litellm_request_total_latency_metric_bucket[5m]))), \"metric\", \"Latency p95 (s)\", \"\", \"\")",
-              "legendFormat": "Latency p95 (s)",
+              "legendFormat": "Value",
               "instant": true,
               "refId": "D"
             }
