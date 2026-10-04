@@ -5,8 +5,10 @@ metadata:
   labels:
     app.kubernetes.io/part-of: ai
 data:
-  # Tails the model's log (shared emptyDir) and exposes the LIVE decode/prefill
-  # rates as gauges. llama.cpp prints the live rate in the log:
+  # Tails the model's log (shared emptyDir), exposes the LIVE decode/prefill
+  # rates as gauges, and echoes each line to its own stdout so Alloy ships the
+  # model's log to Loki (the model's stdout is redirected to this file, so the
+  # container-runtime log is empty without the echo). llama.cpp prints the live rate in the log:
   #   decode:  "tg_3s = 31.90 t/s"
   #   prefill: "prompt processing, ... t = 20.59 s / 525.34 tokens per second"
   # The /metrics endpoint only has completion gauges, so the log is the only
@@ -38,6 +40,8 @@ data:
                     f = open(LOG_FILE, "r", errors="replace")
                     f.seek(0, 2)
                 line = f.readline()
+                if line:
+                    print(line, end="", flush=True)  # -> own stdout -> Alloy -> Loki
                 if not line:
                     size = os.path.getsize(LOG_FILE)
                     if size < f.tell():      # truncated (model restart / rotation)

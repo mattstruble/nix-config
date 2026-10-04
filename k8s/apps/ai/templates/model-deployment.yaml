@@ -155,7 +155,10 @@ spec:
             - name: LOG_FILE
               value: /var/log/llama.log
             - name: MODEL
-              value: {{ $m.modelName }}
+              # deployment name (== Prometheus job label), NOT modelName (the
+              # dotted gateway name): the dashboard's $model var is job-sourced,
+              # so the label must match it for per-model filtering to work.
+              value: {{ $name }}
             - name: POD
               valueFrom:
                 fieldRef:
