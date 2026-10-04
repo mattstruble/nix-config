@@ -1,631 +1,1386 @@
 {
   "annotations": {
-    "list": []
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": {
+          "type": "grafana",
+          "uid": "-- Grafana --"
+        },
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      }
+    ]
   },
   "description": "Command center for the mjolnir LLM inference fleet: aggregate usage + cost, workload distribution by app/model, and live inference load. Data: Prometheus (litellm gateway, llamacpp pods, DCGM). Cost figures are estimates driven by the Cloud rate profile dropdown (per-token-type cloud_model_rates) and Electricity $/kWh.",
   "editable": true,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 1,
-  "id": null,
-  "links": [],
+  "id": 3238731674816512,
+  "liveNow": false,
   "panels": [
     {
-      "type": "row",
-      "title": "Usage & cost",
       "collapsed": false,
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
-      "id": 200,
-      "panels": [
-        {
-          "type": "stat",
-          "title": "Total tokens (range)",
-          "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "fieldConfig": {
-            "defaults": {
-              "color": { "mode": "thresholds" },
-              "mappings": [],
-              "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null } ] },
-              "unit": "short"
-            },
-            "overrides": []
-          },
-          "gridPos": { "h": 4, "w": 4, "x": 0, "y": 1 },
-          "id": 201,
-          "options": {
-            "colorMode": "value",
-            "graphMode": "area",
-            "justifyMode": "auto",
-            "reduceOptions": { "calcs": [ "lastNotNull" ], "fields": "", "values": false },
-            "textMode": "auto"
-          },
-          "targets": [
-            {
-              "datasource": { "type": "prometheus", "uid": "prometheus" },
-              "editorMode": "code",
-              "expr": "sum(increase(litellm_total_tokens_metric_total[$__range]))",
-              "legendFormat": "",
-              "instant": true,
-              "refId": "A"
-            }
-          ]
-        },
-        {
-          "type": "stat",
-          "title": "Total requests (range)",
-          "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "fieldConfig": {
-            "defaults": {
-              "color": { "mode": "thresholds" },
-              "mappings": [],
-              "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null } ] },
-              "unit": "short"
-            },
-            "overrides": []
-          },
-          "gridPos": { "h": 4, "w": 4, "x": 4, "y": 1 },
-          "id": 202,
-          "options": {
-            "colorMode": "value",
-            "graphMode": "area",
-            "justifyMode": "auto",
-            "reduceOptions": { "calcs": [ "lastNotNull" ], "fields": "", "values": false },
-            "textMode": "auto"
-          },
-          "targets": [
-            {
-              "datasource": { "type": "prometheus", "uid": "prometheus" },
-              "editorMode": "code",
-              "expr": "sum(increase(litellm_proxy_total_requests_metric_total[$__range]))",
-              "legendFormat": "",
-              "instant": true,
-              "refId": "A"
-            }
-          ]
-        },
-        {
-          "type": "stat",
-          "title": "Est. cloud cost avoided (range)",
-          "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "fieldConfig": {
-            "defaults": {
-              "color": { "mode": "thresholds" },
-              "mappings": [],
-              "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null } ] },
-              "unit": "currencyUSD"
-            },
-            "overrides": []
-          },
-          "gridPos": { "h": 4, "w": 4, "x": 8, "y": 1 },
-          "id": 203,
-          "options": {
-            "colorMode": "value",
-            "graphMode": "area",
-            "justifyMode": "auto",
-            "reduceOptions": { "calcs": [ "lastNotNull" ], "fields": "", "values": false },
-            "textMode": "auto"
-          },
-          "targets": [
-            {
-              "datasource": { "type": "prometheus", "uid": "prometheus" },
-              "editorMode": "code",
-              "expr": "(sum(increase(litellm_input_tokens_metric_total[$__range])) - sum(increase(litellm_input_cached_tokens_metric_total[$__range])))/1e6 * sum(cloud_model_rates{profile=\"$rate_profile\", token_type=\"input\"}) + sum(increase(litellm_input_cached_tokens_metric_total[$__range]))/1e6 * sum(cloud_model_rates{profile=\"$rate_profile\", token_type=\"cached\"}) + sum(increase(litellm_output_tokens_metric_total[$__range]))/1e6 * sum(cloud_model_rates{profile=\"$rate_profile\", token_type=\"output\"})",
-              "legendFormat": "",
-              "instant": true,
-              "refId": "A"
-            }
-          ]
-        },
-        {
-          "type": "stat",
-          "title": "Est. electricity cost ($/day)",
-          "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "fieldConfig": {
-            "defaults": {
-              "color": { "mode": "thresholds" },
-              "mappings": [],
-              "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null } ] },
-              "unit": "currencyUSD"
-            },
-            "overrides": []
-          },
-          "gridPos": { "h": 4, "w": 4, "x": 12, "y": 1 },
-          "id": 204,
-          "options": {
-            "colorMode": "value",
-            "graphMode": "area",
-            "justifyMode": "auto",
-            "reduceOptions": { "calcs": [ "lastNotNull" ], "fields": "", "values": false },
-            "textMode": "auto"
-          },
-          "targets": [
-            {
-              "datasource": { "type": "prometheus", "uid": "prometheus" },
-              "editorMode": "code",
-              "expr": "avg_over_time(sum(DCGM_FI_DEV_POWER_USAGE)[1h:1m]) / 1000 * 24 * $elec_rate",
-              "legendFormat": "",
-              "instant": true,
-              "refId": "A"
-            }
-          ]
-        },
-        {
-          "type": "stat",
-          "title": "Net savings ($/day)",
-          "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "fieldConfig": {
-            "defaults": {
-              "color": { "mode": "thresholds" },
-              "mappings": [],
-              "thresholds": {
-                "mode": "absolute",
-                "steps": [
-                  { "color": "red", "value": null },
-                  { "color": "green", "value": 0 }
-                ]
-              },
-              "unit": "currencyUSD"
-            },
-            "overrides": []
-          },
-          "gridPos": { "h": 4, "w": 4, "x": 16, "y": 1 },
-          "id": 205,
-          "options": {
-            "colorMode": "value",
-            "graphMode": "area",
-            "justifyMode": "auto",
-            "reduceOptions": { "calcs": [ "lastNotNull" ], "fields": "", "values": false },
-            "textMode": "auto"
-          },
-          "targets": [
-            {
-              "datasource": { "type": "prometheus", "uid": "prometheus" },
-              "editorMode": "code",
-              "expr": "(sum(increase(litellm_input_tokens_metric_total[1h])) - sum(increase(litellm_input_cached_tokens_metric_total[1h])))/1e6 * 24 * sum(cloud_model_rates{profile=\"$rate_profile\", token_type=\"input\"}) + sum(increase(litellm_input_cached_tokens_metric_total[1h]))/1e6 * 24 * sum(cloud_model_rates{profile=\"$rate_profile\", token_type=\"cached\"}) + sum(increase(litellm_output_tokens_metric_total[1h]))/1e6 * 24 * sum(cloud_model_rates{profile=\"$rate_profile\", token_type=\"output\"}) - avg_over_time(sum(DCGM_FI_DEV_POWER_USAGE)[1h:1m]) / 1000 * 24 * $elec_rate",
-              "legendFormat": "",
-              "instant": true,
-              "refId": "A"
-            }
-          ]
-        },
-        {
-          "type": "stat",
-          "title": "Avg GPU power (range)",
-          "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "fieldConfig": {
-            "defaults": {
-              "color": { "mode": "thresholds" },
-              "mappings": [],
-              "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null } ] },
-              "unit": "watt"
-            },
-            "overrides": []
-          },
-          "gridPos": { "h": 4, "w": 4, "x": 20, "y": 1 },
-          "id": 206,
-          "options": {
-            "colorMode": "value",
-            "graphMode": "area",
-            "justifyMode": "auto",
-            "reduceOptions": { "calcs": [ "lastNotNull" ], "fields": "", "values": false },
-            "textMode": "auto"
-          },
-          "targets": [
-            {
-              "datasource": { "type": "prometheus", "uid": "prometheus" },
-              "editorMode": "code",
-              "expr": "avg_over_time(sum(DCGM_FI_DEV_POWER_USAGE)[$__range:1m])",
-              "legendFormat": "",
-              "instant": true,
-              "refId": "A"
-            }
-          ]
-        },
-        {
-          "type": "timeseries",
-          "title": "Total tokens/s",
-          "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "fieldConfig": {
-            "defaults": {
-              "color": { "mode": "palette-classic" },
-              "custom": {
-                "drawStyle": "line",
-                "lineWidth": 1,
-                "fillOpacity": 25,
-                "pointSize": 5,
-                "showPoints": "auto",
-                "spanNulls": true,
-                "stacking": { "mode": "none", "group": "A" },
-                "gradientMode": "none",
-                "axisPlacement": "auto",
-                "scaleDistribution": { "type": "linear" }
-              },
-              "mappings": [],
-              "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null } ] },
-              "unit": "tps"
-            },
-            "overrides": []
-          },
-          "gridPos": { "h": 7, "w": 12, "x": 0, "y": 5 },
-          "id": 207,
-          "options": {
-            "legend": { "calcs": [ "mean", "lastNotNull" ], "displayMode": "table", "placement": "bottom", "showLegend": false },
-            "tooltip": { "mode": "multi", "sort": "desc" }
-          },
-          "targets": [
-            {
-              "datasource": { "type": "prometheus", "uid": "prometheus" },
-              "editorMode": "code",
-              "exemplar": true,
-              "expr": "sum(rate(litellm_total_tokens_metric_total[10m]))",
-              "legendFormat": "tokens/s",
-              "range": true,
-              "refId": "A"
-            }
-          ]
-        },
-        {
-          "type": "timeseries",
-          "title": "GPU power draw (W)",
-          "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "fieldConfig": {
-            "defaults": {
-              "color": { "mode": "palette-classic" },
-              "custom": {
-                "drawStyle": "line",
-                "lineWidth": 1,
-                "fillOpacity": 25,
-                "pointSize": 5,
-                "showPoints": "auto",
-                "spanNulls": true,
-                "stacking": { "mode": "none", "group": "A" },
-                "gradientMode": "none",
-                "axisPlacement": "auto",
-                "scaleDistribution": { "type": "linear" }
-              },
-              "mappings": [],
-              "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null } ] },
-              "unit": "watt"
-            },
-            "overrides": []
-          },
-          "gridPos": { "h": 7, "w": 12, "x": 12, "y": 5 },
-          "id": 208,
-          "options": {
-            "legend": { "calcs": [ "mean", "lastNotNull" ], "displayMode": "table", "placement": "bottom", "showLegend": false },
-            "tooltip": { "mode": "multi", "sort": "desc" }
-          },
-          "targets": [
-            {
-              "datasource": { "type": "prometheus", "uid": "prometheus" },
-              "editorMode": "code",
-              "exemplar": true,
-              "expr": "sum(DCGM_FI_DEV_POWER_USAGE)",
-              "legendFormat": "total W",
-              "range": true,
-              "refId": "A"
-            }
-          ]
-        }
-      ]
-    },
-    {
-      "type": "row",
-      "title": "Where it's coming from",
-      "collapsed": false,
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 12 },
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
       "id": 216,
-      "panels": [
-        {
-          "type": "bargauge",
-          "title": "Input tokens by app",
-          "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "fieldConfig": {
-            "defaults": {
-              "color": { "mode": "palette-classic" },
-              "mappings": [],
-              "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null } ] },
-              "unit": "short"
-            },
-            "overrides": []
-          },
-          "gridPos": { "h": 4, "w": 12, "x": 0, "y": 13 },
-          "id": 209,
-          "options": {
-            "reduceOptions": { "calcs": [ "lastNotNull" ], "fields": "", "values": false, "sort": "desc" },
-            "orientation": "horizontal",
-            "sortDesc": true,
-            "displayValues": true,
-            "valueMode": "color",
-            "namePlacement": "left",
-            "legend": { "displayMode": "list", "placement": "bottom", "showLegend": false }
-          },
-          "targets": [
-            {
-              "datasource": { "type": "prometheus", "uid": "prometheus" },
-              "editorMode": "code",
-              "expr": "sum by (api_key_alias) (increase(litellm_input_tokens_metric_total[$__range]))",
-              "legendFormat": "{{api_key_alias}}",
-              "instant": true,
-              "refId": "A"
-            }
-          ]
-        },
-        {
-          "type": "bargauge",
-          "title": "Output tokens by app",
-          "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "fieldConfig": {
-            "defaults": {
-              "color": { "mode": "palette-classic" },
-              "mappings": [],
-              "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null } ] },
-              "unit": "short"
-            },
-            "overrides": []
-          },
-          "gridPos": { "h": 4, "w": 12, "x": 12, "y": 13 },
-          "id": 210,
-          "options": {
-            "reduceOptions": { "calcs": [ "lastNotNull" ], "fields": "", "values": false, "sort": "desc" },
-            "orientation": "horizontal",
-            "sortDesc": true,
-            "displayValues": true,
-            "valueMode": "color",
-            "namePlacement": "left",
-            "legend": { "displayMode": "list", "placement": "bottom", "showLegend": false }
-          },
-          "targets": [
-            {
-              "datasource": { "type": "prometheus", "uid": "prometheus" },
-              "editorMode": "code",
-              "expr": "sum by (api_key_alias) (increase(litellm_output_tokens_metric_total[$__range]))",
-              "legendFormat": "{{api_key_alias}}",
-              "instant": true,
-              "refId": "A"
-            }
-          ]
-        },
-        {
-          "type": "bargauge",
-          "title": "Input tokens by model",
-          "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "fieldConfig": {
-            "defaults": {
-              "color": { "mode": "palette-classic" },
-              "mappings": [],
-              "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null } ] },
-              "unit": "short"
-            },
-            "overrides": []
-          },
-          "gridPos": { "h": 4, "w": 12, "x": 0, "y": 17 },
-          "id": 211,
-          "options": {
-            "reduceOptions": { "calcs": [ "lastNotNull" ], "fields": "", "values": false, "sort": "desc" },
-            "orientation": "horizontal",
-            "sortDesc": true,
-            "displayValues": true,
-            "valueMode": "color",
-            "namePlacement": "left",
-            "legend": { "displayMode": "list", "placement": "bottom", "showLegend": false }
-          },
-          "targets": [
-            {
-              "datasource": { "type": "prometheus", "uid": "prometheus" },
-              "editorMode": "code",
-              "expr": "sum by (model) (increase(litellm_input_tokens_metric_total[$__range]))",
-              "legendFormat": "{{model}}",
-              "instant": true,
-              "refId": "A"
-            }
-          ]
-        },
-        {
-          "type": "bargauge",
-          "title": "Output tokens by model",
-          "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "fieldConfig": {
-            "defaults": {
-              "color": { "mode": "palette-classic" },
-              "mappings": [],
-              "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null } ] },
-              "unit": "short"
-            },
-            "overrides": []
-          },
-          "gridPos": { "h": 4, "w": 12, "x": 12, "y": 17 },
-          "id": 212,
-          "options": {
-            "reduceOptions": { "calcs": [ "lastNotNull" ], "fields": "", "values": false, "sort": "desc" },
-            "orientation": "horizontal",
-            "sortDesc": true,
-            "displayValues": true,
-            "valueMode": "color",
-            "namePlacement": "left",
-            "legend": { "displayMode": "list", "placement": "bottom", "showLegend": false }
-          },
-          "targets": [
-            {
-              "datasource": { "type": "prometheus", "uid": "prometheus" },
-              "editorMode": "code",
-              "expr": "sum by (model) (increase(litellm_output_tokens_metric_total[$__range]))",
-              "legendFormat": "{{model}}",
-              "instant": true,
-              "refId": "A"
-            }
-          ]
-        }
-      ]
+      "title": "Usage & cost",
+      "type": "row"
     },
     {
-      "type": "row",
-      "title": "Live inference",
-      "collapsed": false,
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 21 },
-      "id": 217,
-      "panels": [
-        {
-          "type": "table",
-          "title": "Per-model live status",
-          "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "fieldConfig": { "defaults": {}, "overrides": [] },
-          "gridPos": { "h": 8, "w": 16, "x": 0, "y": 22 },
-          "id": 213,
-          "options": { "showHeader": true, "footer": { "show": false } },
-          "transformations": [
-            { "id": "labelsToFields", "options": { "labelNames": [ "requested_model", "metric" ], "mode": "labelsToFields", "renameLabel": "" } },
-            { "id": "merge", "options": {} },
-            { "id": "groupingToMatrix", "options": { "columnField": "metric", "rowField": "requested_model", "valueField": "Value", "mode": "groupingToMatrix" } },
-            { "id": "organize", "options": { "excludeByName": {}, "indexByName": {}, "renameByName": { "requested_model\\metric": "Model" }, "mode": "organize" } }
-          ],
-          "targets": [
-            {
-              "datasource": { "type": "prometheus", "uid": "prometheus" },
-              "editorMode": "code",
-              "expr": "label_replace(sum by (requested_model) (increase(litellm_proxy_total_requests_metric_total[$__range])), \"metric\", \"Requests (range)\", \"\", \"\")",
-              "legendFormat": "Value",
-              "instant": true,
-              "refId": "A"
-            },
-            {
-              "datasource": { "type": "prometheus", "uid": "prometheus" },
-              "editorMode": "code",
-              "expr": "label_replace(sum by (requested_model) (increase(litellm_total_tokens_metric_total[$__range])), \"metric\", \"Tokens (range)\", \"\", \"\")",
-              "legendFormat": "Value",
-              "instant": true,
-              "refId": "B"
-            },
-            {
-              "datasource": { "type": "prometheus", "uid": "prometheus" },
-              "editorMode": "code",
-              "expr": "label_replace(histogram_quantile(0.95, sum by (le, requested_model) (rate(litellm_llm_api_time_to_first_token_metric_bucket[5m]))), \"metric\", \"TTFT p95 (s)\", \"\", \"\")",
-              "legendFormat": "Value",
-              "instant": true,
-              "refId": "C"
-            },
-            {
-              "datasource": { "type": "prometheus", "uid": "prometheus" },
-              "editorMode": "code",
-              "expr": "label_replace(histogram_quantile(0.95, sum by (le, requested_model) (rate(litellm_request_total_latency_metric_bucket[5m]))), \"metric\", \"Latency p95 (s)\", \"\", \"\")",
-              "legendFormat": "Value",
-              "instant": true,
-              "refId": "D"
-            }
-          ]
-        },
-        {
-          "type": "gauge",
-          "title": "Active requests (instantaneous)",
-          "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "fieldConfig": {
-            "defaults": {
-              "color": { "mode": "thresholds" },
-              "mappings": [],
-              "thresholds": {
-                "mode": "absolute",
-                "steps": [
-                  { "color": "green", "value": null },
-                  { "color": "yellow", "value": 2 },
-                  { "color": "red", "value": 4 }
-                ]
-              },
-              "unit": "none",
-              "min": 0
-            },
-            "overrides": []
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
           },
-          "gridPos": { "h": 8, "w": 8, "x": 16, "y": 22 },
-          "id": 214,
-          "options": {
-            "reduceOptions": { "calcs": [ "lastNotNull" ], "fields": "", "values": false },
-            "showThresholdLabels": false,
-            "showThresholdMarkers": true
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              }
+            ]
           },
-          "targets": [
-            {
-              "datasource": { "type": "prometheus", "uid": "prometheus" },
-              "editorMode": "code",
-              "expr": "sum(llamacpp:requests_processing)",
-              "legendFormat": "",
-              "instant": true,
-              "refId": "A"
-            }
-          ]
-        },
-        {
-          "type": "timeseries",
-          "title": "Requests/s by source (api_key_alias)",
-          "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "fieldConfig": {
-            "defaults": {
-              "color": { "mode": "palette-classic" },
-              "custom": {
-                "drawStyle": "line",
-                "lineWidth": 1,
-                "fillOpacity": 15,
-                "pointSize": 5,
-                "showPoints": "auto",
-                "spanNulls": true,
-                "stacking": { "mode": "normal", "group": "A" },
-                "gradientMode": "none",
-                "axisPlacement": "auto",
-                "scaleDistribution": { "type": "linear" }
-              },
-              "mappings": [],
-              "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null } ] },
-              "unit": "reqps"
-            },
-            "overrides": []
-          },
-          "gridPos": { "h": 7, "w": 24, "x": 0, "y": 30 },
-          "id": 215,
-          "options": {
-            "legend": { "calcs": [ "mean", "lastNotNull" ], "displayMode": "table", "placement": "bottom", "showLegend": "{{api_key_alias}}" },
-            "tooltip": { "mode": "multi", "sort": "desc" }
-          },
-          "targets": [
-            {
-              "datasource": { "type": "prometheus", "uid": "prometheus" },
-              "editorMode": "code",
-              "exemplar": true,
-              "expr": "sum by (api_key_alias) (rate(litellm_proxy_total_requests_metric_total{api_key_alias!=\"\"}[5m]))",
-              "legendFormat": "{{api_key_alias}}",
-              "range": true,
-              "refId": "A"
-            }
-          ]
+          "unit": "short"
         }
-      ]
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 0,
+        "y": 1
+      },
+      "id": 201,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "percentChangeColorMode": "standard",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showPercentChange": false,
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "pluginVersion": "13.2.2",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum(increase(litellm_total_tokens_metric_total[$__range]))",
+          "instant": true,
+          "legendFormat": "",
+          "refId": "A"
+        }
+      ],
+      "title": "Total tokens (range)",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              }
+            ]
+          },
+          "unit": "short"
+        }
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 4,
+        "y": 1
+      },
+      "id": 202,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "percentChangeColorMode": "standard",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showPercentChange": false,
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "pluginVersion": "13.2.2",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum(increase(litellm_proxy_total_requests_metric_total[$__range]))",
+          "instant": true,
+          "legendFormat": "",
+          "refId": "A"
+        }
+      ],
+      "title": "Total requests (range)",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              }
+            ]
+          },
+          "unit": "currencyUSD"
+        }
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 8,
+        "y": 1
+      },
+      "id": 203,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "percentChangeColorMode": "standard",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showPercentChange": false,
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "pluginVersion": "13.2.2",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "(sum(increase(litellm_input_tokens_metric_total[$__range])) - sum(increase(litellm_input_cached_tokens_metric_total[$__range])))/1e6 * sum(cloud_model_rates{profile=\"$rate_profile\", token_type=\"input\"}) + sum(increase(litellm_input_cached_tokens_metric_total[$__range]))/1e6 * sum(cloud_model_rates{profile=\"$rate_profile\", token_type=\"cached\"}) + sum(increase(litellm_output_tokens_metric_total[$__range]))/1e6 * sum(cloud_model_rates{profile=\"$rate_profile\", token_type=\"output\"})",
+          "instant": true,
+          "legendFormat": "",
+          "refId": "A"
+        }
+      ],
+      "title": "Est. cloud cost avoided (range)",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              }
+            ]
+          },
+          "unit": "currencyUSD"
+        }
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 12,
+        "y": 1
+      },
+      "id": 204,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "percentChangeColorMode": "standard",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showPercentChange": false,
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "pluginVersion": "13.2.2",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "avg_over_time(sum(DCGM_FI_DEV_POWER_USAGE)[$__range:1m]) / 1000 * ($__range / 3600000) * $elec_rate",
+          "instant": true,
+          "legendFormat": "",
+          "refId": "A"
+        }
+      ],
+      "title": "Est. electricity cost (range)",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": 0
+              },
+              {
+                "color": "green",
+                "value": 0
+              }
+            ]
+          },
+          "unit": "currencyUSD"
+        }
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 16,
+        "y": 1
+      },
+      "id": 205,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "percentChangeColorMode": "standard",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showPercentChange": false,
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "pluginVersion": "13.2.2",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "(sum(increase(litellm_input_tokens_metric_total[$__range])) - sum(increase(litellm_input_cached_tokens_metric_total[$__range])))/1e6 * sum(cloud_model_rates{profile=\"$rate_profile\", token_type=\"input\"}) + sum(increase(litellm_input_cached_tokens_metric_total[$__range]))/1e6 * sum(cloud_model_rates{profile=\"$rate_profile\", token_type=\"cached\"}) + sum(increase(litellm_output_tokens_metric_total[$__range]))/1e6 * sum(cloud_model_rates{profile=\"$rate_profile\", token_type=\"output\"}) - avg_over_time(sum(DCGM_FI_DEV_POWER_USAGE)[$__range:1m]) / 1000 * ($__range / 3600000) * $elec_rate",
+          "instant": true,
+          "legendFormat": "",
+          "refId": "A"
+        }
+      ],
+      "title": "Net savings (range)",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              }
+            ]
+          },
+          "unit": "watt"
+        }
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 20,
+        "y": 1
+      },
+      "id": 206,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "percentChangeColorMode": "standard",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showPercentChange": false,
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "pluginVersion": "13.2.2",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "avg_over_time(sum(DCGM_FI_DEV_POWER_USAGE)[$__range:1m])",
+          "instant": true,
+          "legendFormat": "",
+          "refId": "A"
+        }
+      ],
+      "title": "Avg GPU power (range)",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 25,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "showValues": false,
+            "spanNulls": true,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              }
+            ]
+          },
+          "unit": "tps"
+        }
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 0,
+        "y": 5
+      },
+      "id": 207,
+      "options": {
+        "legend": {
+          "calcs": [
+            "mean",
+            "lastNotNull"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": false
+        },
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "pluginVersion": "13.2.2",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "exemplar": true,
+          "expr": "sum(rate(litellm_total_tokens_metric_total[10m]))",
+          "legendFormat": "tokens/s",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Total tokens/s",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 25,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "showValues": false,
+            "spanNulls": true,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              }
+            ]
+          },
+          "unit": "watt"
+        }
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 12,
+        "y": 5
+      },
+      "id": 208,
+      "options": {
+        "legend": {
+          "calcs": [
+            "mean",
+            "lastNotNull"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": false
+        },
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "pluginVersion": "13.2.2",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "exemplar": true,
+          "expr": "sum(DCGM_FI_DEV_POWER_USAGE)",
+          "legendFormat": "total W",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "GPU power draw (W)",
+      "type": "timeseries"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 12
+      },
+      "id": 217,
+      "title": "Where it's coming from",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "continuous-GrYlRd"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              }
+            ]
+          },
+          "unit": "short"
+        }
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 12,
+        "x": 0,
+        "y": 13
+      },
+      "id": 209,
+      "options": {
+        "displayMode": "gradient",
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": false
+        },
+        "maxVizHeight": 30,
+        "minVizHeight": 16,
+        "minVizWidth": 8,
+        "namePlacement": "left",
+        "orientation": "horizontal",
+        "reduceOptions": {
+          "calcs": [],
+          "fields": "",
+          "values": true
+        },
+        "showUnfilled": true,
+        "sizing": "manual",
+        "valueMode": "color"
+      },
+      "pluginVersion": "13.2.2",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (api_key_alias) (increase(litellm_input_tokens_metric_total[$__range]))",
+          "instant": true,
+          "legendFormat": "{{api_key_alias}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Input tokens by app",
+      "transformations": [
+        {
+          "id": "reduce",
+          "options": {
+            "labelsToFields": false,
+            "mode": "seriesToRows",
+            "reducers": [
+              "lastNotNull"
+            ]
+          }
+        },
+        {
+          "id": "sortBy",
+          "options": {
+            "fields": {},
+            "sort": [
+              {
+                "desc": true,
+                "field": "Last *"
+              }
+            ]
+          }
+        }
+      ],
+      "type": "bargauge"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "continuous-GrYlRd"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              }
+            ]
+          },
+          "unit": "short"
+        }
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 12,
+        "x": 12,
+        "y": 13
+      },
+      "id": 210,
+      "options": {
+        "displayMode": "gradient",
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": false
+        },
+        "maxVizHeight": 30,
+        "minVizHeight": 16,
+        "minVizWidth": 8,
+        "namePlacement": "left",
+        "orientation": "horizontal",
+        "reduceOptions": {
+          "calcs": [],
+          "fields": "",
+          "values": true
+        },
+        "showUnfilled": true,
+        "sizing": "manual",
+        "valueMode": "color"
+      },
+      "pluginVersion": "13.2.2",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (api_key_alias) (increase(litellm_output_tokens_metric_total[$__range]))",
+          "instant": true,
+          "legendFormat": "{{api_key_alias}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Output tokens by app",
+      "transformations": [
+        {
+          "id": "reduce",
+          "options": {
+            "labelsToFields": false,
+            "mode": "seriesToRows",
+            "reducers": [
+              "lastNotNull"
+            ]
+          }
+        },
+        {
+          "id": "sortBy",
+          "options": {
+            "fields": {},
+            "sort": [
+              {
+                "desc": true,
+                "field": "Last *"
+              }
+            ]
+          }
+        }
+      ],
+      "type": "bargauge"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "continuous-GrYlRd"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              }
+            ]
+          },
+          "unit": "short"
+        }
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 12,
+        "x": 0,
+        "y": 17
+      },
+      "id": 211,
+      "options": {
+        "displayMode": "gradient",
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": false
+        },
+        "maxVizHeight": 30,
+        "minVizHeight": 16,
+        "minVizWidth": 8,
+        "namePlacement": "left",
+        "orientation": "horizontal",
+        "reduceOptions": {
+          "calcs": [],
+          "fields": "",
+          "values": true
+        },
+        "showUnfilled": true,
+        "sizing": "manual",
+        "valueMode": "color"
+      },
+      "pluginVersion": "13.2.2",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (model) (increase(litellm_input_tokens_metric_total[$__range]))",
+          "instant": true,
+          "legendFormat": "{{model}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Input tokens by model",
+      "transformations": [
+        {
+          "id": "reduce",
+          "options": {
+            "labelsToFields": false,
+            "mode": "seriesToRows",
+            "reducers": [
+              "lastNotNull"
+            ]
+          }
+        },
+        {
+          "id": "sortBy",
+          "options": {
+            "fields": {},
+            "sort": [
+              {
+                "desc": true,
+                "field": "Last *"
+              }
+            ]
+          }
+        }
+      ],
+      "type": "bargauge"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "continuous-GrYlRd"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              }
+            ]
+          },
+          "unit": "short"
+        }
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 12,
+        "x": 12,
+        "y": 17
+      },
+      "id": 212,
+      "options": {
+        "displayMode": "gradient",
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": false
+        },
+        "maxVizHeight": 30,
+        "minVizHeight": 16,
+        "minVizWidth": 8,
+        "namePlacement": "left",
+        "orientation": "horizontal",
+        "reduceOptions": {
+          "calcs": [],
+          "fields": "",
+          "values": true
+        },
+        "showUnfilled": true,
+        "sizing": "manual",
+        "valueMode": "color"
+      },
+      "pluginVersion": "13.2.2",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (model) (increase(litellm_output_tokens_metric_total[$__range]))",
+          "instant": true,
+          "legendFormat": "{{model}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Output tokens by model",
+      "transformations": [
+        {
+          "id": "reduce",
+          "options": {
+            "labelsToFields": false,
+            "mode": "seriesToRows",
+            "reducers": [
+              "lastNotNull"
+            ]
+          }
+        },
+        {
+          "id": "sortBy",
+          "options": {
+            "fields": {},
+            "sort": [
+              {
+                "desc": true,
+                "field": "Last *"
+              }
+            ]
+          }
+        }
+      ],
+      "type": "bargauge"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 21
+      },
+      "id": 218,
+      "title": "Live inference",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            },
+            "footer": {
+              "reducers": []
+            },
+            "inspect": false
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          }
+        }
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 16,
+        "x": 0,
+        "y": 22
+      },
+      "id": 213,
+      "options": {
+        "cellHeight": "sm",
+        "showHeader": true
+      },
+      "pluginVersion": "13.2.2",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "label_replace(sum by (requested_model) (increase(litellm_proxy_total_requests_metric_total[$__range])), \"metric\", \"Requests (range)\", \"\", \"\")",
+          "instant": true,
+          "legendFormat": "Value",
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "label_replace(sum by (requested_model) (increase(litellm_total_tokens_metric_total[$__range])), \"metric\", \"Tokens (range)\", \"\", \"\")",
+          "instant": true,
+          "legendFormat": "Value",
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "label_replace(histogram_quantile(0.95, sum by (le, requested_model) (rate(litellm_llm_api_time_to_first_token_metric_bucket[5m]))), \"metric\", \"TTFT p95 (s)\", \"\", \"\")",
+          "instant": true,
+          "legendFormat": "Value",
+          "refId": "C"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "label_replace(histogram_quantile(0.95, sum by (le, requested_model) (rate(litellm_request_total_latency_metric_bucket[5m]))), \"metric\", \"Latency p95 (s)\", \"\", \"\")",
+          "instant": true,
+          "legendFormat": "Value",
+          "refId": "D"
+        }
+      ],
+      "title": "Per-model live status",
+      "transformations": [
+        {
+          "id": "labelsToFields",
+          "options": {
+            "labelNames": [
+              "requested_model",
+              "metric"
+            ],
+            "mode": "labelsToFields",
+            "renameLabel": ""
+          }
+        },
+        {
+          "id": "merge",
+          "options": {}
+        },
+        {
+          "id": "groupingToMatrix",
+          "options": {
+            "columnField": "metric",
+            "mode": "groupingToMatrix",
+            "rowField": "requested_model",
+            "valueField": "Value"
+          }
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {},
+            "indexByName": {},
+            "mode": "organize",
+            "renameByName": {
+              "requested_model\\metric": "Model"
+            }
+          }
+        }
+      ],
+      "type": "table"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              },
+              {
+                "color": "yellow",
+                "value": 2
+              },
+              {
+                "color": "red",
+                "value": 4
+              }
+            ]
+          },
+          "unit": "none"
+        }
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 22
+      },
+      "id": 214,
+      "options": {
+        "barShape": "flat",
+        "barWidthFactor": 0.5,
+        "effects": {
+          "barGlow": false,
+          "centerGlow": false,
+          "gradient": false
+        },
+        "endpointMarker": "point",
+        "minVizHeight": 75,
+        "minVizWidth": 75,
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "segmentCount": 1,
+        "segmentSpacing": 0.3,
+        "shape": "gauge",
+        "showThresholdLabels": false,
+        "showThresholdMarkers": true,
+        "sizing": "auto",
+        "sparkline": false,
+        "textMode": "auto"
+      },
+      "pluginVersion": "13.2.2",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum(llamacpp:requests_processing)",
+          "instant": true,
+          "legendFormat": "",
+          "refId": "A"
+        }
+      ],
+      "title": "Active requests (instantaneous)",
+      "type": "gauge"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 15,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "showValues": false,
+            "spanNulls": true,
+            "stacking": {
+              "group": "A",
+              "mode": "normal"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              }
+            ]
+          },
+          "unit": "reqps"
+        }
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 24,
+        "x": 0,
+        "y": 30
+      },
+      "id": 215,
+      "options": {
+        "legend": {
+          "calcs": [
+            "mean",
+            "lastNotNull"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": "{{api_key_alias}}"
+        },
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "pluginVersion": "13.2.2",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "exemplar": true,
+          "expr": "sum by (api_key_alias) (rate(litellm_proxy_total_requests_metric_total{api_key_alias!=\"\"}[5m]))",
+          "legendFormat": "{{api_key_alias}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Requests/s by source (api_key_alias)",
+      "type": "timeseries"
     }
   ],
-  "schemaVersion": 39,
-  "tags": [ "mjolnir" ],
+  "preload": false,
+  "refresh": "",
+  "schemaVersion": 42,
+  "tags": [
+    "mjolnir"
+  ],
   "templating": {
     "list": [
       {
-        "name": "rate_profile",
+        "allowCustomValue": true,
+        "current": {
+          "text": "glm-5.3",
+          "value": "glm-5.3"
+        },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "description": "Cloud API pricing profile (per-token-type rates from cloud_model_rates) used to estimate cost avoided. Pick the comparable model you'd otherwise call.",
+        "hide": 0,
+        "includeAll": false,
         "label": "Cloud rate profile",
-        "type": "query",
-        "datasource": { "type": "prometheus", "uid": "prometheus" },
+        "multi": false,
+        "name": "rate_profile",
+        "options": [],
         "query": "label_values(cloud_model_rates, profile)",
         "refresh": 1,
-        "current": { "text": "glm-5.3", "value": "glm-5.3" },
-        "description": "Cloud API pricing profile (per-token-type rates from cloud_model_rates) used to estimate cost avoided. Pick the comparable model you'd otherwise call."
+        "regex": "",
+        "regexApplyTo": "value",
+        "skipUrlSync": false,
+        "sort": 0,
+        "type": "query"
       },
       {
-        "name": "elec_rate",
+        "current": {
+          "text": "0.215",
+          "value": "0.215"
+        },
+        "description": "Electricity price per kWh used to estimate GPU power cost.",
+        "hide": 0,
         "label": "Electricity $/kWh",
-        "type": "textbox",
+        "name": "elec_rate",
         "query": "0.215",
-        "current": { "text": "0.215", "value": "0.215" },
-        "description": "Electricity price per kWh used to estimate GPU power cost."
+        "skipUrlSync": false,
+        "type": "textbox"
       }
     ]
   },
-  "time": { "from": "now-6h", "to": "now" },
-  "timepicker": {},
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "timepicker": {
+    "refresh_intervals": [
+      "5s",
+      "10s",
+      "30s",
+      "1m",
+      "5m",
+      "15m",
+      "30m",
+      "1h",
+      "2h",
+      "1d"
+    ]
+  },
   "timezone": "browser",
   "title": "mjolnir LLM overview",
   "uid": "mjolnir-llm-overview",
-  "version": 1
+  "version": 13
 }
