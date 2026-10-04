@@ -331,6 +331,7 @@
           "gridPos": { "h": 4, "w": 12, "x": 0, "y": 13 },
           "id": 209,
           "options": {
+            "reduceOptions": { "calcs": [ "lastNotNull" ], "fields": "", "values": false, "sort": "desc" },
             "orientation": "horizontal",
             "sortDesc": true,
             "displayValues": true,
@@ -365,6 +366,7 @@
           "gridPos": { "h": 4, "w": 12, "x": 12, "y": 13 },
           "id": 210,
           "options": {
+            "reduceOptions": { "calcs": [ "lastNotNull" ], "fields": "", "values": false, "sort": "desc" },
             "orientation": "horizontal",
             "sortDesc": true,
             "displayValues": true,
@@ -399,6 +401,7 @@
           "gridPos": { "h": 4, "w": 12, "x": 0, "y": 17 },
           "id": 211,
           "options": {
+            "reduceOptions": { "calcs": [ "lastNotNull" ], "fields": "", "values": false, "sort": "desc" },
             "orientation": "horizontal",
             "sortDesc": true,
             "displayValues": true,
@@ -433,6 +436,7 @@
           "gridPos": { "h": 4, "w": 12, "x": 12, "y": 17 },
           "id": 212,
           "options": {
+            "reduceOptions": { "calcs": [ "lastNotNull" ], "fields": "", "values": false, "sort": "desc" },
             "orientation": "horizontal",
             "sortDesc": true,
             "displayValues": true,
@@ -471,7 +475,8 @@
           "transformations": [
             { "id": "labelsToFields", "options": { "labelNames": [ "requested_model", "metric" ], "mode": "labelsToFields", "renameLabel": "" } },
             { "id": "merge", "options": {} },
-            { "id": "pivot", "options": { "row": "requested_model", "column": "metric", "value": "Value", "aggregation": "lastNotNull" } }
+            { "id": "groupingToMatrix", "options": { "columnField": "metric", "rowField": "requested_model", "valueField": "Value", "mode": "groupingToMatrix" } },
+            { "id": "organize", "options": { "excludeByName": {}, "indexByName": {}, "renameByName": { "requested_model\\metric": "Model" }, "mode": "organize" } }
           ],
           "targets": [
             {
