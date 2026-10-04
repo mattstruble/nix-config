@@ -627,11 +627,13 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
+      "description": "Workaround for grafana/grafana#130146 - bargauge hides the name when only one bar is shown. Remove this description and the displayName override once Grafana >= 13.3.0 ships, and use textMode: value_and_name instead.",
       "fieldConfig": {
         "defaults": {
           "color": {
             "mode": "continuous-GrYlRd"
           },
+          "displayName": "${__data.fields[0]}",
           "thresholds": {
             "mode": "absolute",
             "steps": [
@@ -719,11 +721,13 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
+      "description": "Workaround for grafana/grafana#130146 - bargauge hides the name when only one bar is shown. Remove this description and the displayName override once Grafana >= 13.3.0 ships, and use textMode: value_and_name instead.",
       "fieldConfig": {
         "defaults": {
           "color": {
             "mode": "continuous-GrYlRd"
           },
+          "displayName": "${__data.fields[0]}",
           "thresholds": {
             "mode": "absolute",
             "steps": [
@@ -811,11 +815,13 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
+      "description": "Workaround for grafana/grafana#130146 - bargauge hides the name when only one bar is shown. Remove this description and the displayName override once Grafana >= 13.3.0 ships, and use textMode: value_and_name instead.",
       "fieldConfig": {
         "defaults": {
           "color": {
             "mode": "continuous-GrYlRd"
           },
+          "displayName": "${__data.fields[0]}",
           "thresholds": {
             "mode": "absolute",
             "steps": [
@@ -903,11 +909,13 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
+      "description": "Workaround for grafana/grafana#130146 - bargauge hides the name when only one bar is shown. Remove this description and the displayName override once Grafana >= 13.3.0 ships, and use textMode: value_and_name instead.",
       "fieldConfig": {
         "defaults": {
           "color": {
             "mode": "continuous-GrYlRd"
           },
+          "displayName": "${__data.fields[0]}",
           "thresholds": {
             "mode": "absolute",
             "steps": [
