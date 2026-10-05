@@ -514,7 +514,7 @@
                 "uid": "prometheus"
               },
               "editorMode": "code",
-              "expr": "sum by (job) (llamacpp:spec_decode_num_accepted_tokens_total{job=~\"$model\"}) / sum by (job) (llamacpp:spec_decode_num_draft_tokens_total{job=~\"$model\"})",
+              "expr": "sum by (job) (rate(llamacpp:spec_decode_num_accepted_tokens_total{job=~\"$model\"}[5m])) / sum by (job) (rate(llamacpp:spec_decode_num_draft_tokens_total{job=~\"$model\"}[5m]))",
               "legendFormat": "{{job}}",
               "refId": "A",
               "instant": true
