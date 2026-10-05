@@ -1,7 +1,7 @@
 # kube-prometheus-stack values for mjolnir (chart 91.7.0, bundles Grafana 13.2.2).
 #
-# RENDERED AT BUILD TIME: __TELEGRAM_BOT_TOKEN__ and __TELEGRAM_CHAT_ID__ are
-# substituted from sops (see nix/services/k3s.nix -> kpsValuesRendered). Do not
+# RENDERED AT ACTIVATION: ${TELEGRAM_BOT_TOKEN} and ${TELEGRAM_CHAT_ID} are
+# substituted from sops via envsubst (see nix/services/k3s.nix). Do not
 # commit real tokens to this file.
 
 # Let our additionalServiceMonitors be picked up without requiring the chart's
@@ -140,6 +140,6 @@ alertmanager:
     receivers:
       - name: telegram
         telegram_configs:
-          - bot_token: __TELEGRAM_BOT_TOKEN__
-            chat_id: __TELEGRAM_CHAT_ID__
+          - bot_token: ${TELEGRAM_BOT_TOKEN}
+            chat_id: ${TELEGRAM_CHAT_ID}
             api_url: https://api.telegram.org

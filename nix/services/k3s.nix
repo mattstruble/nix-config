@@ -71,32 +71,25 @@
         # fetchFromGitHub hashes the UNPACKED dir (not the tarball).
         sha256 = "c7239684e46a7547969c45c39532ec02e5843dbdeaf7e8a818939bc32b091419"; # pragma: allowlist secret
       };
-      dcgmChartRendered = pkgs.runCommand "dcgm-chart-rendered" {
-        nativeBuildInputs = [ pkgs.kubernetes-helm ];
-      } ''
-        mkdir -p $out
-        helm template dcgm-exporter ${dcgmChartSrc}/deployment \
-          -f ${k8sDir}/apps/monitoring/values/dcgm-exporter.yaml \
-          --namespace monitoring > $out/rendered.yaml
-      '';
-      # Loki + Alloy: static values, rendered at build time (helm template accepts
-      # the pre-fetched .tgz chart directly).
-      lokiChartRendered = pkgs.runCommand "loki-chart-rendered" {
-        nativeBuildInputs = [ pkgs.kubernetes-helm ];
-      } ''
-        mkdir -p $out
-        helm template loki ${lokiChart} \
-          -f ${k8sDir}/apps/monitoring/values/loki.yaml \
-          --namespace monitoring > $out/rendered.yaml
-      '';
-      alloyChartRendered = pkgs.runCommand "alloy-chart-rendered" {
-        nativeBuildInputs = [ pkgs.kubernetes-helm ];
-      } ''
-        mkdir -p $out
-        helm template alloy ${alloyChart} \
-          -f ${k8sDir}/apps/monitoring/values/alloy.yaml \
-          --namespace monitoring > $out/rendered.yaml
-      '';
+      # dcgm/loki/alloy: static values, rendered at build time (helm template
+      # accepts the pre-fetched .tgz chart directly).
+      # release: the helm release name (charts embed it in resource names,
+      # so it must stay what the cluster already runs).
+      monitoringCharts = {
+        dcgm = { release = "dcgm-exporter"; chart = "${dcgmChartSrc}/deployment"; values = "${k8sDir}/apps/monitoring/values/dcgm-exporter.yaml"; };
+        loki = { release = "loki"; chart = lokiChart; values = "${k8sDir}/apps/monitoring/values/loki.yaml"; };
+        alloy = { release = "alloy"; chart = alloyChart; values = "${k8sDir}/apps/monitoring/values/alloy.yaml"; };
+      };
+      monitoringChartRendered = lib.mapAttrs (name: { release, chart, values }:
+        pkgs.runCommand "${name}-chart-rendered" {
+          nativeBuildInputs = [ pkgs.kubernetes-helm ];
+        } ''
+          mkdir -p $out
+          helm template ${release} ${chart} \
+            -f ${values} \
+            --namespace monitoring > $out/rendered.yaml
+        ''
+      ) monitoringCharts;
     in
     {
       config = lib.mkIf cfg.enable {
@@ -171,12 +164,11 @@
         # inside strings, which Nix does NOT track as a dependency on its own —
         # without this the paths are never built and the apply fails at deploy
         # time.
-        system.build.aiChartRendered = aiChartRendered;
-        system.build.dcgmChartRendered = dcgmChartRendered;
-        system.build.lokiChartRendered = lokiChartRendered;
-        system.build.alloyChartRendered = alloyChartRendered;
-        # kps chart (fetched .tgz) — rendered at activation, not build time.
-        system.build.kpsChart = kpsChart;
+        system.build = {
+          aiChartRendered = aiChartRendered;
+          # kps chart (fetched .tgz) — rendered at activation, not build time.
+          kpsChart = kpsChart;
+        } // lib.mapAttrs' (name: chart: lib.nameValuePair "${name}ChartRendered" chart) monitoringChartRendered;
 
         # Apply the rendered loki/alloy/ai/dcgm charts, and render + apply kps,
         # after activation. k3s may still be coming up (fresh install / upgrade),
@@ -185,8 +177,8 @@
         # time) because its alertmanager telegram creds + grafana admin password
         # come from sops, which only exist in /run/secrets/ at runtime.
         system.activationScripts.aiChart = {
-          # k3s + helm + sed aren't on the activation script's default PATH, so
-          # use full binary paths. (A store path in `deps` is rejected by deploy-rs.)
+          # k3s + helm + envsubst aren't on the activation script's default PATH,
+          # so use full binary paths. (A store path in `deps` is rejected by deploy-rs.)
           # Run after sops-nix materialises /run/secrets.
           deps = [ "setupSecrets" ];
           text = ''
@@ -194,7 +186,7 @@
             HELM="${pkgs.kubernetes-helm}/bin/helm"
             KPS_CHART="${kpsChart}"
             KPS_VALUES_SRC="${k8sDir}/apps/monitoring/values/kube-prometheus-stack.yaml"
-            SED="${pkgs.gnused}/bin/sed"
+            ENVSUBST="${pkgs.envsubst}/bin/envsubst"
             TAR="${pkgs.gnutar}/bin/tar"
             YQ="${pkgs.yq}/bin/yq"
             # tar -z spawns gzip as a child; it's not on the activation PATH.
@@ -269,9 +261,11 @@
             # grafana admin Secret. Done in a temp dir so nothing leaks to the store.
             T=$(mktemp -d)
             trap 'rm -rf "$T"' EXIT
-            $SED -e "s|__TELEGRAM_BOT_TOKEN__|$TG_TOKEN|" \
-                -e "s|__TELEGRAM_CHAT_ID__|$TG_CHAT|" \
-                "$KPS_VALUES_SRC" > "$T/kps-values.yaml"
+            # envsubst fills the sops placeholders (sed broke on tokens
+            # containing |, & or \). The SHELL-FORMAT arg restricts
+            # substitution to the two placeholders, so any other $ in the
+            # values file is left alone.
+            $ENVSUBST "''${TELEGRAM_BOT_TOKEN} ''${TELEGRAM_CHAT_ID}" < "$KPS_VALUES_SRC" > "$T/kps-values.yaml"
             # Render the kps templates (CRs + workloads) WITHOUT --include-crds;
             # the CRDs are extracted from the chart and applied separately below.
             $HELM template kps "$KPS_CHART" -f "$T/kps-values.yaml" \
@@ -289,7 +283,9 @@
             # just prunes them. --force-conflicts: we are the sole manager.
             # The operator detects CRDs only at startup; on a fresh install it
             # starts before the CRDs land and disables the prometheus/alertmanager
-            # controllers forever, so restart it after the CRDs are in place.
+            # controllers forever, so restart it after the CRDs are in place —
+            # but only when the CRDs were newly created (a restart on every
+            # activation would flap the operator for no reason).
             #
             # Label + split every manifest by prune scope. The kps render
             # spans monitoring/ (workloads + CRs), kube-system/ (the coredns
@@ -303,7 +299,7 @@
             label_all monitoring ".kind == \"ServiceAccount\"" ${k8sDir}/manifests/kubelet-monitoring.yaml > "$T/monitoring-kubelet-sa.json"
             label_all cluster ".kind == \"ClusterRoleBinding\"" ${k8sDir}/manifests/kubelet-monitoring.yaml > "$T/cluster-kubelet-crb.json"
             label_all default "true" ${aiChartRendered}/rendered.yaml > "$T/default-ai.json"
-            label_all monitoring "true" ${lokiChartRendered}/rendered.yaml ${alloyChartRendered}/rendered.yaml ${dcgmChartRendered}/rendered.yaml ${k8sDir}/manifests/cloud-model-rates.yaml > "$T/monitoring-charts.json"
+            label_all monitoring "true" ${monitoringChartRendered.loki}/rendered.yaml ${monitoringChartRendered.alloy}/rendered.yaml ${monitoringChartRendered.dcgm}/rendered.yaml ${k8sDir}/manifests/cloud-model-rates.yaml > "$T/monitoring-charts.json"
             cat "$T/cluster-kps.json" "$T/cluster-kubelet-crb.json" > "$T/cluster.yaml"
             cat "$T/monitoring-kubelet-sa.json" "$T/monitoring-kps.json" "$T/monitoring-charts.json" > "$T/monitoring-static.json"
             cat "$T/kube-system-kps.json" > "$T/kube-system.yaml"
@@ -323,12 +319,21 @@
               done
               # kubelet SA + RBAC (system:node-reader) must exist before its
               # token is minted (k8s 1.24+ no longer auto-creates SA token
-              # secrets; the 10y token avoids re-minting every deploy). The SA
-              # is applied WITHOUT --prune (the monitoring pass covers
-              # deletion) so a fresh install gets it before the token mint.
+              # secrets). The token is minted for 10 years — accepted
+              # trade-off for a single-node homelab: a shorter TTL would need
+              # re-mint machinery (a controller or a deploy hook that renews
+              # the Secret) which we deliberately don't run. The SA is applied
+              # WITHOUT --prune (the monitoring pass covers deletion) so a
+              # fresh install gets it before the token mint.
               # grafana admin creds as a proper K8s Secret (idempotent apply);
               # llm-api-key: the pod API key for llama.cpp /metrics auth
               # (derived from the chart values above).
+              # Fresh-install detection: the operator needs a restart only if
+              # any CRD was missing before this apply (see above).
+              CRDS_NEW=0
+              for f in "$KPS_CRDS"/*; do
+                $KCTL get crd "$($YQ -r '.metadata.name' "$f")" >/dev/null 2>&1 || CRDS_NEW=1
+              done
               # Grafana dashboards: the sidecar picks up any ConfigMap in this
               # namespace labelled grafana_dashboard (labelValue empty = any).
               # litellm-keys (default ns): master key + postgres password + the
@@ -372,8 +377,11 @@
                 && apply_pruned "$SEL_MONITORING" "monitoring" "$T/monitoring.yaml" \
                 && apply_pruned "$SEL_KUBE_SYSTEM" "kube-system" "$T/kube-system.yaml" \
                 && $KCTL label configmap mjolnir-dashboards --namespace monitoring grafana_dashboard=1 --overwrite \
-                && $KCTL rollout restart deploy/kps-kube-prometheus-stack-operator --namespace monitoring \
-                && exit 0
+                && { if [ "$CRDS_NEW" -eq 1 ]; then
+                    $KCTL rollout restart deploy/kps-kube-prometheus-stack-operator --namespace monitoring
+                  fi
+                  exit 0
+                }
               sleep 2
             done
             echo "error: chart apply failed after 60s" >&2
@@ -384,7 +392,15 @@
         # 6443: k3s API server. 9100: node-exporter, 10250: kubelet — both
         # are hostNetwork on the node and scraped by Prometheus from the pod
         # network, so the INPUT chain must let the pod CIDR reach them.
-        networking.firewall.allowedTCPPorts = [ 6443 9100 10250 ];
+        # allowedTCPPorts has no source restriction, so 9100/10250 get an
+        # explicit nftables rule scoped to the pod CIDR (k3s' default
+        # cluster-cidr) instead.
+        networking.firewall.allowedTCPPorts = [ 6443 ];
+        # extraInputRules is appended to the input-allow chain (nftables
+        # backend; extraCommands is iptables-only and asserts here).
+        networking.firewall.extraInputRules = ''
+          tcp dport { 9100, 10250 } ip saddr 10.42.0.0/16 accept
+        '';
         # NOTE: the LiteLLM gateway's hostPort 8000 is NOT covered by the
         # firewall above — hostPort traffic is DNAT'd via PREROUTING to the
         # pod CNI interface and never traverses the INPUT chain that
