@@ -48,6 +48,14 @@ prometheus:
     kubeControllerManager: false
     kubeProxy: false
   prometheusSpec:
+    # Initial values — tune after a week of real load.
+    resources:
+      requests:
+        cpu: 500m
+        memory: 2Gi
+      limits:
+        cpu: "2"
+        memory: 8Gi
     retention: 30d
     retentionSize: 20GB
     # Mount the LLM pod API key (llama.cpp /metrics auth) and the dedicated
@@ -75,8 +83,8 @@ prometheus:
             requests:
               storage: 20Gi
   # ServiceMonitors applied as part of the kps release (the ServiceMonitor CRD
-  # exists by then). DCGM is deployed in a later ticket; the monitor is harmless
-  # (no targets) until the dcgm-exporter Service exists.
+  # exists by then). The dcgm-exporter ServiceMonitor is live — the exporter is
+  # deployed in this release (k8s/apps/monitoring/values/dcgm-exporter.yaml).
   additionalServiceMonitors:
     - name: dcgm-exporter
       namespace: monitoring
@@ -122,6 +130,14 @@ prometheus:
           bearerTokenFile: /prometheus/llm-api-key/token
 
 grafana:
+  # Initial values — tune after a week of real load.
+  resources:
+    requests:
+      cpu: 100m
+      memory: 512Mi
+    limits:
+      cpu: 100m
+      memory: 512Mi
   # Loki for the LLM fleet dashboard's log panels. Fixed uids (prometheus/loki)
   # are referenced directly in the dashboards — the chart's initDatasources
   # rewrite runs a WATCH-mode init container that never exits and blocks the pod.

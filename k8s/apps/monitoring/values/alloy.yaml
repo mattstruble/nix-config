@@ -10,6 +10,14 @@ alloy:
   # Ephemeral WAL is fine for a homelab (logs re-tail on restart).
   storagePath: /tmp/alloy
   enableReporting: false
+  # Initial values — tune after a week of real load.
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 100m
+      memory: 256Mi
 
   configMap:
     create: true

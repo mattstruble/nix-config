@@ -10,6 +10,14 @@ deploymentMode: Monolithic
 
 singleBinary:
   replicas: 1
+  # Initial values — tune after a week of real load.
+  resources:
+    requests:
+      cpu: 200m
+      memory: 1Gi
+    limits:
+      cpu: 200m
+      memory: 1Gi
   persistence:
     enabled: true
     size: 10Gi

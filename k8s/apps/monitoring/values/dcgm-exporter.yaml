@@ -15,6 +15,26 @@ nodeSelector:
 serviceMonitor:
   enabled: false
 
+# Restrict the exported fields to the six the dashboards plot (the chart
+# default emits ~40). CSV format: FIELD, prometheus type, help. The chart
+# mounts this as /etc/dcgm-exporter/default-counters.csv.
+customMetrics: |
+  DCGM_FI_DEV_FB_FREE, gauge, Framebuffer memory free (in MiB).
+  DCGM_FI_DEV_FB_USED, gauge, Framebuffer memory used (in MiB).
+  DCGM_FI_DEV_GPU_TEMP, gauge, GPU temperature (in C).
+  DCGM_FI_DEV_GPU_UTIL, gauge, GPU utilization (in %).
+  DCGM_FI_DEV_MEMORY_TEMP, gauge, Memory temperature (in C).
+  DCGM_FI_DEV_POWER_USAGE, gauge, Power draw (in W).
+
+# Initial values — tune after a week of real load.
+resources:
+  requests:
+    cpu: 100m
+    memory: 512Mi
+  limits:
+    cpu: 100m
+    memory: 512Mi
+
 # No cluster-level pod RBAC (keeps the namespace PSS-friendly).
 kubernetes:
   enablePodLabels: false
