@@ -7,6 +7,7 @@
   "fiscalYearStartMonth": 0,
   "graphTooltip": 1,
   "id": null,
+  "refresh": "30s",
   "links": [],
   "panels": [
     {
@@ -86,7 +87,7 @@
                 "uid": "prometheus"
               },
               "editorMode": "code",
-              "expr": "kube_node_info",
+              "expr": "kube_node_status_condition{condition=\"Ready\"}",
               "legendFormat": "{{node}}",
               "refId": "A",
               "range": true
@@ -169,7 +170,7 @@
                 "uid": "prometheus"
               },
               "editorMode": "code",
-              "expr": "sum(rate(container_cpu_usage_seconds_total{node=~\"^$Node$\"}[5m])) / sum(machine_cpu_cores{node=~\"^$Node$\"}) * 100",
+              "expr": "sum(rate(container_cpu_usage_seconds_total{image!=\"\",node=~\"^$Node$\"}[5m])) / sum(machine_cpu_cores{node=~\"^$Node$\"}) * 100",
               "refId": "A",
               "range": true
             }
@@ -675,193 +676,6 @@
     },
     {
       "type": "row",
-      "title": "GPU Usage (DCGM)",
-      "collapsed": true,
-      "gridPos": {
-        "h": 1,
-        "w": 24,
-        "x": 0,
-        "y": 0
-      },
-      "id": 115,
-      "panels": [
-        {
-          "type": "timeseries",
-          "title": "GPU Utilization",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "fieldConfig": {
-            "defaults": {
-              "color": {
-                "mode": "palette-classic"
-              },
-              "custom": {
-                "drawStyle": "line",
-                "lineWidth": 1,
-                "fillOpacity": 15,
-                "pointSize": 5,
-                "showPoints": "auto",
-                "spanNulls": true,
-                "stacking": {
-                  "mode": "none",
-                  "group": "A"
-                },
-                "gradientMode": "none",
-                "axisPlacement": "auto",
-                "scaleDistribution": {
-                  "type": "linear"
-                }
-              },
-              "mappings": [],
-              "thresholds": {
-                "mode": "absolute",
-                "steps": [
-                  {
-                    "color": "green",
-                    "value": null
-                  }
-                ]
-              },
-              "unit": "percent",
-              "max": 100
-            },
-            "overrides": []
-          },
-          "gridPos": {
-            "h": 8,
-            "w": 12,
-            "x": 0,
-            "y": 1
-          },
-          "id": 113,
-          "options": {
-            "legend": {
-              "calcs": [
-                "mean",
-                "lastNotNull"
-              ],
-              "displayMode": "table",
-              "placement": "bottom",
-              "showLegend": "{{gpu}}"
-            },
-            "tooltip": {
-              "mode": "multi",
-              "sort": "desc"
-            }
-          },
-          "targets": [
-            {
-              "datasource": {
-                "type": "prometheus",
-                "uid": "prometheus"
-              },
-              "editorMode": "code",
-              "exemplar": true,
-              "expr": "DCGM_FI_DEV_GPU_UTIL",
-              "legendFormat": "{{gpu}}",
-              "range": true,
-              "refId": "A"
-            }
-          ]
-        },
-        {
-          "type": "timeseries",
-          "title": "GPU VRAM",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "fieldConfig": {
-            "defaults": {
-              "color": {
-                "mode": "palette-classic"
-              },
-              "custom": {
-                "drawStyle": "line",
-                "lineWidth": 1,
-                "fillOpacity": 15,
-                "pointSize": 5,
-                "showPoints": "auto",
-                "spanNulls": true,
-                "stacking": {
-                  "mode": "none",
-                  "group": "A"
-                },
-                "gradientMode": "none",
-                "axisPlacement": "auto",
-                "scaleDistribution": {
-                  "type": "linear"
-                }
-              },
-              "mappings": [],
-              "thresholds": {
-                "mode": "absolute",
-                "steps": [
-                  {
-                    "color": "green",
-                    "value": null
-                  }
-                ]
-              },
-              "unit": "Mib"
-            },
-            "overrides": []
-          },
-          "gridPos": {
-            "h": 8,
-            "w": 12,
-            "x": 12,
-            "y": 1
-          },
-          "id": 114,
-          "options": {
-            "legend": {
-              "calcs": [
-                "mean",
-                "lastNotNull"
-              ],
-              "displayMode": "table",
-              "placement": "bottom",
-              "showLegend": "GPU {{gpu}} free"
-            },
-            "tooltip": {
-              "mode": "multi",
-              "sort": "desc"
-            }
-          },
-          "targets": [
-            {
-              "datasource": {
-                "type": "prometheus",
-                "uid": "prometheus"
-              },
-              "editorMode": "code",
-              "exemplar": true,
-              "expr": "DCGM_FI_DEV_FB_USED",
-              "legendFormat": "GPU {{gpu}} used",
-              "range": true,
-              "refId": "A"
-            },
-            {
-              "datasource": {
-                "type": "prometheus",
-                "uid": "prometheus"
-              },
-              "editorMode": "code",
-              "exemplar": true,
-              "expr": "DCGM_FI_DEV_FB_FREE",
-              "legendFormat": "GPU {{gpu}} free",
-              "range": true,
-              "refId": "B"
-            }
-          ]
-        }
-      ]
-    },
-    {
-      "type": "row",
       "title": "Usage by Namespace",
       "collapsed": false,
       "gridPos": {
@@ -1109,6 +923,18 @@
               "legendFormat": "Received",
               "range": true,
               "refId": "A"
+            },
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "editorMode": "code",
+              "exemplar": true,
+              "expr": "sum(rate(container_network_transmit_bytes_total{node=~\"^$Node$\"}[5m]))",
+              "legendFormat": "Transmitted",
+              "range": true,
+              "refId": "B"
             }
           ]
         }

@@ -19,7 +19,7 @@
   "editable": true,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 1,
-  "id": 3238731674816512,
+  "id": null,
   "liveNow": false,
   "panels": [
     {
@@ -1322,7 +1322,7 @@
     }
   ],
   "preload": false,
-  "refresh": "",
+  "refresh": "1m",
   "schemaVersion": 42,
   "tags": [
     "mjolnir"

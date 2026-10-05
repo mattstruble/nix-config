@@ -7,6 +7,7 @@
   "fiscalYearStartMonth": 0,
   "graphTooltip": 1,
   "id": null,
+  "refresh": "30s",
   "links": [],
   "panels": [
     {
@@ -1599,7 +1600,7 @@
                 "type": "loki",
                 "uid": "loki"
               },
-              "expr": "{namespace=\"default\", pod=~\"($model).*\"}",
+              "expr": "{namespace=\"default\", pod=~\"($model)-.*\"}",
               "queryType": "range",
               "refId": "A"
             }
@@ -1616,7 +1617,7 @@
     "list": [
       {
         "name": "model",
-        "label": "Model (pod)",
+        "label": "Model (job)",
         "type": "query",
         "datasource": {
           "type": "prometheus",
