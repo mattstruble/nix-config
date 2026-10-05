@@ -20,17 +20,15 @@ label, so the LLM-fleet dashboard can break down requests/tokens per source.
 
 ## Prerequisites
 
-- The gateway is deployed with the Postgres key store:
-  - **Prod** (`http://mjolnir:8000`) — only after the cutover (`usePostgresKeys: true`).
-  - **Test pod** (`http://mjolnir:8001`) — while `testPod: true` (current state).
+- The gateway is deployed with the Postgres key store (`usePostgresKeys: true`),
+  at `http://mjolnir:8000`.
 - `sops` on PATH.
 - The master key is in sops (`.services.ai.litellm.master-key`). It gates `/key/*`.
 
 Check the gateway is up:
 
 ```bash
-curl -fsS http://mjolnir:8000/health/readiness   # prod
-curl -fsS http://mjolnir:8001/health/readiness   # test pod
+curl -fsS http://mjolnir:8000/health/readiness
 ```
 
 ---
@@ -53,12 +51,6 @@ rebase, and `just deploy` refuses a dirty tree:
 ```bash
 git add nix/services/homelab/homelab-secrets.yaml
 git commit -m "mint litellm key <name>"
-```
-
-To mint against the test pod instead of prod:
-
-```bash
-LITELLM_GATEWAY=http://mjolnir:8001 just mint-key pi
 ```
 
 ---
@@ -172,7 +164,7 @@ values.
 | Symptom | Cause / fix |
 |---------|-------------|
 | `no master key in ...` | `.services.ai.litellm.master-key` is missing from sops. |
-| `401` on `/key/generate` | Master key wrong, or the gateway isn't the key-store build (prod is keyless until the cutover). Mint against `:8001` while `testPod: true`. |
+| `401` on `/key/generate` | Master key wrong, or the gateway isn't the key-store build. |
 | `Key with alias '<name>' already exists` | Aliases are unique. Revoke the old key first, or use a new name. |
 | `mint failed` / connection refused | Gateway pod down. `ssh mjolnir 'sudo k3s kubectl get pods -n default -l app=litellm'`. |
 | Alias not in `/metrics` | No request has been made with that key yet (the label is per-request). Make one, then re-check. |

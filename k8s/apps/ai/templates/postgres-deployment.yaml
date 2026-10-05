@@ -1,4 +1,4 @@
-{{- if or .Values.gateway.usePostgresKeys .Values.gateway.testPod }}
+{{- if .Values.gateway.usePostgresKeys }}
 # Postgres for the LiteLLM key store (virtual keys, spend tracking). Single
 # replica, Recreate strategy (the PVC is RWO). Runs as the image's postgres
 # user (999); fsGroup maps the PVC group so the data dir is writable.

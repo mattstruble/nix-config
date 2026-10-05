@@ -1,4 +1,4 @@
-{{- if or .Values.gateway.usePostgresKeys .Values.gateway.testPod }}
+{{- if .Values.gateway.usePostgresKeys }}
 # Postgres data for the LiteLLM key store. LiteLLM's virtual-key / spend
 # features require PostgreSQL (SQLite is not supported). local-path is the only
 # dynamic StorageClass on this cluster.
