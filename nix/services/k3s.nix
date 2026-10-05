@@ -128,6 +128,13 @@
           "services/ai/litellm/pod-api-key" = {
             sopsFile = ./homelab/homelab-secrets-ai.yaml;
           };
+          # Metrics key: authenticates the Prometheus scrape of the gateway's
+          # /metrics (require_auth_for_metrics_endpoint: true). Minted with
+          # key_alias "metrics"; same file so it can be re-encrypted from this
+          # machine.
+          "services/ai/litellm/metrics-key" = {
+            sopsFile = ./homelab/homelab-secrets-ai.yaml;
+          };
         };
         # Materialise secrets in the activation script (setupSecrets) instead of
         # a systemd oneshot at boot — the aiChart activation script below reads
@@ -216,6 +223,10 @@
             POD_API_KEY="$(cat ${config.sops.secrets."services/ai/litellm/pod-api-key".path})"
             LLM_KEY="$POD_API_KEY"
             [ -n "$LLM_KEY" ] || { echo "error: services/ai/litellm/pod-api-key sops secret is empty" >&2; exit 1; }
+            # Metrics key for the gateway /metrics scrape (dedicated key,
+            # key_alias "metrics"; same rationale as the pod API key above).
+            METRICS_KEY="$(cat ${config.sops.secrets."services/ai/litellm/metrics-key".path})"
+            [ -n "$METRICS_KEY" ] || { echo "error: services/ai/litellm/metrics-key sops secret is empty" >&2; exit 1; }
 
             # Every resource this script applies carries the managed-by label,
             # and each `kubectl apply --prune` pass is scoped to it, so a prune
@@ -338,8 +349,9 @@
               # WITHOUT --prune (the monitoring pass covers deletion) so a
               # fresh install gets it before the token mint.
               # grafana admin creds as a proper K8s Secret (idempotent apply);
-              # llm-api-key: the pod API key for llama.cpp /metrics auth
-              # (from the sops secret above).
+              # llm-api-key: the pod API key for llama.cpp /metrics auth;
+              # litellm-metrics-key: the dedicated key for the gateway /metrics
+              # scrape (both from the sops secrets above).
               # Fresh-install detection: the operator needs a restart only if
               # any CRD was missing before this apply (see above).
               CRDS_NEW=0
@@ -374,6 +386,10 @@
                     --namespace monitoring \
                     --from-literal=token="$LLM_KEY" \
                     --dry-run=client -o yaml | label_all monitoring "true" > "$T/monitoring-llm-api-key.json" \
+                && $KCTL create secret generic litellm-metrics-key \
+                    --namespace monitoring \
+                    --from-literal=token="$METRICS_KEY" \
+                    --dry-run=client -o yaml | label_all monitoring "true" > "$T/monitoring-litellm-metrics-key.json" \
                 && $KCTL create configmap mjolnir-dashboards \
                     --namespace monitoring \
                     --from-file=cluster-overview.json=${k8sDir}/apps/monitoring/dashboards/cluster-overview.json \
@@ -382,6 +398,7 @@
                     --dry-run=client -o yaml | label_all monitoring "true" > "$T/monitoring-dashboards.json" \
                 && cat "$T/monitoring-static.json" "$T/monitoring-kubelet-token.json" \
                     "$T/monitoring-secrets.json" "$T/monitoring-llm-api-key.json" \
+                    "$T/monitoring-litellm-metrics-key.json" \
                     "$T/monitoring-dashboards.json" > "$T/monitoring.yaml" \
                 && cat "$T/default-ai.json" "$T/default-litellm-keys.json" > "$T/default.yaml" \
                 && $KCTL apply --server-side --force-conflicts -f "$T/crds.json" \

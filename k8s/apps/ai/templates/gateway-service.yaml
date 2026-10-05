@@ -6,6 +6,7 @@ metadata:
   labels:
     app: litellm
     app.kubernetes.io/part-of: ai
+    app.kubernetes.io/component: gateway
 spec:
   selector:
     app: litellm
