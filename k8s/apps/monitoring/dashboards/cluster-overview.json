@@ -945,7 +945,7 @@
               },
               "editorMode": "code",
               "exemplar": true,
-              "expr": "sum(rate(container_cpu_usage_seconds_total{image!=\"\",node=~\"^$Node$\",namespace=~\"$Namespace\"}[5m])) by (namespace)",
+              "expr": "sum(rate(container_cpu_usage_seconds_total{image!=\"\",node=~\"^$Node$\",namespace=~\"$Namespace\"}[5m])) by (namespace) / sum(machine_cpu_cores{node=~\"^$Node$\"})",
               "legendFormat": "{{namespace}}",
               "range": true,
               "refId": "A"
@@ -1199,7 +1199,7 @@
               },
               "editorMode": "code",
               "exemplar": true,
-              "expr": "sum(rate(container_cpu_usage_seconds_total{image!=\"\",node=~\"^$Node$\",namespace=~\"$Namespace\"}[5m])) by (pod)",
+              "expr": "sum(rate(container_cpu_usage_seconds_total{image!=\"\",node=~\"^$Node$\",namespace=~\"$Namespace\"}[5m])) by (pod) / sum(machine_cpu_cores{node=~\"^$Node$\"})",
               "legendFormat": "{{pod}}",
               "range": true,
               "refId": "A"
@@ -1293,7 +1293,7 @@
               },
               "editorMode": "code",
               "exemplar": true,
-              "expr": "sum(rate(container_cpu_usage_seconds_total{image!=\"\",container!=\"POD\",node=~\"^$Node$\",namespace=~\"$Namespace\"}[5m])) by (pod, container)",
+              "expr": "sum(rate(container_cpu_usage_seconds_total{image!=\"\",container!=\"POD\",node=~\"^$Node$\",namespace=~\"$Namespace\"}[5m])) by (pod, container) / sum(machine_cpu_cores{node=~\"^$Node$\"})",
               "legendFormat": "{{pod}} / {{container}}",
               "range": true,
               "refId": "A"
