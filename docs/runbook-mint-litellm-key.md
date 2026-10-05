@@ -47,6 +47,14 @@ It prints the key and stores it at `.services.ai.litellm.keys.<name>` in
 `nix/services/homelab/homelab-secrets.yaml`. **Copy the key now** — it's only
 printed once (the sops copy is the durable record).
 
+Then commit the sops file — an uncommitted mint is lost on `git checkout`/
+rebase, and `just deploy` refuses a dirty tree:
+
+```bash
+git add nix/services/homelab/homelab-secrets.yaml
+git commit -m "mint litellm key <name>"
+```
+
 To mint against the test pod instead of prod:
 
 ```bash
@@ -114,6 +122,49 @@ Then remove the sops entry:
 nix run nixpkgs#yq -- -i 'del(.services.ai.litellm.keys.<name>)' nix/services/homelab/homelab-secrets.yaml
 ```
 
+(Commit the sops change afterwards, as in *Mint a key*.)
+
+---
+
+## Secrets & age keys
+
+Both sops files (`nix/services/homelab/homelab-secrets.yaml`,
+`nix/users/sops-secrets.yaml`) are encrypted to the three age recipients in
+`.sops.yaml`. A machine can decrypt only if it holds the matching private key.
+
+| Machine | Private key location |
+|---------|----------------------|
+| Mac (mestruble) | `~/.config/sops/age/keys.txt` |
+| roque | `~/.config/sops/age/keys.txt` |
+| mjolnir | `/var/lib/sops-nix/key.txt` (sops-nix, see `nix/tools/sops.nix`) |
+
+**Backup:** copy each private key to offline storage (e.g. encrypted password
+manager or an offline disk). If a key is lost, that machine can no longer
+decrypt — you can only drop its recipient from `.sops.yaml` and re-encrypt
+(see below), never recover the key.
+
+**Rotation / re-encryption** (e.g. a key is lost, or a machine is rebuilt):
+
+1. Install the new private key on the machine (mjolnir: replace
+   `/var/lib/sops-nix/key.txt`).
+2. Update the recipient in `.sops.yaml`.
+3. Re-encrypt the sops files to the new recipient set:
+   ```bash
+   sops updatekeys nix/services/homelab/homelab-secrets.yaml
+   sops updatekeys nix/users/sops-secrets.yaml
+   ```
+4. `git commit` + `just deploy mjolnir`.
+
+**Re-apply:** `just deploy mjolnir` (`nix run .#deploy-rs -- .#mjolnir`) is
+what ships a changed sops value — sops-nix decrypts at activation and
+materialises `/run/secrets`. Until you deploy, the cluster keeps the old
+values.
+
+> **Acute for this branch:** the mjolnir recipient is rotated
+> (`age1m8d99…` → `age1ng45h…`). If the new private key is not installed at
+> `/var/lib/sops-nix/key.txt` before deploy, the cluster cannot decrypt
+> `/run/secrets` and every secret-fed component breaks.
+
 ---
 
 ## Troubleshooting
@@ -131,7 +182,12 @@ nix run nixpkgs#yq -- -i 'del(.services.ai.litellm.keys.<name>)' nix/services/ho
 ## Notes
 
 - The key store is Postgres on a static hostPath PV (`/var/lib/postgres-data`,
-  uid 999). If the PV is wiped, re-mint the keys (the sops copies are the source
-  of truth for re-handing them out).
+  uid 999). After a PV wipe the minted keys are dead — the fresh DB doesn't
+  know them. Re-mint each alias (`just mint-key <name>`), which overwrites the
+  sops entry, and re-hand the new keys to the clients. The sops copies are the
+  re-handing record, not a re-authentication mechanism.
+- Trust assumption: the gateway is reached over cleartext HTTP on a trusted
+  single-subnet LAN — the master key and minted keys transit in cleartext
+  `Authorization` headers.
 - The master key is NOT a client key — it only manages `/key/*`. Clients always
   use their own minted key.
