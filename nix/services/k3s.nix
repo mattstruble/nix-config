@@ -134,6 +134,11 @@
           # traefik + coredns kept (LAN-name ingress).
           disable = [ "metrics-server" ];
 
+          # Stable label for the local PVs' nodeAffinity
+          # (k8s/manifests/local-pvs.yaml): selecting on kubernetes.io/hostname
+          # would orphan all PVs on a node rename.
+          nodeLabel = [ "storage=mjolnir" ];
+
           # containerd nvidia runtime: pods set runtimeClassName: nvidia +
           # env NVIDIA_VISIBLE_DEVICES=<gpu> to get a SPECIFIC GPU (the runtime
           # injects the nix-store driver libs).

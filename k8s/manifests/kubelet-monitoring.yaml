@@ -21,9 +21,10 @@ metadata:
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
-  # k3s has no system:node-reader; system:kubelet-api-admin grants nodes/proxy
-  # (the kubelet /metrics path) which is what the scrape needs.
-  name: system:kubelet-api-admin
+  # system:node-reader (a standard k8s ClusterRole that k3s ships) grants get
+  # on nodes + nodes/proxy — the kubelet /metrics path — the least privilege
+  # the scrape needs.
+  name: system:node-reader
 subjects:
   - kind: ServiceAccount
     name: kubelet-monitoring
