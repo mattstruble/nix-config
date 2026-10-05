@@ -189,17 +189,36 @@
         } // lib.mapAttrs' (name: chart: lib.nameValuePair "${name}ChartRendered" chart) monitoringChartRendered;
 
         # Apply the rendered loki/alloy/ai/dcgm charts, and render + apply kps,
-        # after activation. k3s may still be coming up (fresh install / upgrade),
-        # hence the retry loop. Runs as root, `k3s kubectl` picks up
-        # /etc/rancher/k3s/k3s.yaml itself. kps is rendered HERE (not at build
+        # as a systemd oneshot AFTER k3s is up. Runs as root, `k3s kubectl` picks
+        # up /etc/rancher/k3s/k3s.yaml itself. kps is rendered HERE (not at build
         # time) because its alertmanager telegram creds + grafana admin password
         # come from sops, which only exist in /run/secrets/ at runtime.
-        system.activationScripts.aiChart = {
-          # k3s + helm + envsubst aren't on the activation script's default PATH,
-          # so use full binary paths. (A store path in `deps` is rejected by deploy-rs.)
-          # Run after sops-nix materialises /run/secrets.
-          deps = [ "setupSecrets" ];
-          text = ''
+        #
+        # WHY a oneshot and not an activation script: NixOS runs activation
+        # scripts BEFORE it restarts/starts units (switch order: stop units →
+        # activate → … → restart/start units). So an activation script applies
+        # the charts while k3s is still down on any deploy that restarts k3s —
+        # the 60s retry loop was futile, and the `exit 1` aborted the whole
+        # activation, leaving k3s stopped (the 2026-10-05 deploy failure). A
+        # oneshot with After=k3s.service runs once k3s is up, so the apply
+        # succeeds in the same deploy and a failure can't take the base system
+        # (k3s) down. NixOS re-triggers the oneshot on every deploy that
+        # changes the rendered charts (the script embeds them), so charts are
+        # applied exactly when they change. The retry loop below covers k3s
+        # taking a few seconds to become ready after (re)start.
+        systemd.services.ai-chart-apply = {
+          description = "Apply k8s charts to k3s after k3s is ready";
+          after = [ "k3s.service" ];
+          requires = [ "k3s.service" ];
+          wantedBy = [ "multi-user.target" ];
+          serviceConfig = {
+            Type = "oneshot";
+            RemainAfterExec = true;
+          };
+          # k3s + helm + envsubst aren't on the oneshot's default PATH, so use
+          # full binary paths. Runs after sops-nix materialises /run/secrets
+          # (setupSecrets, in the activation phase) and after k3s is up.
+          script = ''
             KCTL="${pkgs.k3s}/bin/k3s kubectl"
             HELM="${pkgs.kubernetes-helm}/bin/helm"
             KPS_CHART="${kpsChart}"
@@ -271,13 +290,17 @@
             # apply --prune scoped to $1 (selector) and $2 (namespace; empty =
             # cluster scope); remaining args = manifest files.
             apply_pruned() {
-              local sel="$1" ns="$2" args=()
+              local sel="$1" ns="$2"
               shift 2
-              for r in "''${PRUNE_ALLOWLIST[@]}"; do args+=("--prune-allowlist=$r"); done
+              local pargs=() fargs=()
+              for r in "''${PRUNE_ALLOWLIST[@]}"; do pargs+=("--prune-allowlist=$r"); done
+              # kubectl apply needs -f for each manifest file (positional args
+              # are rejected: "Unexpected args").
+              for f in "$@"; do fargs+=("-f" "$f"); done
               if [ -n "$ns" ]; then
-                $KCTL apply --prune -n "$ns" -l "$sel" "''${args[@]}" "$@"
+                $KCTL apply --prune -n "$ns" -l "$sel" "''${pargs[@]}" "''${fargs[@]}"
               else
-                $KCTL apply --prune -l "$sel" "''${args[@]}" "$@"
+                $KCTL apply --prune -l "$sel" "''${pargs[@]}" "''${fargs[@]}"
               fi
             }
 
