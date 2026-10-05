@@ -213,6 +213,58 @@
             LLM_KEY="$($YQ -r '.gateway.podApiKey' ${k8sDir}/apps/ai/values.yaml)"
             [ -n "$LLM_KEY" ] || { echo "error: gateway.podApiKey is empty in ${k8sDir}/apps/ai/values.yaml" >&2; exit 1; }
 
+            # Every resource this script applies carries the managed-by label,
+            # and each `kubectl apply --prune` pass is scoped to it, so a prune
+            # can never delete anything outside our charts (k3s built-ins,
+            # other workloads). Each pass needs its own prune-group label:
+            # `apply --prune -l` deletes EVERY resource matching the selector
+            # that is not in that pass's file, so two passes sharing a
+            # selector would delete each other's resources, and the pruner
+            # only lists namespaced resources in the namespaces its file
+            # visits. The kps CRDs are server-side applied (their
+            # openAPIV3Schema overflows the client-side last-applied
+            # annotation) and `--server-side --prune` is alpha/rejected, so
+            # they get the managed label only and are applied without prune.
+            MANAGED="app.kubernetes.io/managed-by=nixos-k3s"
+            SEL_CLUSTER="$MANAGED,mjolnir/prune-group=cluster"
+            SEL_DEFAULT="$MANAGED,mjolnir/prune-group=default"
+            SEL_MONITORING="$MANAGED,mjolnir/prune-group=monitoring"
+            SEL_KUBE_SYSTEM="$MANAGED,mjolnir/prune-group=kube-system"
+            # Kinds a prune pass may delete. kubectl's default allowlist has
+            # no CRs, so the monitoring.coreos.com kinds must be listed.
+            PRUNE_ALLOWLIST=(
+              core/v1/ConfigMap core/v1/Secret core/v1/Service core/v1/PersistentVolumeClaim core/v1/Pod core/v1/Endpoints
+              apps/v1/Deployment apps/v1/DaemonSet apps/v1/StatefulSet apps/v1/ReplicaSet
+              batch/v1/Job networking.k8s.io/v1/Ingress
+              rbac.authorization.k8s.io/v1/ClusterRole rbac.authorization.k8s.io/v1/ClusterRoleBinding
+              admissionregistration.k8s.io/v1/ValidatingWebhookConfiguration admissionregistration.k8s.io/v1/MutatingWebhookConfiguration
+              monitoring.coreos.com/v1/PrometheusRule monitoring.coreos.com/v1/ServiceMonitor monitoring.coreos.com/v1/Prometheus monitoring.coreos.com/v1/Alertmanager monitoring.coreos.com/v1/PodMonitor
+            )
+            # $1 = prune group, $2 = jq select, remaining args = manifest
+            # files. Stamps every doc (and every item of a v1 List) with the
+            # managed-by + prune-group labels.
+            label_all() {
+              local group="$1" sel="$2"
+              shift 2
+              "$YQ" "select($sel) | (if .kind == \"List\" then .items |= map(.metadata.labels = ((.metadata.labels // {}) + {\"app.kubernetes.io/managed-by\":\"nixos-k3s\",\"mjolnir/prune-group\":\"$group\"})) else .metadata.labels = ((.metadata.labels // {}) + {\"app.kubernetes.io/managed-by\":\"nixos-k3s\",\"mjolnir/prune-group\":\"$group\"}) end)" "$@"
+            }
+            # Managed label only (kps CRDs: outside the prune scope, see above).
+            label_managed() {
+              "$YQ" ".metadata.labels = ((.metadata.labels // {}) + {\"app.kubernetes.io/managed-by\":\"nixos-k3s\"})" "$@"
+            }
+            # apply --prune scoped to $1 (selector) and $2 (namespace; empty =
+            # cluster scope); remaining args = manifest files.
+            apply_pruned() {
+              local sel="$1" ns="$2" args=()
+              shift 2
+              for r in "''${PRUNE_ALLOWLIST[@]}"; do args+=("--prune-allowlist=$r"); done
+              if [ -n "$ns" ]; then
+                $KCTL apply --prune -n "$ns" -l "$sel" "''${args[@]}" "$@"
+              else
+                $KCTL apply --prune -l "$sel" "''${args[@]}" "$@"
+              fi
+            }
+
             # Fill the sops placeholders in the values, render kps, and build the
             # grafana admin Secret. Done in a temp dir so nothing leaks to the store.
             T=$(mktemp -d)
@@ -238,19 +290,42 @@
             # The operator detects CRDs only at startup; on a fresh install it
             # starts before the CRDs land and disables the prometheus/alertmanager
             # controllers forever, so restart it after the CRDs are in place.
-            # kubelet-monitoring SA + RBAC (system:node-reader), then mint its
-            # token secret (k8s 1.24+ no longer auto-creates SA token secrets).
-            # Long-lived (10y) so it doesn't need re-minting every deploy.
-            $KCTL apply -f ${k8sDir}/manifests/kubelet-monitoring.yaml
-            $KCTL create token kubelet-monitoring --namespace monitoring \
-                --duration=87600h > "$T/kubelet-token"
-            $KCTL create secret generic kubelet-monitoring-token \
-                --namespace monitoring \
-                --from-file=token="$T/kubelet-token" \
-                --dry-run=client -o yaml | $KCTL apply -f -
+            #
+            # Label + split every manifest by prune scope. The kps render
+            # spans monitoring/ (workloads + CRs), kube-system/ (the coredns
+            # Service) and cluster scope (CRs/CRBs/webhooks); the v1 List
+            # (additionalServiceMonitors) is all-monitoring and stays whole.
+            label_managed "$KPS_CRDS"/* > "$T/crds.json"
+            label_all monitoring ".kind == \"List\" or .metadata.namespace == \"monitoring\"" "$T/kps-rendered.yaml" > "$T/monitoring-kps.json"
+            label_all kube-system ".metadata.namespace == \"kube-system\"" "$T/kps-rendered.yaml" > "$T/kube-system-kps.json"
+            label_all cluster ".kind != \"List\" and .metadata.namespace == null" "$T/kps-rendered.yaml" > "$T/cluster-kps.json"
+            # kubelet SA (monitoring/) + RBAC (cluster scope) split.
+            label_all monitoring ".kind == \"ServiceAccount\"" ${k8sDir}/manifests/kubelet-monitoring.yaml > "$T/monitoring-kubelet-sa.json"
+            label_all cluster ".kind == \"ClusterRoleBinding\"" ${k8sDir}/manifests/kubelet-monitoring.yaml > "$T/cluster-kubelet-crb.json"
+            label_all default "true" ${aiChartRendered}/rendered.yaml > "$T/default-ai.json"
+            label_all monitoring "true" ${lokiChartRendered}/rendered.yaml ${alloyChartRendered}/rendered.yaml ${dcgmChartRendered}/rendered.yaml ${k8sDir}/manifests/cloud-model-rates.yaml > "$T/monitoring-charts.json"
+            cat "$T/cluster-kps.json" "$T/cluster-kubelet-crb.json" > "$T/cluster.yaml"
+            cat "$T/monitoring-kubelet-sa.json" "$T/monitoring-kps.json" "$T/monitoring-charts.json" > "$T/monitoring-static.json"
+            cat "$T/kube-system-kps.json" > "$T/kube-system.yaml"
 
             for i in $(seq 1 30); do
               $KCTL get namespace monitoring >/dev/null 2>&1 || $KCTL create namespace monitoring
+              # Migration: older deploys applied three kubernetes-system
+              # PrometheusRules (controller-manager/kube-proxy/scheduler) that
+              # are now disabled in values. They carry no managed label, so
+              # the prune below cannot see them; label them so the monitoring
+              # pass prunes them. Once gone this is a silent no-op.
+              for r in kps-kube-prometheus-stack-kubernetes-system-controller-manager \
+                       kps-kube-prometheus-stack-kubernetes-system-kube-proxy \
+                       kps-kube-prometheus-stack-kubernetes-system-scheduler; do
+                $KCTL label prometheusrule -n monitoring "$r" "$MANAGED" \
+                    "mjolnir/prune-group=monitoring" --overwrite >/dev/null 2>&1 || true
+              done
+              # kubelet SA + RBAC (system:node-reader) must exist before its
+              # token is minted (k8s 1.24+ no longer auto-creates SA token
+              # secrets; the 10y token avoids re-minting every deploy). The SA
+              # is applied WITHOUT --prune (the monitoring pass covers
+              # deletion) so a fresh install gets it before the token mint.
               # grafana admin creds as a proper K8s Secret (idempotent apply);
               # llm-api-key: the pod API key for llama.cpp /metrics auth
               # (derived from the chart values above).
@@ -259,40 +334,45 @@
               # litellm-keys (default ns): master key + postgres password + the
               # full DATABASE_URL (password embedded). The gateway pod reads
               # database-url + master-key; the postgres pod reads postgres-password.
-              $KCTL create secret generic litellm-keys \
-                  --namespace default \
-                  --from-literal=master-key="$LITELLM_MASTER" \
-                  --from-literal=postgres-password="$PG_PASSWORD" \
-                  --from-literal=database-url="$LITELLM_DB_URL" \
-                  --dry-run=client -o yaml | $KCTL apply -f - \
+              $KCTL apply -f "$T/monitoring-kubelet-sa.json" \
+                && $KCTL create token kubelet-monitoring --namespace monitoring \
+                    --duration=87600h > "$T/kubelet-token" \
+                && $KCTL create secret generic kubelet-monitoring-token \
+                    --namespace monitoring \
+                    --from-file=token="$T/kubelet-token" \
+                    --dry-run=client -o yaml | label_all monitoring "true" > "$T/monitoring-kubelet-token.json" \
+                && $KCTL create secret generic litellm-keys \
+                    --namespace default \
+                    --from-literal=master-key="$LITELLM_MASTER" \
+                    --from-literal=postgres-password="$PG_PASSWORD" \
+                    --from-literal=database-url="$LITELLM_DB_URL" \
+                    --dry-run=client -o yaml | label_all default "true" > "$T/default-litellm-keys.json" \
                 && $KCTL create secret generic monitoring-secrets \
-                  --namespace monitoring \
-                  --from-literal=admin-user=admin \
-                  --from-literal=admin-password="$GRAFANA_PW" \
-                  --dry-run=client -o yaml | $KCTL apply -f - \
+                    --namespace monitoring \
+                    --from-literal=admin-user=admin \
+                    --from-literal=admin-password="$GRAFANA_PW" \
+                    --dry-run=client -o yaml | label_all monitoring "true" > "$T/monitoring-secrets.json" \
                 && $KCTL create secret generic llm-api-key \
                     --namespace monitoring \
                     --from-literal=token="$LLM_KEY" \
-                    --dry-run=client -o yaml | $KCTL apply -f - \
-                && $KCTL apply -f ${lokiChartRendered}/rendered.yaml \
-                && $KCTL apply -f ${alloyChartRendered}/rendered.yaml \
-                && $KCTL apply -f ${aiChartRendered}/rendered.yaml \
-                && $KCTL apply -f ${dcgmChartRendered}/rendered.yaml \
+                    --dry-run=client -o yaml | label_all monitoring "true" > "$T/monitoring-llm-api-key.json" \
                 && $KCTL create configmap mjolnir-dashboards \
                     --namespace monitoring \
                     --from-file=cluster-overview.json=${k8sDir}/apps/monitoring/dashboards/cluster-overview.json \
                     --from-file=llm-fleet.json=${k8sDir}/apps/monitoring/dashboards/llm-fleet.json \
                     --from-file=llm-overview.json=${k8sDir}/apps/monitoring/dashboards/llm-overview.json \
-                    --dry-run=client -o yaml | $KCTL apply -f - \
+                    --dry-run=client -o yaml | label_all monitoring "true" > "$T/monitoring-dashboards.json" \
+                && cat "$T/monitoring-static.json" "$T/monitoring-kubelet-token.json" \
+                    "$T/monitoring-secrets.json" "$T/monitoring-llm-api-key.json" \
+                    "$T/monitoring-dashboards.json" > "$T/monitoring.yaml" \
+                && cat "$T/default-ai.json" "$T/default-litellm-keys.json" > "$T/default.yaml" \
+                && $KCTL apply --server-side --force-conflicts -f "$T/crds.json" \
+                && apply_pruned "$SEL_CLUSTER" "" "$T/cluster.yaml" \
+                && apply_pruned "$SEL_DEFAULT" "default" "$T/default.yaml" \
+                && apply_pruned "$SEL_MONITORING" "monitoring" "$T/monitoring.yaml" \
+                && apply_pruned "$SEL_KUBE_SYSTEM" "kube-system" "$T/kube-system.yaml" \
                 && $KCTL label configmap mjolnir-dashboards --namespace monitoring grafana_dashboard=1 --overwrite \
-                && $KCTL apply -f ${k8sDir}/manifests/cloud-model-rates.yaml \
-                && $KCTL apply --server-side --force-conflicts -f "$KPS_CRDS" \
-                && $KCTL apply -f "$T/kps-rendered.yaml" \
                 && $KCTL rollout restart deploy/kps-kube-prometheus-stack-operator --namespace monitoring \
-                && { $KCTL delete prometheusrule -n monitoring \
-                      kps-kube-prometheus-stack-kubernetes-system-controller-manager \
-                      kps-kube-prometheus-stack-kubernetes-system-kube-proxy \
-                      kps-kube-prometheus-stack-kubernetes-system-scheduler 2>/dev/null || true; } \
                 && exit 0
               sleep 2
             done
