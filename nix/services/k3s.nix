@@ -122,6 +122,12 @@
           "services/ai/litellm/postgres-password" = {
             sopsFile = ./homelab/homelab-secrets.yaml;
           };
+          # Pod API key: authenticates llama-server (LLAMA_API_KEY) + the
+          # gateway's OPENAI_API_KEY. Lives in homelab-secrets-ai.yaml (not
+          # homelab-secrets.yaml) so it can be re-encrypted from this machine.
+          "services/ai/litellm/pod-api-key" = {
+            sopsFile = ./homelab/homelab-secrets-ai.yaml;
+          };
         };
         # Materialise secrets in the activation script (setupSecrets) instead of
         # a systemd oneshot at boot — the aiChart activation script below reads
@@ -203,12 +209,13 @@
             PG_PASSWORD="$(cat ${config.sops.secrets."services/ai/litellm/postgres-password".path})"
             LITELLM_DB_URL="postgresql://litellm:$PG_PASSWORD@postgres.default.svc.cluster.local:5432/litellm"
             # Pod API key for llama.cpp /metrics auth: single source of truth is
-            # the chart values (gateway.podApiKey), read directly with yq. Not
-            # grepped out of the rendered YAML — a chart change to the
-            # --api-key arg shape would yield an empty key and a silent
-            # --from-literal=token="" (ai-fleet ServiceMonitor 401s, no error).
-            LLM_KEY="$($YQ -r '.gateway.podApiKey' ${k8sDir}/apps/ai/values.yaml)"
-            [ -n "$LLM_KEY" ] || { echo "error: gateway.podApiKey is empty in ${k8sDir}/apps/ai/values.yaml" >&2; exit 1; }
+            # the sops secret (litellm-keys/pod-api-key in the cluster). Not
+            # grepped out of the rendered YAML — a chart change to the key's
+            # wiring would yield an empty key and a silent --from-literal=token=""
+            # (ai-fleet ServiceMonitor 401s, no error).
+            POD_API_KEY="$(cat ${config.sops.secrets."services/ai/litellm/pod-api-key".path})"
+            LLM_KEY="$POD_API_KEY"
+            [ -n "$LLM_KEY" ] || { echo "error: services/ai/litellm/pod-api-key sops secret is empty" >&2; exit 1; }
 
             # Every resource this script applies carries the managed-by label,
             # and each `kubectl apply --prune` pass is scoped to it, so a prune
@@ -332,7 +339,7 @@
               # fresh install gets it before the token mint.
               # grafana admin creds as a proper K8s Secret (idempotent apply);
               # llm-api-key: the pod API key for llama.cpp /metrics auth
-              # (derived from the chart values above).
+              # (from the sops secret above).
               # Fresh-install detection: the operator needs a restart only if
               # any CRD was missing before this apply (see above).
               CRDS_NEW=0
@@ -356,6 +363,7 @@
                     --from-literal=master-key="$LITELLM_MASTER" \
                     --from-literal=postgres-password="$PG_PASSWORD" \
                     --from-literal=database-url="$LITELLM_DB_URL" \
+                    --from-literal=pod-api-key="$POD_API_KEY" \
                     --dry-run=client -o yaml | label_all default "true" > "$T/default-litellm-keys.json" \
                 && $KCTL create secret generic monitoring-secrets \
                     --namespace monitoring \

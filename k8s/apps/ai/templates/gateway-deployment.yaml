@@ -46,9 +46,13 @@ spec:
               hostPort: {{ .Values.gateway.hostPort }}
           env:
             # The openai/ prefix routes through a client that reads the key from
-            # the environment; the pods expect --api-key foo.
+            # the environment; the pods authenticate with the same key (litellm-keys
+            # Secret, pod-api-key key — the model pods read it as LLAMA_API_KEY).
             - name: OPENAI_API_KEY
-              value: {{ .Values.gateway.podApiKey | quote }}
+              valueFrom:
+                secretKeyRef:
+                  name: litellm-keys
+                  key: pod-api-key
             {{- if .Values.gateway.usePostgresKeys }}
             # Postgres key store: virtual keys + spend tracking require PostgreSQL
             # (SQLite unsupported). The full URL (with password) is built by the

@@ -78,12 +78,17 @@ spec:
             # the running model name: single source of truth (also the gateway's model_name)
             - "--alias"
             - {{ $m.modelName | quote }}
-            # authenticates the LiteLLM gateway (and any direct caller)
-            - "--api-key"
-            - {{ $.Values.gateway.podApiKey | quote }}
           env:
             - name: NVIDIA_VISIBLE_DEVICES
               value: {{ $m.gpu | quote }}
+            # authenticates the LiteLLM gateway (and any direct caller): the
+            # litellm-keys Secret's pod-api-key, read by llama-server as the
+            # --api-key equivalent (llama.cpp tools/server/README.md).
+            - name: LLAMA_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: litellm-keys
+                  key: pod-api-key
             # CORRECTNESS guard, not perf: CUDA graphs + spec decode + a
             # prefix-cache hit corrupt output (repetition collapse / empty
             # completions).

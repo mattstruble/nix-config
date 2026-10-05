@@ -24,11 +24,10 @@ gateway:
   enable: true
   image: ghcr.io/berriai/litellm:v1.102.1
   hostPort: 8000
-  podApiKey: foo # pragma: allowlist secret (placeholder, matches the pods' --api-key)
   # Postgres for the LiteLLM key store (virtual keys require PostgreSQL).
   postgresImage: postgres:16-alpine
   postgresDataSize: 1Gi
   # usePostgresKeys: true = prod gateway uses the master key + Postgres key
   # store + per-source api_key_alias label. Clients must present a minted key
-  # (just mint-key <name>); the keyless "foo" no longer works.
+  # (just mint-key <name>); the old keyless placeholder no longer works.
   usePostgresKeys: true
