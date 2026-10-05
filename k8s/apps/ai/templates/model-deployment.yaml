@@ -59,20 +59,13 @@ spec:
             # keeps it.
             readOnlyRootFilesystem: true
           image: {{ $m.image }}
-          # redirect stdout to /var/log/llama.log so the log-exporter sidecar can
-          # tail it and expose the live decode/prefill rates (tg_3s / tokens per
-          # second) as gauges. The shell wrapper passes the binary as $0 and all
-          # args as $@, so each arg stays a separate parameter (no re-parsing of
-          # the JSON chat-template-kwargs). exec keeps the binary as PID 1.
+          # run the binary directly (no shell wrapper): command overrides the
+          # image's ENTRYPOINT, so fork models pinning a /nix/store binary work too.
           command:
-            - sh
-            - -c
-            - 'exec "$0" "$@" >> /var/log/llama.log 2>&1'
-          # the binary is $0 (first arg); the model args + fleet flags are $@.
+            - {{ $binary | quote }}
           # quote every arg: YAML parses on/off as booleans and bare numbers as ints,
           # and k8s args must all be strings.
           args:
-            - {{ $binary | quote }}
             {{- range $m.args }}
             - {{ . | quote }}
             {{- end }}
@@ -121,8 +114,6 @@ spec:
               readOnly: true
             - name: tmp
               mountPath: /tmp
-            - name: log
-              mountPath: /var/log
             {{- if $m.nixBinary }}
             - name: nix-store
               mountPath: /nix/store
@@ -148,34 +139,6 @@ spec:
               memory: {{ $m.memoryRequest }}
             limits:
               memory: {{ $m.memoryLimit }}
-        - name: log-exporter
-          image: python:3.12-alpine
-          command: [python, /exporter.py]
-          env:
-            - name: LOG_FILE
-              value: /var/log/llama.log
-            - name: MODEL
-              # deployment name (== Prometheus job label), NOT modelName (the
-              # dotted gateway name): the dashboard's $model var is job-sourced,
-              # so the label must match it for per-model filtering to work.
-              value: {{ $name }}
-            - name: POD
-              valueFrom:
-                fieldRef:
-                  fieldPath: metadata.name
-            - name: PORT
-              value: "9399"
-          ports:
-            - name: log-exporter
-              containerPort: 9399
-          volumeMounts:
-            - name: log
-              mountPath: /var/log
-              readOnly: true
-            - name: exporter-script
-              mountPath: /exporter.py
-              subPath: exporter.py
-              readOnly: true
       volumes:
         - name: tmp
           emptyDir:
@@ -183,12 +146,6 @@ spec:
         - name: models
           persistentVolumeClaim:
             claimName: llama-models-pvc
-        - name: log
-          emptyDir:
-            sizeLimit: 200Mi
-        - name: exporter-script
-          configMap:
-            name: llm-log-exporter
         {{- if $m.nixBinary }}
         - name: nix-store
           persistentVolumeClaim:
