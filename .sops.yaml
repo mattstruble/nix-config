@@ -15,3 +15,11 @@ creation_rules:
           - *MacStruble
           - *roque
           - *mjolnir
+  # AI/LiteLLM keys (pod-api-key, metrics-key): same recipients, split out so
+  # they can be re-encrypted from this machine without touching the rest.
+  - path_regex: nix/services/homelab/homelab-secrets-ai.yaml$
+    key_groups:
+      - age:
+          - *MacStruble
+          - *roque
+          - *mjolnir
