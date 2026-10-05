@@ -282,14 +282,18 @@
             # python yq defaults to a JSON stream (concatenated objects, no
             # separators), which kubectl apply rejects ("apiVersion not set,
             # kind not set").
+            # select(.apiVersion != null): drop comment-only docs that helm
+            # leaves behind for disabled templates (e.g. dcgm-exporter's
+            # tls-secret / web-config) — they have no apiVersion and kubectl
+            # rejects them.
             label_all() {
               local group="$1" sel="$2"
               shift 2
-              "$YQ" -y --explicit-start "select($sel) | (if .kind == \"List\" then .items |= map(.metadata.labels = ((.metadata.labels // {}) + {\"app.kubernetes.io/managed-by\":\"nixos-k3s\",\"mjolnir/prune-group\":\"$group\"})) else .metadata.labels = ((.metadata.labels // {}) + {\"app.kubernetes.io/managed-by\":\"nixos-k3s\",\"mjolnir/prune-group\":\"$group\"}) end)" "$@"
+              "$YQ" -y --explicit-start "select($sel) | select(.apiVersion != null) | (if .kind == \"List\" then .items |= map(.metadata.labels = ((.metadata.labels // {}) + {\"app.kubernetes.io/managed-by\":\"nixos-k3s\",\"mjolnir/prune-group\":\"$group\"})) else .metadata.labels = ((.metadata.labels // {}) + {\"app.kubernetes.io/managed-by\":\"nixos-k3s\",\"mjolnir/prune-group\":\"$group\"}) end)" "$@"
             }
             # Managed label only (kps CRDs: outside the prune scope, see above).
             label_managed() {
-              "$YQ" -y --explicit-start ".metadata.labels = ((.metadata.labels // {}) + {\"app.kubernetes.io/managed-by\":\"nixos-k3s\"})" "$@"
+              "$YQ" -y --explicit-start "select(.apiVersion != null) | .metadata.labels = ((.metadata.labels // {}) + {\"app.kubernetes.io/managed-by\":\"nixos-k3s\"})" "$@"
             }
             # apply --prune scoped to $1 (selector) and $2 (namespace; empty =
             # cluster scope); remaining args = manifest files.
