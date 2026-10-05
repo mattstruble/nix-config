@@ -15,7 +15,7 @@
       }
     ]
   },
-  "description": "Command center for the mjolnir LLM inference fleet: aggregate usage + cost, workload distribution by app/model, and live inference load. Data: Prometheus (litellm gateway, llamacpp pods, DCGM). Cost figures are estimates driven by the Cloud rate profile dropdown (per-token-type cloud_model_rates) and Electricity $/kWh.",
+  "description": "Command center for the mjolnir LLM inference fleet: aggregate usage + cost, workload distribution by app/model, and live inference load. Data: Prometheus (litellm gateway, llamacpp pods, DCGM). Cost figures are estimates driven by the Cloud rate profile dropdown (per-token-type ai:cloud_model:rates) and Electricity $/kWh.",
   "editable": true,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 1,
@@ -214,7 +214,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "(sum(increase(litellm_input_tokens_metric_total[$__range])) - sum(increase(litellm_input_cached_tokens_metric_total[$__range])))/1e6 * sum(cloud_model_rates{profile=\"$rate_profile\", token_type=\"input\"}) + sum(increase(litellm_input_cached_tokens_metric_total[$__range]))/1e6 * sum(cloud_model_rates{profile=\"$rate_profile\", token_type=\"cached\"}) + sum(increase(litellm_output_tokens_metric_total[$__range]))/1e6 * sum(cloud_model_rates{profile=\"$rate_profile\", token_type=\"output\"})",
+          "expr": "(sum(increase(litellm_input_tokens_metric_total[$__range])) - sum(increase(litellm_input_cached_tokens_metric_total[$__range])))/1e6 * sum(ai:cloud_model:rates{profile=\"$rate_profile\", token_type=\"input\"}) + sum(increase(litellm_input_cached_tokens_metric_total[$__range]))/1e6 * sum(ai:cloud_model:rates{profile=\"$rate_profile\", token_type=\"cached\"}) + sum(increase(litellm_output_tokens_metric_total[$__range]))/1e6 * sum(ai:cloud_model:rates{profile=\"$rate_profile\", token_type=\"output\"})",
           "instant": true,
           "legendFormat": "",
           "refId": "A"
@@ -344,7 +344,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "(sum(increase(litellm_input_tokens_metric_total[$__range])) - sum(increase(litellm_input_cached_tokens_metric_total[$__range])))/1e6 * sum(cloud_model_rates{profile=\"$rate_profile\", token_type=\"input\"}) + sum(increase(litellm_input_cached_tokens_metric_total[$__range]))/1e6 * sum(cloud_model_rates{profile=\"$rate_profile\", token_type=\"cached\"}) + sum(increase(litellm_output_tokens_metric_total[$__range]))/1e6 * sum(cloud_model_rates{profile=\"$rate_profile\", token_type=\"output\"}) - avg_over_time(sum(DCGM_FI_DEV_POWER_USAGE)[$__range:1m]) / 1000 * ($__range / 3600000) * $elec_rate",
+          "expr": "(sum(increase(litellm_input_tokens_metric_total[$__range])) - sum(increase(litellm_input_cached_tokens_metric_total[$__range])))/1e6 * sum(ai:cloud_model:rates{profile=\"$rate_profile\", token_type=\"input\"}) + sum(increase(litellm_input_cached_tokens_metric_total[$__range]))/1e6 * sum(ai:cloud_model:rates{profile=\"$rate_profile\", token_type=\"cached\"}) + sum(increase(litellm_output_tokens_metric_total[$__range]))/1e6 * sum(ai:cloud_model:rates{profile=\"$rate_profile\", token_type=\"output\"}) - avg_over_time(sum(DCGM_FI_DEV_POWER_USAGE)[$__range:1m]) / 1000 * ($__range / 3600000) * $elec_rate",
           "instant": true,
           "legendFormat": "",
           "refId": "A"
@@ -1339,14 +1339,14 @@
           "type": "prometheus",
           "uid": "prometheus"
         },
-        "description": "Cloud API pricing profile (per-token-type rates from cloud_model_rates) used to estimate cost avoided. Pick the comparable model you'd otherwise call.",
+        "description": "Cloud API pricing profile (per-token-type rates from ai:cloud_model:rates) used to estimate cost avoided. Pick the comparable model you'd otherwise call.",
         "hide": 0,
         "includeAll": false,
         "label": "Cloud rate profile",
         "multi": false,
         "name": "rate_profile",
         "options": [],
-        "query": "label_values(cloud_model_rates, profile)",
+        "query": "label_values(ai:cloud_model:rates, profile)",
         "refresh": 1,
         "regex": "",
         "regexApplyTo": "value",

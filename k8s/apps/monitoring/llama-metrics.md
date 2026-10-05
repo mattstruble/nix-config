@@ -62,21 +62,14 @@ metrics), `api_key_alias`, `hashed_api_key`, `client_ip`, `user_agent`,
   labels; fine on a single-node homelab, trim via `prometheus_label_config`
   if the series count ever hurts.
 
-## Cloud model rates (`cloud_model_rates`, PrometheusRule)
+## Cloud model rates (`ai:cloud_model:rates`, PrometheusRule)
 
 `k8s/manifests/cloud-model-rates.yaml` records per-model cloud API pricing as
-constant gauges: `cloud_model_rates{profile, token_type}` in USD per 1M tokens.
-`token_type` is pinned to `{input, cached, output}`; `profile` is the cloud
-model name (e.g. `glm-5.3`, `gpt-5`, `claude-opus-5`, `gemini-3.1-pro`,
-`grok-4.6`). Rates as of 2026-07:
-
-| profile | input | cached | output |
-|---|---|---|---|
-| glm-5.3 | 1.40 | 0.26 | 4.40 |
-| gpt-5 | 1.25 | 0.125 | 10.00 |
-| claude-opus-5 | 5.00 | 0.50 | 25.00 |
-| gemini-3.1-pro | 2.00 | 0.20 | 12.00 |
-| grok-4.6 | 2.00 | 0.50 | 6.00 |
+constant gauges: `ai:cloud_model:rates{profile, token_type}` in USD per 1M
+tokens. `token_type` is pinned to `{input, cached, output}`; `profile` is the
+cloud model name. The current rates live in the manifest's header comment —
+that block is the single source of truth (including the procedure for
+updating them), so no rate table is duplicated here.
 
 Used by the `mjolnir LLM overview` dashboard's `rate_profile` variable to
 cost tokens per type: input (excl. cached) × input rate + cached × cached rate
