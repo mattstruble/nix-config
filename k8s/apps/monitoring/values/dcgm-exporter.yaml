@@ -3,6 +3,12 @@
 
 runtimeClassName: nvidia
 
+# Pin to GPU nodes explicitly (matches the chart's default nodeSelector, which
+# is invisible in values). Without this, a second non-GPU node would let the
+# scheduler place the exporter off-GPU -> no metrics, no alert.
+nodeSelector:
+  nvidia.com/gpu.present: "true"
+
 # The chart's own ServiceMonitor is disabled — the DCGM ServiceMonitor lives in
 # the kps additionalServiceMonitors (applied after the ServiceMonitor CRD
 # exists, as part of the kps release).
