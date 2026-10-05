@@ -166,6 +166,14 @@ grafana:
     ingressClassName: traefik
     hosts:
       - grafana.mjolnir # pragma: allowlist secret
+    # TLS: the sops-managed admin password must not cross the LAN in cleartext
+    # (P2-37). The cert is self-signed and untracked — generated at activation
+    # into the grafana-tls Secret (see nix/services/k3s.nix). Browsers show a
+    # self-signed warning on first use; the LAN is trusted.
+    tls:
+      - hosts:
+          - grafana.mjolnir
+        secretName: grafana-tls
 
 
 alertmanager:

@@ -207,6 +207,7 @@
             ENVSUBST="${pkgs.envsubst}/bin/envsubst"
             TAR="${pkgs.gnutar}/bin/tar"
             YQ="${pkgs.yq}/bin/yq"
+            OPENSSL="${pkgs.openssl}/bin/openssl"
             # tar -z spawns gzip as a child; it's not on the activation PATH.
             export PATH="${pkgs.gzip}/bin:$PATH"
             TG_TOKEN="$(cat ${config.sops.secrets."services/monitoring/telegram-bot-token".path})"
@@ -250,7 +251,7 @@
             PRUNE_ALLOWLIST=(
               core/v1/ConfigMap core/v1/Secret core/v1/Service core/v1/PersistentVolumeClaim core/v1/Pod core/v1/Endpoints
               apps/v1/Deployment apps/v1/DaemonSet apps/v1/StatefulSet apps/v1/ReplicaSet
-              batch/v1/Job networking.k8s.io/v1/Ingress
+              batch/v1/Job networking.k8s.io/v1/Ingress networking.k8s.io/v1/NetworkPolicy
               rbac.authorization.k8s.io/v1/ClusterRole rbac.authorization.k8s.io/v1/ClusterRoleBinding
               admissionregistration.k8s.io/v1/ValidatingWebhookConfiguration admissionregistration.k8s.io/v1/MutatingWebhookConfiguration
               monitoring.coreos.com/v1/PrometheusRule monitoring.coreos.com/v1/ServiceMonitor monitoring.coreos.com/v1/Prometheus monitoring.coreos.com/v1/Alertmanager monitoring.coreos.com/v1/PodMonitor
@@ -322,13 +323,18 @@
             label_all monitoring ".kind == \"ServiceAccount\"" ${k8sDir}/manifests/kubelet-monitoring.yaml > "$T/monitoring-kubelet-sa.json"
             label_all cluster ".kind == \"ClusterRoleBinding\"" ${k8sDir}/manifests/kubelet-monitoring.yaml > "$T/cluster-kubelet-crb.json"
             label_all default "true" ${aiChartRendered}/rendered.yaml > "$T/default-ai.json"
-            label_all monitoring "true" ${monitoringChartRendered.loki}/rendered.yaml ${monitoringChartRendered.alloy}/rendered.yaml ${monitoringChartRendered.dcgm}/rendered.yaml ${k8sDir}/manifests/cloud-model-rates.yaml > "$T/monitoring-charts.json"
+            label_all monitoring "true" ${monitoringChartRendered.loki}/rendered.yaml ${monitoringChartRendered.alloy}/rendered.yaml ${monitoringChartRendered.dcgm}/rendered.yaml ${k8sDir}/manifests/cloud-model-rates.yaml ${k8sDir}/manifests/dcgm-networkpolicy.yaml > "$T/monitoring-charts.json"
             cat "$T/cluster-kps.json" "$T/cluster-kubelet-crb.json" > "$T/cluster.yaml"
             cat "$T/monitoring-kubelet-sa.json" "$T/monitoring-kps.json" "$T/monitoring-charts.json" > "$T/monitoring-static.json"
             cat "$T/kube-system-kps.json" > "$T/kube-system.yaml"
 
             for i in $(seq 1 30); do
               $KCTL get namespace monitoring >/dev/null 2>&1 || $KCTL create namespace monitoring
+              # PSS baseline on the monitoring namespace (P2-36): the DCGM
+              # exporter pod runs as root + SYS_ADMIN (CDI), the ceiling
+              # baseline tolerates. label --overwrite is idempotent, so an
+              # existing namespace gets the label too.
+              $KCTL label namespace monitoring pod-security.kubernetes.io/enforce=baseline --overwrite
               # Migration: older deploys applied three kubernetes-system
               # PrometheusRules (controller-manager/kube-proxy/scheduler) that
               # are now disabled in values. They carry no managed label, so
@@ -363,6 +369,22 @@
               # litellm-keys (default ns): master key + postgres password + the
               # full DATABASE_URL (password embedded). The gateway pod reads
               # database-url + master-key; the postgres pod reads postgres-password.
+              # grafana-tls (P2-37): self-signed cert for grafana.mjolnir, long-lived
+              # (10y). The cert/key are untracked and regenerated on every activation
+              # (acceptable: the browser shows a self-signed warning on first use
+              # regardless, and the LAN is trusted). Regenerating keeps the Secret in
+              # the prune scope every pass, so it is never orphaned.
+              $OPENSSL req -x509 -newkey rsa:2048 -nodes \
+                  -keyout "$T/grafana-tls.key" \
+                  -out "$T/grafana-tls.crt" \
+                  -days 3650 \
+                  -subj "/CN=grafana.mjolnir" \
+                  -addext "subjectAltName=DNS:grafana.mjolnir"
+              $KCTL create secret tls grafana-tls \
+                  --namespace monitoring \
+                  --cert="$T/grafana-tls.crt" \
+                  --key="$T/grafana-tls.key" \
+                  --dry-run=client -o yaml | label_all monitoring "true" > "$T/monitoring-grafana-tls.json"
               $KCTL apply -f "$T/monitoring-kubelet-sa.json" \
                 && $KCTL create token kubelet-monitoring --namespace monitoring \
                     --duration=87600h > "$T/kubelet-token" \
@@ -399,6 +421,7 @@
                 && cat "$T/monitoring-static.json" "$T/monitoring-kubelet-token.json" \
                     "$T/monitoring-secrets.json" "$T/monitoring-llm-api-key.json" \
                     "$T/monitoring-litellm-metrics-key.json" \
+                    "$T/monitoring-grafana-tls.json" \
                     "$T/monitoring-dashboards.json" > "$T/monitoring.yaml" \
                 && cat "$T/default-ai.json" "$T/default-litellm-keys.json" > "$T/default.yaml" \
                 && $KCTL apply --server-side --force-conflicts -f "$T/crds.json" \
