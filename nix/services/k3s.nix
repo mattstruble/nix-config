@@ -361,11 +361,12 @@
 
             for i in $(seq 1 30); do
               $KCTL get namespace monitoring >/dev/null 2>&1 || $KCTL create namespace monitoring
-              # PSS baseline on the monitoring namespace (P2-36): the DCGM
-              # exporter pod runs as root + SYS_ADMIN (CDI), the ceiling
-              # baseline tolerates. label --overwrite is idempotent, so an
-              # existing namespace gets the label too.
-              $KCTL label namespace monitoring pod-security.kubernetes.io/enforce=baseline --overwrite
+              # PSS privileged on the monitoring namespace (P2-36): the DCGM
+              # exporter runs as root + SYS_ADMIN (CDI) and the alloy daemonset
+              # mounts a hostPath volume for /var/log (llama.log tailing) —
+              # both need more than baseline. label --overwrite is idempotent,
+              # so an existing namespace gets the label too.
+              $KCTL label namespace monitoring pod-security.kubernetes.io/enforce=privileged --overwrite
               # Migration: older deploys applied three kubernetes-system
               # PrometheusRules (controller-manager/kube-proxy/scheduler) that
               # are now disabled in values. They carry no managed label, so
