@@ -196,6 +196,7 @@
             KPS_VALUES_SRC="${k8sDir}/apps/monitoring/values/kube-prometheus-stack.yaml"
             SED="${pkgs.gnused}/bin/sed"
             TAR="${pkgs.gnutar}/bin/tar"
+            YQ="${pkgs.yq}/bin/yq"
             # tar -z spawns gzip as a child; it's not on the activation PATH.
             export PATH="${pkgs.gzip}/bin:$PATH"
             TG_TOKEN="$(cat ${config.sops.secrets."services/monitoring/telegram-bot-token".path})"
@@ -204,6 +205,13 @@
             LITELLM_MASTER="$(cat ${config.sops.secrets."services/ai/litellm/master-key".path})"
             PG_PASSWORD="$(cat ${config.sops.secrets."services/ai/litellm/postgres-password".path})"
             LITELLM_DB_URL="postgresql://litellm:$PG_PASSWORD@postgres.default.svc.cluster.local:5432/litellm"
+            # Pod API key for llama.cpp /metrics auth: single source of truth is
+            # the chart values (gateway.podApiKey), read directly with yq. Not
+            # grepped out of the rendered YAML — a chart change to the
+            # --api-key arg shape would yield an empty key and a silent
+            # --from-literal=token="" (ai-fleet ServiceMonitor 401s, no error).
+            LLM_KEY="$($YQ -r '.gateway.podApiKey' ${k8sDir}/apps/ai/values.yaml)"
+            [ -n "$LLM_KEY" ] || { echo "error: gateway.podApiKey is empty in ${k8sDir}/apps/ai/values.yaml" >&2; exit 1; }
 
             # Fill the sops placeholders in the values, render kps, and build the
             # grafana admin Secret. Done in a temp dir so nothing leaks to the store.
@@ -244,9 +252,8 @@
             for i in $(seq 1 30); do
               $KCTL get namespace monitoring >/dev/null 2>&1 || $KCTL create namespace monitoring
               # grafana admin creds as a proper K8s Secret (idempotent apply);
-              # llm-api-key: the pod API key for llama.cpp /metrics auth, extracted
-              # from the rendered ai chart (single source of truth: values.yaml podApiKey).
-              # awk/tr aren't on the activation PATH; $SED is.
+              # llm-api-key: the pod API key for llama.cpp /metrics auth
+              # (derived from the chart values above).
               # Grafana dashboards: the sidecar picks up any ConfigMap in this
               # namespace labelled grafana_dashboard (labelValue empty = any).
               # litellm-keys (default ns): master key + postgres password + the
@@ -263,9 +270,6 @@
                   --from-literal=admin-user=admin \
                   --from-literal=admin-password="$GRAFANA_PW" \
                   --dry-run=client -o yaml | $KCTL apply -f - \
-                && LLM_KEY=$(grep -A1 -- '"--api-key"' ${aiChartRendered}/rendered.yaml \
-                        | grep -v -- '"--api-key"' | head -1 \
-                        | $SED 's/^[[:space:]]*- *"\(.*\)".*/\1/') \
                 && $KCTL create secret generic llm-api-key \
                     --namespace monitoring \
                     --from-literal=token="$LLM_KEY" \
@@ -292,7 +296,8 @@
                 && exit 0
               sleep 2
             done
-            echo "warning: chart apply failed after 60s" >&2
+            echo "error: chart apply failed after 60s" >&2
+            exit 1
           '';
         };
 
