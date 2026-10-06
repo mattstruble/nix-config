@@ -143,7 +143,9 @@ prometheus:
   # the model's log and exposes the live rate (tg_3s / tokens per second) on
   # port 9399. A PodMonitor (not ServiceMonitor) selects the pods directly —
   # the sidecar's port isn't on the model Service. No auth (plain http.server).
-  # 5s interval: the gauge updates on each log line (~3s), so 5s keeps it live.
+  # 2s interval (bumped from 5s, 2026-10-05): prefill is a ~10-15s spike that
+  # decays 5s after the last log line — at 5s the panel caught only 1-2 points
+  # per spike; 2s catches 5-7. Decode spans the whole generation either way.
   additionalPodMonitors:
     - name: llm-log-exporter
       namespaceSelector:
@@ -155,7 +157,7 @@ prometheus:
       podMetricsEndpoints:
         - port: log-exporter
           path: /metrics
-          interval: 5s
+          interval: 2s
 
 grafana:
   # Tuned 2026-10-05 after the 100m/512Mi "initial values" starved Grafana
