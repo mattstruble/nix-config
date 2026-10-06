@@ -78,14 +78,25 @@ curl -fsS http://mjolnir:8000/v1/chat/completions \
 
 ## Verify the alias is flowing to prometheus
 
-After a request, the key's alias appears on the metrics:
+After a request, the key's alias appears on the metrics. The gateway's
+`/metrics` endpoint requires auth (`require_auth_for_metrics_endpoint: true`);
+only the master key or a key with `allowed_routes: ["/metrics"]` gets in —
+the dedicated metrics key (`services/ai/litellm/metrics-key` in sops) is
+registered with exactly that at activation (see `nix/services/k3s.nix`,
+`register_metrics_key`).
 
 ```bash
-curl -fsSL http://mjolnir:8000/metrics | grep -oE 'api_key_alias="[^"]*"' | sort -u
+sops -d nix/services/homelab/homelab-secrets-ai.yaml \
+  | grep -A1 'metrics-key'   # or use the master key from homelab-secrets.yaml
+
+METRICS_KEY=... # services/ai/litellm/metrics-key from sops
+curl -fsSL -H "Authorization: Bearer $METRICS_KEY" http://mjolnir:8000/metrics/ \
+  | grep -oE 'api_key_alias="[^"]*"' | sort -u
 ```
 
 You should see `api_key_alias="<name>"`. (The label is emitted by default on the
-request/token metrics — no extra config needed.)
+request/token metrics — no extra config needed. Note the trailing slash on
+`/metrics/` — the endpoint 307-redirects without it.)
 
 ---
 

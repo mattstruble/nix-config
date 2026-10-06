@@ -57,6 +57,17 @@ job-sourced. Gauges decay to 0 after 5s without a log line.
 
 ## LiteLLM gateway (`/metrics/` — note trailing slash, 307 without it)
 
+The gateway's `/metrics` requires auth
+(`require_auth_for_metrics_endpoint: true`). Two ServiceMonitors cover the
+fleet (kps values, `additionalServiceMonitors`): `litellm` scrapes the gateway
+on `default/litellm` presenting the dedicated metrics key
+(`services/ai/litellm/metrics-key` in sops → `litellm-metrics-key` Secret →
+bearerTokenFile) — the key is registered in the gateway's key store at
+activation with `allowed_routes: ["/metrics"]` (a plain virtual key is
+proxy-admin-rejected; see `nix/services/k3s.nix` `register_metrics_key`);
+`ai-fleet` scrapes the model pods' `/metrics` with the pod API key
+(`llm-api-key` Secret).
+
 All counters carry labels: `model` (token metrics) / `requested_model` (request
 metrics), `api_key_alias`, `hashed_api_key`, `client_ip`, `user_agent`,
 `model_id`, `status_code`, `route`, `api_provider`, `user`, `team`, `org_id`,

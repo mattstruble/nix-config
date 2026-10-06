@@ -37,6 +37,18 @@
         helm template ai $src/apps/ai "''${F[@]}" > $out/rendered.yaml
       '';
 
+      # curl for the oneshot below (the metrics-key registration talks to the
+      # gateway's /metrics + /key/generate over HTTP). Wrapped in a
+      # single-output script because interpolating curl's default `bin`
+      # output directly into the oneshot's script string produces a named-output
+      # string-context element that `nix eval --raw/--write-to` on the script
+      # attribute chokes on (Bad String Context element); the wrapper's `out`
+      # output keeps the oneshot's context uniformly `!out!`. Runs on the
+      # target (remoteBuild), like the render derivations above.
+      scrapeCurl = pkgs.writeShellScript "scrape-curl" ''
+        exec ${pkgs.curl}/bin/curl "$@"
+      '';
+
       # ── Monitoring (Grafana/Prometheus/Loki/Alloy/DCGM) ──────────────
       # All monitoring charts use the render-then-apply pattern (render with
       # `helm template` at build time, `kubectl apply` in the activation script):
@@ -234,6 +246,7 @@
           script = ''
             KCTL="${pkgs.k3s}/bin/k3s kubectl"
             CLUSTER_CIDR="${clusterCidr}"
+            CURL="${scrapeCurl}"
             HELM="${pkgs.kubernetes-helm}/bin/helm"
             KPS_CHART="${kpsChart}"
             KPS_VALUES_SRC="${k8sDir}/apps/monitoring/values/kube-prometheus-stack.yaml"
@@ -350,6 +363,51 @@
               else
                 $KCTL apply --prune -l "$sel" "''${pargs[@]}" "''${fargs[@]}"
               fi
+            }
+
+            # Idempotently ensure the gateway's key store knows the dedicated
+            # metrics key. The litellm ServiceMonitor presents the sops
+            # metrics-key value as a bearer token, but with
+            # require_auth_for_metrics_endpoint the gateway checks the key
+            # against its Postgres key store — a key that exists only in sops
+            # gets 401 (the 2026-10-05 dashboards-outage root cause). A plain
+            # virtual key is NOT enough: the /metrics route check is proxy-admin
+            # only, and the sanctioned non-admin path is allowed_routes
+            # (verified against litellm v1.102.1: /key/generate with the fixed
+            # key value + allowed_routes ["/metrics"] -> /metrics/ 200).
+            # Probes the gateway's hostPort 8000 directly (the oneshot runs on
+            # the single node); the trailing slash matters (307 without it).
+            # A fresh Postgres PVC self-heals: the key is re-registered on the
+            # next activation. Returns non-zero on failure so the retry loop
+            # below re-runs the (idempotent) applies and retries registration.
+            register_metrics_key() {
+              local gw="http://127.0.0.1:8000" code
+              code="$($CURL -s -o /dev/null -w '%{http_code}' --max-time 10 \
+                    -H "Authorization: Bearer $METRICS_KEY" "$gw/metrics/" 2>/dev/null)"
+              [ "$code" = "200" ] && return 0
+              # register: fixed key value from sops (== the ServiceMonitor token),
+              # alias "metrics", allowed_routes ["/metrics"]. Both keys go to
+              # 0600 files (curl config + JSON body), never argv.
+              ( umask 077
+                printf 'header = "Authorization: Bearer %s"\n' "$LITELLM_MASTER" > "$T/gateway-curl.conf"
+                printf '{"key":"%s","key_alias":"metrics","allowed_routes":["/metrics"]}' "$METRICS_KEY" \
+                    > "$T/metrics-key-register.json"
+              )
+              code="$($CURL -s -o /dev/null -w '%{http_code}' --max-time 10 \
+                    -K "$T/gateway-curl.conf" -H "Content-Type: application/json" \
+                    -d @"$T/metrics-key-register.json" "$gw/key/generate" 2>/dev/null)"
+              if [ "$code" != "200" ]; then
+                echo "warning: metrics-key registration returned HTTP $code (will retry)" >&2
+                return 1
+              fi
+              code="$($CURL -s -o /dev/null -w '%{http_code}' --max-time 10 \
+                    -H "Authorization: Bearer $METRICS_KEY" "$gw/metrics/" 2>/dev/null)"
+              if [ "$code" != "200" ]; then
+                echo "warning: gateway still rejects the metrics key after registration (HTTP $code; will retry)" >&2
+                return 1
+              fi
+              echo "metrics key registered with the gateway (key_alias: metrics)" >&2
+              return 0
             }
 
             # Fill the sops placeholders in the values, render kps, and build the
@@ -576,6 +634,7 @@
                 && apply_pruned "$SEL_GPU" "gpu" "$T/gpu-charts.json" \
                 && apply_pruned "$SEL_KUBE_SYSTEM" "kube-system" "$T/kube-system.yaml" \
                 && $KCTL label configmap mjolnir-dashboards --namespace monitoring grafana_dashboard=1 --overwrite \
+                && register_metrics_key \
                 && { if [ "$CRDS_NEW" -eq 1 ]; then
                     $KCTL rollout restart deploy/kps-kube-prometheus-stack-operator --namespace monitoring
                   fi
