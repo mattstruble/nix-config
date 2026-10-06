@@ -158,14 +158,18 @@ prometheus:
           interval: 5s
 
 grafana:
-  # Initial values — tune after a week of real load.
+  # Tuned 2026-10-05 after the 100m/512Mi "initial values" starved Grafana
+  # to the wall: cgroup cpu.stat showed 19% of periods throttled (33 min
+  # cumulative throttled) and memory at 99.98% of max (318k limit-hit events)
+  # — dashboard queries stalled/canceled and the readiness probe timed out.
+  # 2 CPU / 2Gi is generous headroom on a 96 GB / 32-thread host.
   resources:
     requests:
-      cpu: 100m
-      memory: 512Mi
+      cpu: 200m
+      memory: 1Gi
     limits:
-      cpu: 100m
-      memory: 512Mi
+      cpu: "2"
+      memory: 2Gi
   # Loki for the LLM fleet dashboard's log panels. Fixed uids (prometheus/loki)
   # are referenced directly in the dashboards — the chart's initDatasources
   # rewrite runs a WATCH-mode init container that never exits and blocks the pod.
