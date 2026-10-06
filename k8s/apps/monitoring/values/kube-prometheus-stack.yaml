@@ -93,17 +93,11 @@ prometheus:
             requests:
               storage: 20Gi
   # ServiceMonitors applied as part of the kps release (the ServiceMonitor CRD
-  # exists by then). The dcgm-exporter ServiceMonitor is live — the exporter is
-  # deployed in this release (k8s/apps/monitoring/values/dcgm-exporter.yaml).
+  # exists by then). The dcgm-exporter ServiceMonitor is NOT here: the exporter
+  # lives in the gpu/ namespace (PSS privileged) and a ServiceMonitor only
+  # selects endpoints in its own namespace, so it is a standalone manifest
+  # (k8s/manifests/dcgm-servicemonitor.yaml) applied in the gpu pass.
   additionalServiceMonitors:
-    - name: dcgm-exporter
-      namespace: monitoring
-      selector:
-        matchLabels:
-          app.kubernetes.io/name: dcgm-exporter
-      endpoints:
-        - port: metrics
-          interval: 30s
     # LLM fleet: llama.cpp model pods + LiteLLM gateway, split into two
     # monitors because the gateway's /metrics requires auth
     # (require_auth_for_metrics_endpoint: true) with a dedicated key, while
@@ -123,6 +117,13 @@ prometheus:
           path: /metrics/
           interval: 30s
           bearerTokenFile: /prometheus/litellm-metrics-key/token
+          # LiteLLM request metrics carry PII labels (user_email, end_user,
+          # client_ip, user_agent) that would be retained in Prometheus for
+          # 30d. Drop them at scrape time; api_key_alias + model are kept so
+          # the per-source dashboard breakdown still works.
+          metricRelabelings:
+            - action: labeldrop
+              regex: (user_email|end_user|client_ip|user_agent)
     - name: ai-fleet
       # the monitor lives in monitoring/; the model Services are in default/
       # (component: model excludes the litellm/postgres Services, so new
@@ -165,17 +166,19 @@ grafana:
       secureJsonData:
         httpHeaderValue1: loki
   adminUser: admin
-  # Admin creds come from the monitoring-secrets Secret (rendered from sops,
-  # applied via extraDeploy so it exists before grafana starts).
+  # Admin creds come from the monitoring-secrets Secret (created by the
+  # activation script in the same apply pass; on a fresh install grafana may
+  # briefly be in CreateContainerConfigError until the Secret lands, and the
+  # pod self-heals on its next restart).
   admin:
     existingSecret: monitoring-secrets
     userKey: admin-user
-    passwordKey: admin-password # pragma: allowlist secret
+    passwordKey: admin-password
   ingress:
     enabled: true
     ingressClassName: traefik
     hosts:
-      - grafana.mjolnir # pragma: allowlist secret
+      - grafana.mjolnir
     # TLS: the sops-managed admin password must not cross the LAN in cleartext
     # (P2-37). The cert is self-signed and untracked — generated at activation
     # into the grafana-tls Secret (see nix/services/k3s.nix). Browsers show a

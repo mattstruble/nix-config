@@ -15,6 +15,7 @@ metadata:
   labels:
     app: {{ $name }}
     app.kubernetes.io/part-of: ai
+    app.kubernetes.io/component: model
 spec:
   # Recreate: each model owns its whole GPU (20+ GiB of 24 GiB), so a
   # RollingUpdate would run old + new pods concurrently and OOM the load.
@@ -29,6 +30,9 @@ spec:
       labels:
         app: {{ $name }}
         app.kubernetes.io/part-of: ai
+        # netpol selector (k8s/manifests/ai-networkpolicies.yaml): the only
+        # label shared by all model pods and no other ai-chart pod.
+        app.kubernetes.io/component: model
     spec:
       runtimeClassName: nvidia
       # let in-flight generations finish on shutdown/rollout (default 30s

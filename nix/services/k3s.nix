@@ -6,6 +6,10 @@
       cfg = config.services.k3s;
       # k8s/ lives at the repo root; this module is in nix/services/.
       k8sDir = ../../k8s;
+      # k3s' default cluster-cidr. The nix k3s module exposes no cluster-cidr
+      # option, so this literal is the single source of truth for both the
+      # nftables rule below and the activation script's divergence check.
+      clusterCidr = "10.42.0.0/16";
       # nvidia-container-runtime in CDI mode: reads the host's nvidia CDI spec
       # (which carries the nix-store driver-lib mounts + the nvidia-cdi-hook) and
       # injects the GPU selected by NVIDIA_VISIBLE_DEVICES. The hook-mode runtime
@@ -76,18 +80,22 @@
       # release: the helm release name (charts embed it in resource names,
       # so it must stay what the cluster already runs).
       monitoringCharts = {
-        dcgm = { release = "dcgm-exporter"; chart = "${dcgmChartSrc}/deployment"; values = "${k8sDir}/apps/monitoring/values/dcgm-exporter.yaml"; };
-        loki = { release = "loki"; chart = lokiChart; values = "${k8sDir}/apps/monitoring/values/loki.yaml"; };
-        alloy = { release = "alloy"; chart = alloyChart; values = "${k8sDir}/apps/monitoring/values/alloy.yaml"; };
+        # dcgm runs in the dedicated gpu/ namespace (PSS privileged: it needs
+        # root + SYS_ADMIN for the CDI GPU driver); loki/alloy stay in
+        # monitoring/ (PSS baseline is enough — alloy's hostPath /var/log/pods
+        # is allowed at baseline).
+        dcgm = { release = "dcgm-exporter"; chart = "${dcgmChartSrc}/deployment"; values = "${k8sDir}/apps/monitoring/values/dcgm-exporter.yaml"; namespace = "gpu"; };
+        loki = { release = "loki"; chart = lokiChart; values = "${k8sDir}/apps/monitoring/values/loki.yaml"; namespace = "monitoring"; };
+        alloy = { release = "alloy"; chart = alloyChart; values = "${k8sDir}/apps/monitoring/values/alloy.yaml"; namespace = "monitoring"; };
       };
-      monitoringChartRendered = lib.mapAttrs (name: { release, chart, values }:
+      monitoringChartRendered = lib.mapAttrs (name: { release, chart, values, namespace }:
         pkgs.runCommand "${name}-chart-rendered" {
           nativeBuildInputs = [ pkgs.kubernetes-helm ];
         } ''
           mkdir -p $out
           helm template ${release} ${chart} \
             -f ${values} \
-            --namespace monitoring > $out/rendered.yaml
+            --namespace ${namespace} > $out/rendered.yaml
         ''
       ) monitoringCharts;
     in
@@ -218,13 +226,14 @@
           wantedBy = [ "multi-user.target" ];
           serviceConfig = {
             Type = "oneshot";
-            RemainAfterExec = true;
+            RemainAfterExit = true;
           };
           # k3s + helm + envsubst aren't on the oneshot's default PATH, so use
           # full binary paths. Runs after sops-nix materialises /run/secrets
           # (setupSecrets, in the activation phase) and after k3s is up.
           script = ''
             KCTL="${pkgs.k3s}/bin/k3s kubectl"
+            CLUSTER_CIDR="${clusterCidr}"
             HELM="${pkgs.kubernetes-helm}/bin/helm"
             KPS_CHART="${kpsChart}"
             KPS_VALUES_SRC="${k8sDir}/apps/monitoring/values/kube-prometheus-stack.yaml"
@@ -234,20 +243,45 @@
             OPENSSL="${pkgs.openssl}/bin/openssl"
             # tar -z spawns gzip as a child; it's not on the activation PATH.
             export PATH="${pkgs.gzip}/bin:$PATH"
-            TG_TOKEN="$(cat ${config.sops.secrets."services/monitoring/telegram-bot-token".path})"
-            TG_CHAT="$(cat ${config.sops.secrets."services/monitoring/telegram-chat-id".path})"
+            # pipefail: the create secret | label_all pipelines below must
+            # fail if kubectl fails — label_all succeeds on empty input, so
+            # without pipefail a failed create would leave an empty file and
+            # the next apply pass would prune a live Secret.
+            set -o pipefail
+            # Exported: envsubst below reads them from the environment.
+            export TELEGRAM_BOT_TOKEN="$(cat ${config.sops.secrets."services/monitoring/telegram-bot-token".path})"
+            export TELEGRAM_CHAT_ID="$(cat ${config.sops.secrets."services/monitoring/telegram-chat-id".path})"
+            [ -n "$TELEGRAM_BOT_TOKEN" ] || { echo "error: services/monitoring/telegram-bot-token sops secret is empty" >&2; exit 1; }
+            [ -n "$TELEGRAM_CHAT_ID" ] || { echo "error: services/monitoring/telegram-chat-id sops secret is empty" >&2; exit 1; }
             GRAFANA_PW="$(cat ${config.sops.secrets."services/monitoring/grafana-admin-password".path})"
             LITELLM_MASTER="$(cat ${config.sops.secrets."services/ai/litellm/master-key".path})"
             PG_PASSWORD="$(cat ${config.sops.secrets."services/ai/litellm/postgres-password".path})"
-            LITELLM_DB_URL="postgresql://litellm:$PG_PASSWORD@postgres.default.svc.cluster.local:5432/litellm"
+            [ -n "$GRAFANA_PW" ] || { echo "error: services/monitoring/grafana-admin-password sops secret is empty" >&2; exit 1; }
+            [ -n "$LITELLM_MASTER" ] || { echo "error: services/ai/litellm/master-key sops secret is empty" >&2; exit 1; }
+            [ -n "$PG_PASSWORD" ] || { echo "error: services/ai/litellm/postgres-password sops secret is empty" >&2; exit 1; }
+            # Percent-encode the password before embedding it in the DSN: an
+            # unencoded @ : / % # in the sops value would malform the URL and
+            # the gateway would silently lose its key store.
+            urlencode() {
+              local LC_ALL=C
+              local s="$1" out="" c i
+              for (( i=0; i<''${#s}; i++ )); do
+                c="''${s:i:1}"
+                case "$c" in
+                  [a-zA-Z0-9.~_-]) out+="$c" ;;
+                  *) out+="$(printf '%%%02X' "'$c")" ;;
+                esac
+              done
+              printf '%s' "$out"
+            }
+            LITELLM_DB_URL="postgresql://litellm:$(urlencode "$PG_PASSWORD")@postgres.default.svc.cluster.local:5432/litellm"
             # Pod API key for llama.cpp /metrics auth: single source of truth is
             # the sops secret (litellm-keys/pod-api-key in the cluster). Not
             # grepped out of the rendered YAML — a chart change to the key's
             # wiring would yield an empty key and a silent --from-literal=token=""
             # (ai-fleet ServiceMonitor 401s, no error).
             POD_API_KEY="$(cat ${config.sops.secrets."services/ai/litellm/pod-api-key".path})"
-            LLM_KEY="$POD_API_KEY"
-            [ -n "$LLM_KEY" ] || { echo "error: services/ai/litellm/pod-api-key sops secret is empty" >&2; exit 1; }
+            [ -n "$POD_API_KEY" ] || { echo "error: services/ai/litellm/pod-api-key sops secret is empty" >&2; exit 1; }
             # Metrics key for the gateway /metrics scrape (dedicated key,
             # key_alias "metrics"; same rationale as the pod API key above).
             METRICS_KEY="$(cat ${config.sops.secrets."services/ai/litellm/metrics-key".path})"
@@ -270,6 +304,7 @@
             SEL_DEFAULT="$MANAGED,mjolnir/prune-group=default"
             SEL_MONITORING="$MANAGED,mjolnir/prune-group=monitoring"
             SEL_KUBE_SYSTEM="$MANAGED,mjolnir/prune-group=kube-system"
+            SEL_GPU="$MANAGED,mjolnir/prune-group=gpu"
             # Kinds a prune pass may delete. kubectl's default allowlist has
             # no CRs, so the monitoring.coreos.com kinds must be listed.
             PRUNE_ALLOWLIST=(
@@ -321,15 +356,23 @@
             # grafana admin Secret. Done in a temp dir so nothing leaks to the store.
             T=$(mktemp -d)
             trap 'rm -rf "$T"' EXIT
+            # Fail fast on render-phase failures: a failed render produces
+            # empty files, and the monitoring prune pass below would then
+            # delete EVERY managed resource in monitoring/ (the whole kps
+            # stack). set -e covers the render section only; the apply loop
+            # keeps its own retry semantics (set +e before it).
+            set -e
             # envsubst fills the sops placeholders (sed broke on tokens
             # containing |, & or \). The SHELL-FORMAT arg restricts
             # substitution to the two placeholders, so any other $ in the
             # values file is left alone.
             $ENVSUBST "''${TELEGRAM_BOT_TOKEN} ''${TELEGRAM_CHAT_ID}" < "$KPS_VALUES_SRC" > "$T/kps-values.yaml"
+            [ -s "$T/kps-values.yaml" ] || { echo "error: envsubst produced empty kps-values.yaml" >&2; exit 1; }
             # Render the kps templates (CRs + workloads) WITHOUT --include-crds;
             # the CRDs are extracted from the chart and applied separately below.
             $HELM template kps "$KPS_CHART" -f "$T/kps-values.yaml" \
                 --namespace monitoring > "$T/kps-rendered.yaml"
+            [ -s "$T/kps-rendered.yaml" ] || { echo "error: helm template produced empty kps-rendered.yaml" >&2; exit 1; }
             $TAR -xzf "$KPS_CHART" -C "$T"
             # CRDs ship in the chart's `crds` dependency subchart.
             KPS_CRDS="$T/kube-prometheus-stack/charts/crds/crds"
@@ -351,6 +394,7 @@
             # spans monitoring/ (workloads + CRs), kube-system/ (the coredns
             # Service) and cluster scope (CRs/CRBs/webhooks); the v1 List
             # (additionalServiceMonitors) is all-monitoring and stays whole.
+            [ -n "$(ls "$KPS_CRDS"/* 2>/dev/null)" ] || { echo "error: no CRD files found in $KPS_CRDS" >&2; exit 1; }
             label_managed "$KPS_CRDS"/* > "$T/crds.json"
             label_all monitoring ".kind == \"List\" or .metadata.namespace == \"monitoring\"" "$T/kps-rendered.yaml" > "$T/monitoring-kps.json"
             label_all kube-system ".metadata.namespace == \"kube-system\"" "$T/kps-rendered.yaml" > "$T/kube-system-kps.json"
@@ -358,20 +402,72 @@
             # kubelet SA (monitoring/) + RBAC (cluster scope) split.
             label_all monitoring ".kind == \"ServiceAccount\"" ${k8sDir}/manifests/kubelet-monitoring.yaml > "$T/monitoring-kubelet-sa.json"
             label_all cluster ".kind == \"ClusterRoleBinding\"" ${k8sDir}/manifests/kubelet-monitoring.yaml > "$T/cluster-kubelet-crb.json"
-            label_all default "true" ${aiChartRendered}/rendered.yaml > "$T/default-ai.json"
-            label_all monitoring "true" ${monitoringChartRendered.loki}/rendered.yaml ${monitoringChartRendered.alloy}/rendered.yaml ${monitoringChartRendered.dcgm}/rendered.yaml ${k8sDir}/manifests/cloud-model-rates.yaml ${k8sDir}/manifests/dcgm-networkpolicy.yaml > "$T/monitoring-charts.json"
+            label_all default "true" ${aiChartRendered}/rendered.yaml ${k8sDir}/manifests/ai-networkpolicies.yaml > "$T/default-ai.json"
+            label_all monitoring "true" ${monitoringChartRendered.loki}/rendered.yaml ${monitoringChartRendered.alloy}/rendered.yaml ${k8sDir}/manifests/cloud-model-rates.yaml > "$T/monitoring-charts.json"
+            # gpu/ pass: dcgm-exporter + its netpol + its ServiceMonitor
+            # (standalone manifest, not a kps additionalServiceMonitor — the
+            # chart renders those as one v1 List that cannot be split by
+            # namespace, and the SM must live in gpu/ to select the pod).
+            label_all gpu "true" ${monitoringChartRendered.dcgm}/rendered.yaml ${k8sDir}/manifests/dcgm-networkpolicy.yaml ${k8sDir}/manifests/dcgm-servicemonitor.yaml > "$T/gpu-charts.json"
             cat "$T/cluster-kps.json" "$T/cluster-kubelet-crb.json" > "$T/cluster.yaml"
             cat "$T/monitoring-kubelet-sa.json" "$T/monitoring-kps.json" "$T/monitoring-charts.json" > "$T/monitoring-static.json"
             cat "$T/kube-system-kps.json" > "$T/kube-system.yaml"
+            # Last line of defense: every apply pass reads one of these
+            # bundles; an empty one means the render produced nothing for
+            # that scope and the prune pass would delete it.
+            [ -s "$T/cluster.yaml" ] || { echo "error: rendered cluster.yaml is empty" >&2; exit 1; }
+            [ -s "$T/monitoring-static.json" ] || { echo "error: rendered monitoring-static.json is empty" >&2; exit 1; }
+            [ -s "$T/kube-system.yaml" ] || { echo "error: rendered kube-system.yaml is empty" >&2; exit 1; }
+            [ -s "$T/default-ai.json" ] || { echo "error: rendered default-ai.json is empty" >&2; exit 1; }
+            [ -s "$T/gpu-charts.json" ] || { echo "error: rendered gpu-charts.json is empty" >&2; exit 1; }
+            set +e
 
-            for i in $(seq 1 30); do
+            # CIDR containment: is $2 (net/prefix) a subnet of $1? The node's
+            # podCIDR is a /24 slice of the cluster-cidr (/16), so the firewall
+            # rule (scoped to the full cluster-cidr) is a safe superset — we
+            # only need the node's slice to fall inside it, not equal it.
+            ip_to_int() {
+              local ip="$1" a b c d
+              IFS=. read -r a b c d <<< "$ip"
+              echo $(( (a << 24) + (b << 16) + (c << 8) + d ))
+            }
+            cidr_contains() {
+              local outer="$1" inner="$2"
+              local outer_ip="''${outer%/*}" outer_prefix="''${outer#*/}"
+              local inner_ip="''${inner%/*}" inner_prefix="''${inner#*/}"
+              [ "$outer_prefix" -le "$inner_prefix" ] || return 1
+              local mask=$(( (0xFFFFFFFF << (32 - outer_prefix)) & 0xFFFFFFFF ))
+              [ $(( $(ip_to_int "$outer_ip") & mask )) -eq $(( $(ip_to_int "$inner_ip") & mask )) ]
+            }
+
+            # 150 x 2s = 5min: the API server can take well over 60s to be
+            # ready after a fresh boot (large etcd, slow disk). A failed
+            # apply persists until the next chart-changing activation, so
+            # the bound is generous on purpose.
+            for i in $(seq 1 150); do
               $KCTL get namespace monitoring >/dev/null 2>&1 || $KCTL create namespace monitoring
-              # PSS privileged on the monitoring namespace (P2-36): the DCGM
-              # exporter runs as root + SYS_ADMIN (CDI) and the alloy daemonset
-              # mounts a hostPath volume for /var/log (llama.log tailing) —
-              # both need more than baseline. label --overwrite is idempotent,
-              # so an existing namespace gets the label too.
-              $KCTL label namespace monitoring pod-security.kubernetes.io/enforce=privileged --overwrite
+              $KCTL get namespace gpu >/dev/null 2>&1 || $KCTL create namespace gpu
+              # Divergence check: the nftables rule for 9100/10250 is scoped
+              # to $CLUSTER_CIDR (k3s' default; the nix k3s module exposes no
+              # cluster-cidr option). The node's podCIDR is a /24 slice of the
+              # cluster-cidr, so it must fall INSIDE $CLUSTER_CIDR (not equal
+              # it). A mismatch would silently break node-exporter/kubelet
+              # scrapes, so fail the apply. Empty means the node isn't
+              # registered yet — keep retrying.
+              NODE_CIDR=$($KCTL get node -o jsonpath='{.items[0].spec.podCIDR}' 2>/dev/null || true)
+              if [ -n "$NODE_CIDR" ] && ! cidr_contains "$CLUSTER_CIDR" "$NODE_CIDR"; then
+                echo "error: node podCIDR $NODE_CIDR not within cluster-cidr $CLUSTER_CIDR (firewall rule mismatch)" >&2
+                exit 1
+              fi
+              # PSS scoping (P2-36): the DCGM exporter needs root + SYS_ADMIN
+              # (CDI GPU driver), so it gets a dedicated gpu/ namespace at PSS
+              # privileged. monitoring/ stays at baseline — alloy's hostPath
+              # /var/log/pods is allowed at baseline, and grafana/prometheus/
+              # loki need nothing more. label --overwrite is idempotent, so an
+              # existing namespace gets the label too (this also downgrades a
+              # pre-existing privileged label on monitoring/).
+              $KCTL label namespace gpu pod-security.kubernetes.io/enforce=privileged --overwrite
+              $KCTL label namespace monitoring pod-security.kubernetes.io/enforce=baseline --overwrite
               # Migration: older deploys applied three kubernetes-system
               # PrometheusRules (controller-manager/kube-proxy/scheduler) that
               # are now disabled in values. They carry no managed label, so
@@ -422,6 +518,18 @@
                   --cert="$T/grafana-tls.crt" \
                   --key="$T/grafana-tls.key" \
                   --dry-run=client -o yaml | label_all monitoring "true" > "$T/monitoring-grafana-tls.json"
+              # Secret values go to 0600 files + --from-file so they never
+              # appear in kubectl's argv (visible via ps / /proc/*/cmdline
+              # during activation). printf '%s' matches --from-literal's
+              # exact-value semantics (no trailing newline).
+              ( umask 077
+                printf '%s' "$LITELLM_MASTER" > "$T/secret-master-key"
+                printf '%s' "$PG_PASSWORD" > "$T/secret-pg-password"
+                printf '%s' "$LITELLM_DB_URL" > "$T/secret-db-url"
+                printf '%s' "$POD_API_KEY" > "$T/secret-pod-api-key"
+                printf '%s' "$GRAFANA_PW" > "$T/secret-grafana-pw"
+                printf '%s' "$METRICS_KEY" > "$T/secret-metrics-key"
+              )
               $KCTL apply -f "$T/monitoring-kubelet-sa.json" \
                 && $KCTL create token kubelet-monitoring --namespace monitoring \
                     --duration=87600h > "$T/kubelet-token" \
@@ -431,23 +539,23 @@
                     --dry-run=client -o yaml | label_all monitoring "true" > "$T/monitoring-kubelet-token.json" \
                 && $KCTL create secret generic litellm-keys \
                     --namespace default \
-                    --from-literal=master-key="$LITELLM_MASTER" \
-                    --from-literal=postgres-password="$PG_PASSWORD" \
-                    --from-literal=database-url="$LITELLM_DB_URL" \
-                    --from-literal=pod-api-key="$POD_API_KEY" \
+                    --from-file=master-key="$T/secret-master-key" \
+                    --from-file=postgres-password="$T/secret-pg-password" \
+                    --from-file=database-url="$T/secret-db-url" \
+                    --from-file=pod-api-key="$T/secret-pod-api-key" \
                     --dry-run=client -o yaml | label_all default "true" > "$T/default-litellm-keys.json" \
                 && $KCTL create secret generic monitoring-secrets \
                     --namespace monitoring \
                     --from-literal=admin-user=admin \
-                    --from-literal=admin-password="$GRAFANA_PW" \
+                    --from-file=admin-password="$T/secret-grafana-pw" \
                     --dry-run=client -o yaml | label_all monitoring "true" > "$T/monitoring-secrets.json" \
                 && $KCTL create secret generic llm-api-key \
                     --namespace monitoring \
-                    --from-literal=token="$LLM_KEY" \
+                    --from-file=token="$T/secret-pod-api-key" \
                     --dry-run=client -o yaml | label_all monitoring "true" > "$T/monitoring-llm-api-key.json" \
                 && $KCTL create secret generic litellm-metrics-key \
                     --namespace monitoring \
-                    --from-literal=token="$METRICS_KEY" \
+                    --from-file=token="$T/secret-metrics-key" \
                     --dry-run=client -o yaml | label_all monitoring "true" > "$T/monitoring-litellm-metrics-key.json" \
                 && $KCTL create configmap mjolnir-dashboards \
                     --namespace monitoring \
@@ -465,6 +573,7 @@
                 && apply_pruned "$SEL_CLUSTER" "" "$T/cluster.yaml" \
                 && apply_pruned "$SEL_DEFAULT" "default" "$T/default.yaml" \
                 && apply_pruned "$SEL_MONITORING" "monitoring" "$T/monitoring.yaml" \
+                && apply_pruned "$SEL_GPU" "gpu" "$T/gpu-charts.json" \
                 && apply_pruned "$SEL_KUBE_SYSTEM" "kube-system" "$T/kube-system.yaml" \
                 && $KCTL label configmap mjolnir-dashboards --namespace monitoring grafana_dashboard=1 --overwrite \
                 && { if [ "$CRDS_NEW" -eq 1 ]; then
@@ -474,7 +583,7 @@
                 }
               sleep 2
             done
-            echo "error: chart apply failed after 60s" >&2
+            echo "error: chart apply failed after 5min" >&2
             exit 1
           '';
         };
@@ -483,20 +592,21 @@
         # are hostNetwork on the node and scraped by Prometheus from the pod
         # network, so the INPUT chain must let the pod CIDR reach them.
         # allowedTCPPorts has no source restriction, so 9100/10250 get an
-        # explicit nftables rule scoped to the pod CIDR (k3s' default
-        # cluster-cidr) instead.
+        # explicit nftables rule scoped to the pod CIDR (clusterCidr above;
+        # the activation script fails the apply if the running cluster
+        # diverges from it) instead.
         networking.firewall.allowedTCPPorts = [ 6443 ];
         # extraInputRules is appended to the input-allow chain (nftables
         # backend; extraCommands is iptables-only and asserts here).
         networking.firewall.extraInputRules = ''
-          tcp dport { 9100, 10250 } ip saddr 10.42.0.0/16 accept
+          tcp dport { 9100, 10250 } ip saddr ${clusterCidr} accept
         '';
         # NOTE: the LiteLLM gateway's hostPort 8000 is NOT covered by the
         # firewall above — hostPort traffic is DNAT'd via PREROUTING to the
         # pod CNI interface and never traverses the INPUT chain that
         # networking.firewall controls. The pods themselves are ClusterIP-only
-        # and require the
-        # --api-key set in the chart.
+        # and authenticate with the LLAMA_API_KEY env var (from the
+        # litellm-keys Secret).
       };
     };
 }

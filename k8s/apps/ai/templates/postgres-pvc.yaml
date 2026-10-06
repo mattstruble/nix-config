@@ -1,4 +1,3 @@
-{{- if .Values.gateway.usePostgresKeys }}
 # Postgres data for the LiteLLM key store. LiteLLM's virtual-key / spend
 # features require PostgreSQL (SQLite is not supported). local-path is the only
 # dynamic StorageClass on this cluster.
@@ -14,5 +13,4 @@ spec:
   storageClassName: postgres-data
   resources:
     requests:
-      storage: {{ .Values.gateway.postgresDataSize | default "1Gi" }}
-{{- end }}
+      storage: {{ .Values.gateway.postgresDataSize }}

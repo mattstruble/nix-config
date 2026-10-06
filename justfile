@@ -33,10 +33,6 @@ build: build-rpi-images
 k8s-render:
 	F=(-f k8s/apps/ai/values.yaml); for f in k8s/apps/ai/values/*.yaml; do F+=(-f "$f"); done; helm template ai k8s/apps/ai "${F[@]}"
 
-# render + apply to mjolnir k3s (fast manual path; `just deploy mjolnir` also syncs)
-k8s-deploy:
-	F=(-f k8s/apps/ai/values.yaml); for f in k8s/apps/ai/values/*.yaml; do F+=(-f "$f"); done; helm template ai k8s/apps/ai "${F[@]}" > /tmp/ai-rendered.yaml && scp /tmp/ai-rendered.yaml mjolnir:/tmp/ai-rendered.yaml && ssh mjolnir 'sudo k3s kubectl apply -f /tmp/ai-rendered.yaml'
-
 # Mint a named LiteLLM key (alias=<name> -> per-source prometheus label), store
 # it in sops, print it. Requires the gateway deployed (just deploy mjolnir).
 mint-key name:

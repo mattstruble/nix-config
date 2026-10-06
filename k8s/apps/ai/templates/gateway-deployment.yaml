@@ -53,7 +53,6 @@ spec:
                 secretKeyRef:
                   name: litellm-keys
                   key: pod-api-key
-            {{- if .Values.gateway.usePostgresKeys }}
             # Postgres key store: virtual keys + spend tracking require PostgreSQL
             # (SQLite unsupported). The full URL (with password) is built by the
             # activation script into the litellm-keys Secret.
@@ -68,7 +67,6 @@ spec:
                 secretKeyRef:
                   name: litellm-keys
                   key: master-key
-            {{- end }}
           volumeMounts:
             - name: config
               # the image entrypoint is `litellm --config ./proxy_server_config.yaml`

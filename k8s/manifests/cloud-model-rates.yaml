@@ -74,12 +74,14 @@ spec:
         - record: ai:cloud_model:rates
           expr: label_replace(label_replace(vector(6.00), "profile", "grok-4.6", "", ""), "token_type", "output", "", "")
     # Estimated cloud cost of the last hour of local token usage, per rate
-    # profile. Token sums are label-less, so each product matches the single
-    # summed series 1-to-many against the rates vector (profile kept via
-    # sum by). Evaluated more often than the constants: dashboards read the
-    # latest value.
+    # profile. The token sums are label-less, so they are wrapped in scalar()
+    # — scalar * vector keeps the rates vector's labels (profile + token_type)
+    # where a label-less vector * vector would match nothing. The three
+    # products then differ only in token_type, so they are added with
+    # on(profile) group_left() and finally summed by profile. Evaluated more
+    # often than the constants: dashboards read the latest value.
     - name: litellm-cost
       interval: 1m
       rules:
         - record: ai:litellm:cost:increase1h
-          expr: sum by (profile) ((sum(increase(litellm_input_tokens_metric_total[1h])) - sum(increase(litellm_input_cached_tokens_metric_total[1h])))/1e6 * ai:cloud_model:rates{token_type="input"} + sum(increase(litellm_input_cached_tokens_metric_total[1h]))/1e6 * ai:cloud_model:rates{token_type="cached"} + sum(increase(litellm_output_tokens_metric_total[1h]))/1e6 * ai:cloud_model:rates{token_type="output"})
+          expr: sum by (profile) (scalar(sum(increase(litellm_input_tokens_metric_total[1h])) - sum(increase(litellm_input_cached_tokens_metric_total[1h])))/1e6 * ai:cloud_model:rates{token_type="input"} + on(profile) group_left() scalar(sum(increase(litellm_input_cached_tokens_metric_total[1h])))/1e6 * ai:cloud_model:rates{token_type="cached"} + on(profile) group_left() scalar(sum(increase(litellm_output_tokens_metric_total[1h])))/1e6 * ai:cloud_model:rates{token_type="output"})

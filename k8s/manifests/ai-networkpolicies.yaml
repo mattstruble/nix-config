@@ -1,0 +1,67 @@
+# NetworkPolicies for the ai chart's stateful + model pods (default ns).
+#
+# The postgres pod holds the master key, all API keys, and the DB password —
+# before this it was reachable from ANY pod in the cluster. The model pods
+# (llama.cpp servers) likewise had no containment.
+#
+#   - postgres: ingress from the gateway pod only (the sole client); egress
+#     denied entirely (it only listens).
+#   - model pods: ingress from the gateway (inference) + the kps Prometheus
+#     pod (/metrics scrape); egress denied entirely (llama-server makes no
+#     outbound connections).
+#
+# The model-pod selector uses app.kubernetes.io/component=model, stamped on
+# the pod template by k8s/apps/ai/templates/model-deployment.yaml.
+#
+# The gateway pod itself is intentionally NOT contained: it must reach
+# postgres, every model, and the LAN (hostPort 8000), so a netpol on it
+# would be a full allowlist with no containment value.
+#
+# Applied at activation time (see nix/services/k3s.nix) in the default pass,
+# where the managed-by + prune-group labels are stamped on.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: postgres
+  namespace: default
+spec:
+  podSelector:
+    matchLabels:
+      app: postgres
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: litellm
+      ports:
+        - protocol: TCP
+          port: 5432
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: model-pods
+  namespace: default
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/component: model
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # gateway -> model inference (port varies per model, so no port filter)
+    - from:
+        - podSelector:
+            matchLabels:
+              app: litellm
+    # prometheus -> /metrics scrape (same pod labels as the dcgm policy:
+    # stamped by the prometheus-operator, not the helm chart)
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: prometheus
+              app.kubernetes.io/instance: kps-kube-prometheus-stack-prometheus

@@ -30,32 +30,44 @@ command -v jq >/dev/null || { echo "jq not on PATH" >&2; exit 1; }
 
 # All plaintext (decrypted secrets, API responses, curl config) lives in a
 # private temp dir removed on exit; nothing is written to a fixed path.
+# The plaintext is mirrored at the repo-relative path under $T (and .sops.yaml
+# is copied in) so that `sops encrypt` finds the same creation rule the file
+# was created with — sops matches path_regex against the file path, and a
+# bare temp path would match no rule and re-encrypt to the wrong keys.
 umask 077
 T="$(mktemp -d)"
+mkdir -p "$T/nix/services/homelab"
+cp .sops.yaml "$T/.sops.yaml"
 trap 'rm -rf "$T"; rm -f "$F.new"' EXIT
 
 # 1. master key from sops (gates /key/*).
-sops decrypt "$F" > "$T/plain.yaml"
-MASTER="$("${YQ[@]}" -r '.services.ai.litellm."master-key"' "$T/plain.yaml")"
+PLAIN="$T/nix/services/homelab/$(basename "$F")"
+sops decrypt "$F" > "$PLAIN"
+MASTER="$("${YQ[@]}" -r '.services.ai.litellm."master-key"' "$PLAIN")"
 [[ -n "$MASTER" && "$MASTER" != "null" ]] || { echo "no master key in $F" >&2; exit 1; }
 
 # Keep the master key out of process argv: curl reads it from a 0600 config.
 printf 'header = "Authorization: Bearer %s"\n' "$MASTER" > "$T/curl.conf"
 
 # 2. idempotency: if the alias already exists, print the stored key and stop.
-CODE="$(curl -sS --max-time 30 -o "$T/info.json" -w '%{http_code}' \
-  -K "$T/curl.conf" "$GATEWAY/key/info?key=$NAME")"
+# /key/list returns every key with its key_alias. (NOT /key/info — that takes
+# the key TOKEN, not the alias, so ?key=$NAME would never match.)
+CODE="$(curl -sS --max-time 30 -o "$T/list.json" -w '%{http_code}' \
+  -K "$T/curl.conf" "$GATEWAY/key/list")"
 if [[ "$CODE" == "200" ]]; then
-  STORED="$("${YQ[@]}" -r ".services.ai.litellm.keys.\"$NAME\" // empty" "$T/plain.yaml")"
-  if [[ -n "$STORED" ]]; then
-    echo "Key '$NAME' already exists; stored key:"
-    echo "$STORED"
-    echo "Stored: $F  (services.ai.litellm.keys.$NAME)"
-    exit 0
+  EXISTS="$(jq -r --arg n "$NAME" '[.keys[]? | select(.key_alias == $n)] | length' "$T/list.json" 2>/dev/null || echo 0)"
+  if [[ "$EXISTS" -gt 0 ]]; then
+    STORED="$("${YQ[@]}" -r ".services.ai.litellm.keys.\"$NAME\" // empty" "$PLAIN")"
+    if [[ -n "$STORED" ]]; then
+      echo "Key '$NAME' already exists; stored key:"
+      echo "$STORED"
+      echo "Stored: $F  (services.ai.litellm.keys.$NAME)"
+      exit 0
+    fi
+    echo "key '$NAME' already exists in the gateway but is missing from $F" >&2
+    echo "revoke it first (docs/runbook-mint-litellm-key.md), then re-run" >&2
+    exit 1
   fi
-  echo "key '$NAME' already exists in the gateway but is missing from $F" >&2
-  echo "revoke it first (docs/runbook-mint-litellm-key.md), then re-run" >&2
-  exit 1
 fi
 
 # 3. mint via the gateway API (master key via config file, not argv).
@@ -73,11 +85,14 @@ if [[ -z "$KEY" ]]; then
   exit 1
 fi
 
-# 4. store in sops: decrypt -> add -> re-encrypt at the original path so the
-#    creation rules apply. Encrypt to a temp file, then mv over the original so
-#    the file is never left half-written (or plaintext) in the tree.
-KEY="$KEY" "${YQ[@]}" -yi ".services.ai.litellm.keys.\"$NAME\" = \$ENV.KEY" "$T/plain.yaml"
-sops encrypt "$T/plain.yaml" > "$F.new" && mv "$F.new" "$F"
+# 4. store in sops: add the key to the mirrored plaintext, then re-encrypt.
+#    Because the plaintext sits at the repo-relative path under $T with
+#    .sops.yaml alongside, sops applies the same creation rule (same age
+#    recipients) the file was created with. Encrypt to a temp file, then mv
+#    over the original so the file is never left half-written (or plaintext)
+#    in the tree.
+KEY="$KEY" "${YQ[@]}" -yi ".services.ai.litellm.keys.\"$NAME\" = \$ENV.KEY" "$PLAIN"
+sops encrypt "$PLAIN" > "$F.new" && mv "$F.new" "$F"
 
 echo "Minted key for '$NAME':"
 echo "$KEY"

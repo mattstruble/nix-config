@@ -38,7 +38,10 @@ Derived:
 All counters carry labels: `model` (token metrics) / `requested_model` (request
 metrics), `api_key_alias`, `hashed_api_key`, `client_ip`, `user_agent`,
 `model_id`, `status_code`, `route`, `api_provider`, `user`, `team`, `org_id`,
-`end_user`, `user_email`, `org_alias`, `team_alias`.
+`end_user`, `user_email`, `org_alias`, `team_alias`. Note: `client_ip`,
+`user_agent`, `end_user`, and `user_email` are dropped at scrape time by the
+litellm ServiceMonitor's `metricRelabelings` (see kps values); they are not
+available in Prometheus.
 
 | Metric | Type | Meaning |
 |---|---|---|
@@ -58,9 +61,10 @@ metrics), `api_key_alias`, `hashed_api_key`, `client_ip`, `user_agent`,
   (currently `"None"` — the shared placeholder key has no alias). Creating
   LiteLLM keys with `--key-alias pi` / `--key-alias opencode` populates it;
   no gateway config change needed for the label itself.
-- Cardinarity note: `client_ip`/`user_agent`/`model_id` are high-cardinality
-  labels; fine on a single-node homelab, trim via `prometheus_label_config`
-  if the series count ever hurts.
+- Cardinality note: `model_id` is a high-cardinality label; `client_ip` and
+  `user_agent` are dropped at scrape time (see above), so they never reach
+  Prometheus. Trim `model_id` via `prometheus_label_config` if the series
+  count ever hurts.
 
 ## Cloud model rates (`ai:cloud_model:rates`, PrometheusRule)
 

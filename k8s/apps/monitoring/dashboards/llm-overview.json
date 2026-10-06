@@ -214,7 +214,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "ai:litellm:cost:increase1h{profile=\"$rate_profile\"}",
+          "expr": "sum(scalar(sum(increase(litellm_input_tokens_metric_total[$__range:1m])) - sum(increase(litellm_input_cached_tokens_metric_total[$__range:1m])))/1e6 * ai:cloud_model:rates{profile=\"$rate_profile\",token_type=\"input\"}) + sum(scalar(sum(increase(litellm_input_cached_tokens_metric_total[$__range:1m])))/1e6 * ai:cloud_model:rates{profile=\"$rate_profile\",token_type=\"cached\"}) + sum(scalar(sum(increase(litellm_output_tokens_metric_total[$__range:1m])))/1e6 * ai:cloud_model:rates{profile=\"$rate_profile\",token_type=\"output\"})",
           "instant": true,
           "legendFormat": "",
           "refId": "A"
@@ -344,7 +344,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "ai:litellm:cost:increase1h{profile=\"$rate_profile\"} - avg_over_time(sum(DCGM_FI_DEV_POWER_USAGE)[$__range:1m]) / 1000 * ($__range / 3600000) * $elec_rate",
+          "expr": "sum(scalar(sum(increase(litellm_input_tokens_metric_total[$__range:1m])) - sum(increase(litellm_input_cached_tokens_metric_total[$__range:1m])))/1e6 * ai:cloud_model:rates{profile=\"$rate_profile\",token_type=\"input\"}) + sum(scalar(sum(increase(litellm_input_cached_tokens_metric_total[$__range:1m])))/1e6 * ai:cloud_model:rates{profile=\"$rate_profile\",token_type=\"cached\"}) + sum(scalar(sum(increase(litellm_output_tokens_metric_total[$__range:1m])))/1e6 * ai:cloud_model:rates{profile=\"$rate_profile\",token_type=\"output\"}) - avg_over_time(sum(DCGM_FI_DEV_POWER_USAGE)[$__range:1m]) / 1000 * ($__range / 3600000) * $elec_rate",
           "instant": true,
           "legendFormat": "",
           "refId": "A"

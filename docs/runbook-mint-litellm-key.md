@@ -171,6 +171,38 @@ values.
 
 ---
 
+## Accepted tradeoffs
+
+These are deliberate, documented acceptances (not bugs). Each has a rationale
+and a mitigation/override.
+
+1. **10-year kubelet SA token** (`nix/services/k3s.nix`, monitoring pass).
+   The `system:node-reader` ServiceAccount token is minted for 10 years.
+   *Rationale:* a single-node homelab — a shorter TTL would need re-mint
+   machinery (a controller or deploy hook that renews the Secret) which we
+   deliberately don't run. *Mitigation:* the token is read-only
+   (`system:node-reader`) and scoped to the monitoring namespace; the SA is
+   applied without `--prune` so a fresh install gets it before the mint.
+
+2. **Self-signed Grafana cert, regenerated per activation** (`nix/services/k3s.nix`,
+   `grafana-tls`). A 10-year self-signed cert for `grafana.mjolnir` is
+   regenerated on every activation and stored as a K8s Secret.
+   *Rationale:* the browser shows a self-signed warning on first use
+   regardless, and the LAN is trusted. *Mitigation:* regenerating keeps the
+   Secret in the prune scope every pass, so it is never orphaned; the cert is
+   long-lived so browsers only see the warning once.
+
+3. **Mint script talks to the gateway over cleartext HTTP**
+   (`scripts/mint-litellm-key.sh`, `LITELLM_GATEWAY` defaults to
+   `http://mjolnir:8000`). The master key crosses the LAN in a cleartext
+   `Authorization` header; the gateway has no TLS.
+   *Rationale:* trusted single-subnet LAN — the master key is only used for
+   the short-lived `/key/*` mint call, not for normal traffic. *Mitigation/override:*
+   set `LITELLM_GATEWAY` to a TLS front (e.g. a reverse proxy with a real
+   cert) if the gateway is ever exposed beyond the trusted LAN.
+
+---
+
 ## Notes
 
 - The key store is Postgres on a static hostPath PV (`/var/lib/postgres-data`,
