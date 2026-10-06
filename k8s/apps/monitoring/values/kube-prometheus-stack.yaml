@@ -58,6 +58,16 @@ prometheus:
         memory: 8Gi
     retention: 30d
     retentionSize: 20GB
+    # Watch ServiceMonitors in ALL namespaces, not just the release's own. The
+    # DCGM exporter lives in gpu/ (PSS privileged, see k3s.nix), so its
+    # ServiceMonitor is there too. The chart always renders a non-nil selector
+    # (its else-branch emits {}), so "all namespaces via nil" is impossible;
+    # instead: NilUsesHelmValues=false makes the label selector {} (= match all,
+    # so the unlabelled DCGM SM is included). The namespace selector stays {} (an
+    # empty label selector matches every namespace). Without the empty label
+    # selector the release-scoped one (release: kps) filters out the DCGM SM.
+    serviceMonitorSelectorNilUsesHelmValues: false
+    serviceMonitorSelector: null
     # Mount the LLM pod API key (llama.cpp /metrics auth) and the dedicated
     # gateway metrics key (litellm /metrics auth) — bearerTokenFile reads them
     # at scrape time.

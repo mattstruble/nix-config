@@ -150,7 +150,12 @@
           # Stable label for the local PVs' nodeAffinity
           # (k8s/manifests/local-pvs.yaml): selecting on kubernetes.io/hostname
           # would orphan all PVs on a node rename.
-          nodeLabel = [ "storage=mjolnir" ];
+          # nvidia.com/gpu.present=true is the conventional GPU-node label the
+          # dcgm-exporter chart's daemonset nodeSelector matches on (the
+          # nvidia-container-toolkit only sets nixos-nvidia-cdi=enabled, which
+          # the chart doesn't know about — without this label DCGM schedules 0
+          # replicas). Set here so it's stable and under our control.
+          nodeLabel = [ "storage=mjolnir" "nvidia.com/gpu.present=true" ];
 
           # containerd nvidia runtime: pods set runtimeClassName: nvidia +
           # env NVIDIA_VISIBLE_DEVICES=<gpu> to get a SPECIFIC GPU (the runtime

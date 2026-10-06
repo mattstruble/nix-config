@@ -1,0 +1,25 @@
+# ServiceMonitor for the DCGM exporter (gpu/ namespace).
+#
+# Standalone manifest, NOT a kps additionalServiceMonitor: the chart renders
+# those as a single v1 List that cannot be split by namespace, and a
+# ServiceMonitor only selects endpoints in its OWN namespace — so the dcgm SM
+# must live in gpu/ to see the exporter pod.
+#
+# The dashboards plot by the gpu label (DCGM_FI_DEV_*{gpu=~"$gpu"}), not by
+# job label, so the job name change (monitoring_dcgm-exporter ->
+# gpu_dcgm-exporter) is invisible to them.
+#
+# Applied at activation time (see nix/services/k3s.nix) in the gpu pass,
+# where the managed-by + prune-group labels are stamped on.
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: dcgm-exporter
+  namespace: gpu
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: dcgm-exporter
+  endpoints:
+    - port: metrics
+      interval: 30s
