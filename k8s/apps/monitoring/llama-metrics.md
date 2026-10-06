@@ -33,6 +33,28 @@ Derived:
 - **MTP acceptance rate**: `rate(spec_decode_num_accepted_tokens_total) / rate(spec_decode_num_draft_tokens_total)`.
 - **VRAM**: NOT exposed by llama-server — use DCGM: `DCGM_FI_DEV_FB_USED` (MiB), `DCGM_FI_DEV_GPU_UTIL`, `DCGM_FI_DEV_MEMORY_TEMP`, `DCGM_FI_DEV_POWER_USAGE`.
 
+### Native gauges are NOT live (verified 2026-10-05)
+
+Live probe (14k-token prompt + 1200-token decode on gemma):
+`llamacpp:predicted_tokens_seconds` stayed 0 for the entire ~45s decode and
+appeared (72.74) only at completion; `llamacpp:prompt_tokens_seconds` blipped
+once mid-prefill then 0. All `llamacpp:*` counters/gauges tick at completion —
+rate()/gauge panels step-jump, they never show the live rate. (This is why the
+live-rate panels use the log-exporter sidecar below — do NOT repoint them to
+native metrics again.)
+
+## Live rates: log-exporter sidecar (9399)
+
+`llamacpp_live_decode_tps` / `llamacpp_live_prefill_tps` (gauges, labels
+`model` + `pod`) come from the log-exporter sidecar (`log-exporter-configmap.yaml`):
+it tails the model's `/var/log/llama.log` (the model container redirects stdout
+there; the sidecar echoes each line to its own stdout so Alloy still ships logs
+to Loki) and parses the live rate lines (`tg_3s = N t/s` /
+`prompt processing ... N tokens per second`). Scraped by the `llm-log-exporter`
+PodMonitor at 5s. The `model` label = **deployment name** (== Prometheus `job`
+label), NOT `modelName` (the dotted gateway name) — the dashboard `$model` var is
+job-sourced. Gauges decay to 0 after 5s without a log line.
+
 ## LiteLLM gateway (`/metrics/` — note trailing slash, 307 without it)
 
 All counters carry labels: `model` (token metrics) / `requested_model` (request

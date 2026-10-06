@@ -139,6 +139,23 @@ prometheus:
           path: /metrics
           interval: 30s
           bearerTokenFile: /prometheus/llm-api-key/token
+  # Live decode/prefill rates: the log-exporter sidecar in each model pod tails
+  # the model's log and exposes the live rate (tg_3s / tokens per second) on
+  # port 9399. A PodMonitor (not ServiceMonitor) selects the pods directly —
+  # the sidecar's port isn't on the model Service. No auth (plain http.server).
+  # 5s interval: the gauge updates on each log line (~3s), so 5s keeps it live.
+  additionalPodMonitors:
+    - name: llm-log-exporter
+      namespaceSelector:
+        matchNames:
+          - default
+      selector:
+        matchLabels:
+          app.kubernetes.io/part-of: ai
+      podMetricsEndpoints:
+        - port: log-exporter
+          path: /metrics
+          interval: 5s
 
 grafana:
   # Initial values — tune after a week of real load.
