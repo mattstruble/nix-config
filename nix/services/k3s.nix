@@ -385,17 +385,31 @@
               code="$($CURL -s -o /dev/null -w '%{http_code}' --max-time 10 \
                     -H "Authorization: Bearer $METRICS_KEY" "$gw/metrics/" 2>/dev/null)"
               [ "$code" = "200" ] && return 0
-              # register: fixed key value from sops (== the ServiceMonitor token),
+              # Register: fixed key value from sops (== the ServiceMonitor token),
               # alias "metrics", allowed_routes ["/metrics"]. Both keys go to
-              # 0600 files (curl config + JSON body), never argv.
+              # 0600 files (curl config + JSON bodies), never argv.
+              # Two cases (both verified against v1.102.1):
+              #   - key exists but lacks allowed_routes (registered without it,
+              #     or sops value rotated onto an existing alias): /key/update
+              #     sets the routes. /key/generate would 400 on the alias.
+              #   - key absent entirely (fresh Postgres PVC): /key/generate with
+              #     the fixed value mints it in one shot. /key/update would 404.
+              # Try update first, fall through to generate on 404.
               ( umask 077
                 printf 'header = "Authorization: Bearer %s"\n' "$LITELLM_MASTER" > "$T/gateway-curl.conf"
+                printf '{"key":"%s","allowed_routes":["/metrics"]}' "$METRICS_KEY" \
+                    > "$T/metrics-key-update.json"
                 printf '{"key":"%s","key_alias":"metrics","allowed_routes":["/metrics"]}' "$METRICS_KEY" \
                     > "$T/metrics-key-register.json"
               )
               code="$($CURL -s -o /dev/null -w '%{http_code}' --max-time 10 \
                     -K "$T/gateway-curl.conf" -H "Content-Type: application/json" \
-                    -d @"$T/metrics-key-register.json" "$gw/key/generate" 2>/dev/null)"
+                    -d @"$T/metrics-key-update.json" "$gw/key/update" 2>/dev/null)"
+              if [ "$code" != "200" ]; then
+                code="$($CURL -s -o /dev/null -w '%{http_code}' --max-time 10 \
+                      -K "$T/gateway-curl.conf" -H "Content-Type: application/json" \
+                      -d @"$T/metrics-key-register.json" "$gw/key/generate" 2>/dev/null)"
+              fi
               if [ "$code" != "200" ]; then
                 echo "warning: metrics-key registration returned HTTP $code (will retry)" >&2
                 return 1
