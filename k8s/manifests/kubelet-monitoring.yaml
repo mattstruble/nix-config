@@ -1,18 +1,36 @@
 # Service account + RBAC for scraping kubelet /metrics (10250).
 #
-# k3s' kubelet requires a bearer token with the system:node-reader role. The
-# chart's default kubelet ServiceMonitor uses the Prometheus SA token, which
-# lacks that role -> 401 -> KubeletDown / KubeletInstanceUnreachable / TargetDown.
+# k3s' kubelet requires a bearer token authorized for the metrics subresource.
+# The chart's default kubelet ServiceMonitor uses the Prometheus SA token, which
+# lacks that -> 403 -> KubeletDown / KubeletInstanceUnreachable / TargetDown.
 #
 # The token secret (kubelet-monitoring-token) is minted at activation time
 # (see nix/services/k3s.nix) because k8s 1.24+ no longer auto-creates SA token
 # secrets. The kubelet ServiceMonitor's authorization points at this secret
 # (see k8s/apps/monitoring/values/kube-prometheus-stack.yaml).
+#
+# HISTORY: this originally bound system:kubelet-api-admin (real, but
+# full kubelet API access). A 2026-10-05 "hygiene" pass retargeted it at
+# system:node-reader — a ClusterRole that does NOT exist in k8s/k3s — leaving
+# the binding dangling and the kubelet scrape 403ing for two days. The role
+# below is the actual least privilege: get-only on the subresources the
+# kubelet's authz webhook checks for the /metrics endpoints (verified live:
+# the 403 body asks for verb=get resource=nodes subresource=metrics; proxy
+# covers the cadvisor/probes endpoints).
 apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: kubelet-monitoring
   namespace: monitoring
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: kubelet-monitoring-node-reader
+rules:
+  - apiGroups: [""]
+    resources: ["nodes/metrics", "nodes/proxy"]
+    verbs: ["get"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -21,10 +39,7 @@ metadata:
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
-  # system:node-reader (a standard k8s ClusterRole that k3s ships) grants get
-  # on nodes + nodes/proxy — the kubelet /metrics path — the least privilege
-  # the scrape needs.
-  name: system:node-reader
+  name: kubelet-monitoring-node-reader
 subjects:
   - kind: ServiceAccount
     name: kubelet-monitoring

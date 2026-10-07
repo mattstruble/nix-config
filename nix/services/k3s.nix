@@ -471,9 +471,12 @@
             label_all monitoring ".kind == \"List\" or .metadata.namespace == \"monitoring\"" "$T/kps-rendered.yaml" > "$T/monitoring-kps.json"
             label_all kube-system ".metadata.namespace == \"kube-system\"" "$T/kps-rendered.yaml" > "$T/kube-system-kps.json"
             label_all cluster ".kind != \"List\" and .metadata.namespace == null" "$T/kps-rendered.yaml" > "$T/cluster-kps.json"
-            # kubelet SA (monitoring/) + RBAC (cluster scope) split.
+            # kubelet SA (monitoring/) + RBAC (cluster scope) split. Both the
+            # ClusterRoleBinding AND its ClusterRole come from the manifest —
+            # extracting only the binding left the roleRef dangling when the
+            # role lived only in the manifest (the 2026-10-05 kubelet 403).
             label_all monitoring ".kind == \"ServiceAccount\"" ${k8sDir}/manifests/kubelet-monitoring.yaml > "$T/monitoring-kubelet-sa.json"
-            label_all cluster ".kind == \"ClusterRoleBinding\"" ${k8sDir}/manifests/kubelet-monitoring.yaml > "$T/cluster-kubelet-crb.json"
+            label_all cluster ".kind == \"ClusterRoleBinding\" or .kind == \"ClusterRole\"" ${k8sDir}/manifests/kubelet-monitoring.yaml > "$T/cluster-kubelet-crb.json"
             label_all default "true" ${aiChartRendered}/rendered.yaml ${k8sDir}/manifests/ai-networkpolicies.yaml > "$T/default-ai.json"
             label_all monitoring "true" ${monitoringChartRendered.loki}/rendered.yaml ${monitoringChartRendered.alloy}/rendered.yaml ${k8sDir}/manifests/cloud-model-rates.yaml > "$T/monitoring-charts.json"
             # gpu/ pass: dcgm-exporter + its netpol + its ServiceMonitor
