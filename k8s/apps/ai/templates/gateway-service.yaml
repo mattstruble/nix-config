@@ -6,11 +6,14 @@ metadata:
   labels:
     app: litellm
     app.kubernetes.io/part-of: ai
+    app.kubernetes.io/component: gateway
 spec:
   selector:
     app: litellm
   ports:
-    - port: 4000
+    # named so the kps ServiceMonitor (port: http) can reference it
+    - name: http
+      port: 4000
       targetPort: 4000
 ---
 {{- end }}

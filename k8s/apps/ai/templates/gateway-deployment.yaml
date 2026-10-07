@@ -46,9 +46,27 @@ spec:
               hostPort: {{ .Values.gateway.hostPort }}
           env:
             # The openai/ prefix routes through a client that reads the key from
-            # the environment; the pods expect --api-key foo.
+            # the environment; the pods authenticate with the same key (litellm-keys
+            # Secret, pod-api-key key — the model pods read it as LLAMA_API_KEY).
             - name: OPENAI_API_KEY
-              value: {{ .Values.gateway.podApiKey | quote }}
+              valueFrom:
+                secretKeyRef:
+                  name: litellm-keys
+                  key: pod-api-key
+            # Postgres key store: virtual keys + spend tracking require PostgreSQL
+            # (SQLite unsupported). The full URL (with password) is built by the
+            # activation script into the litellm-keys Secret.
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: litellm-keys
+                  key: database-url
+            # Master key gates /key/* so `just mint-key` can mint per-source keys.
+            - name: LITELLM_MASTER_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: litellm-keys
+                  key: master-key
           volumeMounts:
             - name: config
               # the image entrypoint is `litellm --config ./proxy_server_config.yaml`

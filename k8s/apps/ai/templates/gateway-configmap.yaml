@@ -14,8 +14,23 @@ data:
         litellm_params:
           model: openai/{{ $m.modelName }}
           api_base: http://{{ $name }}.default.svc.cluster.local:{{ $m.port }}/v1
-          api_key: {{ $.Values.gateway.podApiKey }}
+          # env expansion: the gateway's OPENAI_API_KEY comes from the
+          # litellm-keys Secret (see gateway-deployment).
+          api_key: os.environ/OPENAI_API_KEY # pragma: allowlist secret
       {{- end }}
       {{- end }}
+    # Prometheus metrics at /metrics (pre-installed in the image).
+    litellm_settings:
+      callbacks:
+        - prometheus
+      # The litellm ServiceMonitor presents the dedicated metrics key
+      # (litellm-metrics-key Secret, mounted into Prometheus; see the kps
+      # values) — the hostPort 8000 endpoint is LAN-reachable, so the
+      # endpoint must not serve spend/token/latency unauthenticated.
+      require_auth_for_metrics_endpoint: true
+      # The api_key_alias label is emitted by default on the request/token
+      # metrics; it carries the calling key's alias (pi, opencode, ...) so the
+      # dashboard can break down requests/tokens per source. Requires per-source
+      # keys minted with a key_alias (just mint-key <name>).
 ---
 {{- end }}

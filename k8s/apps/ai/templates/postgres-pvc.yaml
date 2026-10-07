@@ -1,0 +1,16 @@
+# Postgres data for the LiteLLM key store. LiteLLM's virtual-key / spend
+# features require PostgreSQL (SQLite is not supported). local-path is the only
+# dynamic StorageClass on this cluster.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: postgres-data
+  labels:
+    app.kubernetes.io/part-of: ai
+spec:
+  accessModes: ["ReadWriteOnce"]
+  # Static hostPath PV (pre-owned by uid 999); see k8s/manifests/local-pvs.yaml.
+  storageClassName: postgres-data
+  resources:
+    requests:
+      storage: {{ .Values.gateway.postgresDataSize }}

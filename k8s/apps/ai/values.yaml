@@ -14,8 +14,6 @@
 # (qwen4exp @0384f5c, turboq @8f2b243). If the fork is rebuilt, update the
 # command: path below. These entries are disabled, so a stale path is inert.
 models: {}  # populated by values/*.yaml (one file per model; maps merge across -f)
-chatTemplate:
-  enable: true
 
 # LiteLLM gateway: one OpenAI-compatible endpoint, routes by the `model` field
 # to the right pod Service. hostPort exposes it on the host (the single endpoint
@@ -24,4 +22,9 @@ gateway:
   enable: true
   image: ghcr.io/berriai/litellm:v1.102.1
   hostPort: 8000
-  podApiKey: foo # pragma: allowlist secret (placeholder, matches the pods' --api-key)
+  # Postgres for the LiteLLM key store (virtual keys require PostgreSQL).
+  # The gateway always uses the master key + Postgres key store + per-source
+  # api_key_alias label; clients must present a minted key (just mint-key
+  # <name>). There is no keyless mode.
+  postgresImage: postgres:16-alpine
+  postgresDataSize: 1Gi

@@ -1,0 +1,51 @@
+# DCGM exporter values for mjolnir (NVIDIA chart 4.8.4).
+# GPU metrics via the CDI-mode nvidia runtime (no device plugin).
+
+runtimeClassName: nvidia
+
+# Pin to GPU nodes explicitly (matches the chart's default nodeSelector, which
+# is invisible in values). Without this, a second non-GPU node would let the
+# scheduler place the exporter off-GPU -> no metrics, no alert.
+nodeSelector:
+  nvidia.com/gpu.present: "true"
+
+# The chart's own ServiceMonitor is disabled — the DCGM ServiceMonitor lives in
+# the kps additionalServiceMonitors (applied after the ServiceMonitor CRD
+# exists, as part of the kps release).
+serviceMonitor:
+  enabled: false
+
+# Restrict the exported fields to the six the dashboards plot (the chart
+# default emits ~40). CSV format: FIELD, prometheus type, help. The chart
+# mounts this as /etc/dcgm-exporter/default-counters.csv.
+customMetrics: |
+  DCGM_FI_DEV_FB_FREE, gauge, Framebuffer memory free (in MiB).
+  DCGM_FI_DEV_FB_USED, gauge, Framebuffer memory used (in MiB).
+  DCGM_FI_DEV_GPU_TEMP, gauge, GPU temperature (in C).
+  DCGM_FI_DEV_GPU_UTIL, gauge, GPU utilization (in %).
+  DCGM_FI_DEV_MEMORY_TEMP, gauge, Memory temperature (in C).
+  DCGM_FI_DEV_POWER_USAGE, gauge, Power draw (in W).
+
+# Initial values — tune after a week of real load.
+resources:
+  requests:
+    cpu: 100m
+    memory: 512Mi
+  limits:
+    cpu: 100m
+    memory: 512Mi
+
+# No cluster-level pod RBAC (keeps the namespace PSS-friendly).
+kubernetes:
+  enablePodLabels: false
+  enablePodUID: false
+
+# NVIDIA's default securityContext: root + SYS_ADMIN (needed for DCGM to talk
+# to the driver via CDI). Verified at deploy that both TITANs report.
+securityContext:
+  runAsNonRoot: false
+  runAsUser: 0
+  capabilities:
+    add: ["SYS_ADMIN"]
+    drop: ["ALL"]
+  allowPrivilegeEscalation: false

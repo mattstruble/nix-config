@@ -1,0 +1,87 @@
+# Recording rules for cloud model pricing and per-range cost estimates:
+#   ai:cloud_model:rates{profile, token_type} — constant gauges in USD per
+#     1M tokens.
+#   ai:litellm:cost:increase1h{profile} — estimated cloud cost (USD) of the
+#     tokens the local fleet processed over the last hour, per rate profile.
+#     The llm-overview dashboard's cost panels read this rule, so the
+#     per-token cost formula lives here and only here.
+#
+# vector() produces an UNLABELED series, so each (profile, token_type) pair
+# needs its own rule with nested label_replace to attach the labels. Multiple
+# rules may share the same record name as long as their label sets differ.
+# token_type is pinned to {input, cached, output}.
+#
+# Rates as of 2026-07 (USD per 1M tokens):
+#   glm-5.3:        input 1.40, cached 0.26, output 4.40
+#   gpt-5:          input 1.25, cached 0.125, output 10.00
+#   claude-opus-5:  input 5.00, cached 0.50, output 25.00
+#   gemini-3.1-pro: input 2.00, cached 0.20, output 12.00
+#   grok-4.6:       input 2.00, cached 0.50, output 6.00
+#
+# Updating rates (the snapshot above goes stale when providers change prices):
+#   1. Edit the vector() constants in the rules below (and the snapshot above).
+#   2. Apply to the cluster: k3s kubectl apply -f k8s/manifests/cloud-model-rates.yaml
+#   3. Update the rate table in k8s/apps/monitoring/llama-metrics.md.
+#
+# Applied at activation time (see nix/services/k3s.nix), inside the retry
+# loop after the monitoring namespace is guaranteed to exist.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: cloud-model-rates
+  namespace: monitoring
+  labels:
+    release: kps
+spec:
+  groups:
+    - name: cloud-model-rates
+      # Constants — a long interval keeps the eval cost negligible.
+      interval: 5m
+      rules:
+        # glm-5.3
+        - record: ai:cloud_model:rates
+          expr: label_replace(label_replace(vector(1.40), "profile", "glm-5.3", "", ""), "token_type", "input", "", "")
+        - record: ai:cloud_model:rates
+          expr: label_replace(label_replace(vector(0.26), "profile", "glm-5.3", "", ""), "token_type", "cached", "", "")
+        - record: ai:cloud_model:rates
+          expr: label_replace(label_replace(vector(4.40), "profile", "glm-5.3", "", ""), "token_type", "output", "", "")
+        # gpt-5
+        - record: ai:cloud_model:rates
+          expr: label_replace(label_replace(vector(1.25), "profile", "gpt-5", "", ""), "token_type", "input", "", "")
+        - record: ai:cloud_model:rates
+          expr: label_replace(label_replace(vector(0.125), "profile", "gpt-5", "", ""), "token_type", "cached", "", "")
+        - record: ai:cloud_model:rates
+          expr: label_replace(label_replace(vector(10.00), "profile", "gpt-5", "", ""), "token_type", "output", "", "")
+        # claude-opus-5
+        - record: ai:cloud_model:rates
+          expr: label_replace(label_replace(vector(5.00), "profile", "claude-opus-5", "", ""), "token_type", "input", "", "")
+        - record: ai:cloud_model:rates
+          expr: label_replace(label_replace(vector(0.50), "profile", "claude-opus-5", "", ""), "token_type", "cached", "", "")
+        - record: ai:cloud_model:rates
+          expr: label_replace(label_replace(vector(25.00), "profile", "claude-opus-5", "", ""), "token_type", "output", "", "")
+        # gemini-3.1-pro
+        - record: ai:cloud_model:rates
+          expr: label_replace(label_replace(vector(2.00), "profile", "gemini-3.1-pro", "", ""), "token_type", "input", "", "")
+        - record: ai:cloud_model:rates
+          expr: label_replace(label_replace(vector(0.20), "profile", "gemini-3.1-pro", "", ""), "token_type", "cached", "", "")
+        - record: ai:cloud_model:rates
+          expr: label_replace(label_replace(vector(12.00), "profile", "gemini-3.1-pro", "", ""), "token_type", "output", "", "")
+        # grok-4.6
+        - record: ai:cloud_model:rates
+          expr: label_replace(label_replace(vector(2.00), "profile", "grok-4.6", "", ""), "token_type", "input", "", "")
+        - record: ai:cloud_model:rates
+          expr: label_replace(label_replace(vector(0.50), "profile", "grok-4.6", "", ""), "token_type", "cached", "", "")
+        - record: ai:cloud_model:rates
+          expr: label_replace(label_replace(vector(6.00), "profile", "grok-4.6", "", ""), "token_type", "output", "", "")
+    # Estimated cloud cost of the last hour of local token usage, per rate
+    # profile. The token sums are label-less, so they are wrapped in scalar()
+    # — scalar * vector keeps the rates vector's labels (profile + token_type)
+    # where a label-less vector * vector would match nothing. The three
+    # products then differ only in token_type, so they are added with
+    # on(profile) group_left() and finally summed by profile. Evaluated more
+    # often than the constants: dashboards read the latest value.
+    - name: litellm-cost
+      interval: 1m
+      rules:
+        - record: ai:litellm:cost:increase1h
+          expr: sum by (profile) (scalar(sum(increase(litellm_input_tokens_metric_total[1h])) - sum(increase(litellm_input_cached_tokens_metric_total[1h])))/1e6 * ai:cloud_model:rates{token_type="input"} + on(profile) group_left() scalar(sum(increase(litellm_input_cached_tokens_metric_total[1h])))/1e6 * ai:cloud_model:rates{token_type="cached"} + on(profile) group_left() scalar(sum(increase(litellm_output_tokens_metric_total[1h])))/1e6 * ai:cloud_model:rates{token_type="output"})

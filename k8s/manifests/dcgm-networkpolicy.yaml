@@ -1,0 +1,42 @@
+# NetworkPolicy containing the DCGM exporter pod (P2-36).
+#
+# The exporter runs as root with SYS_ADMIN (required for DCGM to talk to the
+# GPU driver via CDI — see k8s/apps/monitoring/values/dcgm-exporter.yaml), so
+# it lives in the dedicated gpu/ namespace (PSS privileged) and this policy
+# contains it there.
+#
+#   - Ingress: allowed only from the kps Prometheus pod (the sole scraper).
+#     The Prometheus POD is labelled by the prometheus-operator (v0.94.1, the
+#     version the kps 91.7.0 chart bundles), NOT by the helm chart: the pod
+#     carries app.kubernetes.io/name=prometheus +
+#     app.kubernetes.io/instance=<cr-name>. (The CR/ServiceAccount carry
+#     app.kubernetes.io/name=kube-prometheus-stack-prometheus, but the pod
+#     does not — verified against the operator's makeSelectorLabels.)
+#     Cross-namespace ingress: the prometheus pod is in monitoring/, so the
+#     from-selector carries namespaceSelector + podSelector.
+#   - Egress: denied entirely. The exporter talks to the GPU driver via CDI
+#     (no network), so it needs no outbound traffic.
+#
+# Applied at activation time (see nix/services/k3s.nix) in the gpu pass,
+# where the managed-by + prune-group labels are stamped on.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: dcgm-exporter
+  namespace: gpu
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: dcgm-exporter
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: prometheus
+              app.kubernetes.io/instance: kps-kube-prometheus-stack-prometheus

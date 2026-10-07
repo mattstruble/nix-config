@@ -1,8 +1,10 @@
 # Local PVs + PVCs so model pods mount the nix store (binaries) and model weights
-# without raw hostPath — keeps the model pods PSS `restricted` (see
-# topics/k8s-local-pv-pss-restricted). Both are read-only and shared by many pods
-# -> ReadOnlyMany. The PVCs are what the ai chart binds to; without
-# them the chart is not reproducible on a fresh cluster.
+# without raw hostPath — keeps the model pods PSS `restricted`. Both are
+# read-only and shared by many pods -> ReadOnlyMany. The PVCs are what the ai chart binds to; without
+# them the chart is not reproducible on a fresh cluster. nodeAffinity selects
+# on the stable `storage=mjolnir` node label (set via services.k3s.nodeLabel in
+# nix/services/k3s.nix), not kubernetes.io/hostname, so a node rename does not
+# orphan the PVs.
 apiVersion: v1
 kind: PersistentVolume
 metadata:
@@ -22,7 +24,7 @@ spec:
     required:
       nodeSelectorTerms:
         - matchExpressions:
-            - key: kubernetes.io/hostname
+            - key: storage
               operator: In
               values:
                 - mjolnir
@@ -46,7 +48,35 @@ spec:
     required:
       nodeSelectorTerms:
         - matchExpressions:
-            - key: kubernetes.io/hostname
+            - key: storage
+              operator: In
+              values:
+                - mjolnir
+---
+# Postgres data for the LiteLLM key store. Static hostPath PV (not local-path)
+# because the postgres pod runs non-root (uid 999) and the cluster's non-root
+# policy forbids a root chown initContainer; the host dir is pre-created owned
+# by 999 (see systemd.tmpfiles.rules in k3s.nix) so the pod can write it.
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: postgres-data
+  labels:
+    app.kubernetes.io/part-of: ai
+spec:
+  capacity:
+    storage: 1Gi
+  accessModes:
+    - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: postgres-data
+  local:
+    path: /var/lib/postgres-data
+  nodeAffinity:
+    required:
+      nodeSelectorTerms:
+        - matchExpressions:
+            - key: storage
               operator: In
               values:
                 - mjolnir

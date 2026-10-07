@@ -1,0 +1,57 @@
+# Loki values for mjolnir (grafana-community/loki chart 18.13.5, Loki 3.7.8).
+# Monolithic (single binary) mode, filesystem storage, 30d retention.
+# This is the current chart — grafana/loki-stack is deprecated.
+#
+# The chart defaults write/read/backend to 3 replicas each (SimpleScalable
+# leftovers); in Monolithic mode those must be 0 or the chart's validate.yaml
+# fails ("Cannot run scalable targets ... without an object storage backend").
+
+deploymentMode: Monolithic
+
+singleBinary:
+  replicas: 1
+  # Initial values — tune after a week of real load.
+  resources:
+    requests:
+      cpu: 200m
+      memory: 1Gi
+    limits:
+      cpu: 200m
+      memory: 1Gi
+  persistence:
+    enabled: true
+    size: 10Gi
+    storageClass: local-path
+
+# Zero out the scalable targets so only the single binary runs.
+write:
+  replicas: 0
+read:
+  replicas: 0
+backend:
+  replicas: 0
+
+loki:
+  commonConfig:
+    # Monolithic single instance: a 1-member ring can never satisfy the chart
+    # default RF=3 → every query fails with "too many unhealthy instances in
+    # the ring".
+    replication_factor: 1
+  storage:
+    # filesystem (not the default s3) — renders a `filesystem:` storage block.
+    type: filesystem
+    filesystem:
+      chunks_directory: /var/loki/chunks
+      rules_directory: /var/loki/rules
+  limits_config:
+    retention_period: 336h # 30d (Go duration format)
+  # Required by the chart's validate.yaml. tsdb index on filesystem.
+  schemaConfig:
+    configs:
+      - from: "2024-01-01"
+        store: tsdb
+        object_store: filesystem
+        schema: v13
+        index:
+          prefix: index_
+          period: 24h

@@ -1,0 +1,227 @@
+# kube-prometheus-stack values for mjolnir (chart 91.7.0, bundles Grafana 13.2.2).
+#
+# RENDERED AT ACTIVATION: ${TELEGRAM_BOT_TOKEN} and ${TELEGRAM_CHAT_ID} are
+# substituted from sops via envsubst (see nix/services/k3s.nix). Do not
+# commit real tokens to this file.
+
+# Let our additionalServiceMonitors be picked up without requiring the chart's
+# own helm labels on them.
+serviceMonitorSelectorNilUsesHelmValues: false
+podMonitorSelectorNilUsesHelmValues: false
+ruleSelectorNilUsesHelmValues: false
+
+# k3s' embedded etcd is not the chart's kubeEtcd kind — don't scrape it.
+kubeEtcd:
+  enabled: false
+
+# k3s runs the control plane (scheduler, controller-manager, proxy) as processes,
+# not pods, and doesn't expose their metrics endpoints in a scrapable way
+# (controller-manager is loopback-only, scheduler/proxy aren't exposed at all).
+# The chart's ServiceMonitors find no targets -> Kube*Down alerts fire. Disable them.
+kubeScheduler:
+  enabled: false
+kubeControllerManager:
+  enabled: false
+kubeProxy:
+  enabled: false
+
+# The kubelet (10250) requires a bearer token with system:node-reader. The
+# chart's default uses the Prometheus SA token (no such role -> 401). Point the
+# kubelet ServiceMonitor at the kubelet-monitoring SA's token secret (minted at
+# activation; see k8s/manifests/kubelet-monitoring.yaml).
+kubelet:
+  serviceMonitor:
+    authorization:
+      type: Bearer
+      credentials:
+        name: kubelet-monitoring-token
+        key: token
+
+prometheus:
+  # k3s doesn't expose scheduler/controller-manager/proxy metrics, so their
+  # ServiceMonitors find no targets -> absent(up{job=...}) fires Kube*Down.
+  # Disabling the ServiceMonitors alone is NOT enough (the targets are still
+  # absent); the alert rules must be disabled too.
+  rules:
+    kubeSchedulerAlerting: false
+    kubeSchedulerRecording: false
+    kubeControllerManager: false
+    kubeProxy: false
+  prometheusSpec:
+    # Initial values — tune after a week of real load.
+    resources:
+      requests:
+        cpu: 500m
+        memory: 2Gi
+      limits:
+        cpu: "2"
+        memory: 8Gi
+    retention: 30d
+    retentionSize: 20GB
+    # Watch ServiceMonitors in ALL namespaces, not just the release's own. The
+    # DCGM exporter lives in gpu/ (PSS privileged, see k3s.nix), so its
+    # ServiceMonitor is there too. The chart always renders a non-nil selector
+    # (its else-branch emits {}), so "all namespaces via nil" is impossible;
+    # instead: NilUsesHelmValues=false makes the label selector {} (= match all,
+    # so the unlabelled DCGM SM is included). The namespace selector stays {} (an
+    # empty label selector matches every namespace). Without the empty label
+    # selector the release-scoped one (release: kps) filters out the DCGM SM.
+    serviceMonitorSelectorNilUsesHelmValues: false
+    serviceMonitorSelector: null
+    # Mount the LLM pod API key (llama.cpp /metrics auth) and the dedicated
+    # gateway metrics key (litellm /metrics auth) — bearerTokenFile reads them
+    # at scrape time.
+    volumes:
+      - name: llm-api-key
+        secret:
+          secretName: llm-api-key
+      - name: litellm-metrics-key
+        secret:
+          secretName: litellm-metrics-key
+    volumeMounts:
+      - name: llm-api-key
+        mountPath: /prometheus/llm-api-key
+        readOnly: true
+      - name: litellm-metrics-key
+        mountPath: /prometheus/litellm-metrics-key
+        readOnly: true
+    storageSpec:
+      volumeClaimTemplate:
+        spec:
+          storageClassName: local-path
+          resources:
+            requests:
+              storage: 20Gi
+  # ServiceMonitors applied as part of the kps release (the ServiceMonitor CRD
+  # exists by then). The dcgm-exporter ServiceMonitor is NOT here: the exporter
+  # lives in the gpu/ namespace (PSS privileged) and a ServiceMonitor only
+  # selects endpoints in its own namespace, so it is a standalone manifest
+  # (k8s/manifests/dcgm-servicemonitor.yaml) applied in the gpu pass.
+  additionalServiceMonitors:
+    # LLM fleet: llama.cpp model pods + LiteLLM gateway, split into two
+    # monitors because the gateway's /metrics requires auth
+    # (require_auth_for_metrics_endpoint: true) with a dedicated key, while
+    # the model pods use the pod API key. Both Secrets are minted in the
+    # activation script and mounted into Prometheus above.
+    - name: litellm
+      # the monitor lives in monitoring/; the litellm Service is in default/
+      namespaceSelector:
+        matchNames:
+          - default
+      selector:
+        matchLabels:
+          app: litellm
+      endpoints:
+        - port: http
+          # trailing slash: the gateway's real metrics path
+          path: /metrics/
+          interval: 30s
+          bearerTokenFile: /prometheus/litellm-metrics-key/token
+          # LiteLLM request metrics carry PII labels (user_email, end_user,
+          # client_ip, user_agent) that would be retained in Prometheus for
+          # 30d. Drop them at scrape time; api_key_alias + model are kept so
+          # the per-source dashboard breakdown still works.
+          metricRelabelings:
+            - action: labeldrop
+              regex: (user_email|end_user|client_ip|user_agent)
+    - name: ai-fleet
+      # the monitor lives in monitoring/; the model Services are in default/
+      # (component: model excludes the litellm/postgres Services, so new
+      # models are covered automatically by the component label)
+      namespaceSelector:
+        matchNames:
+          - default
+      selector:
+        matchLabels:
+          app.kubernetes.io/component: model
+      endpoints:
+        - port: http
+          path: /metrics
+          interval: 30s
+          bearerTokenFile: /prometheus/llm-api-key/token
+  # Live decode/prefill rates: the log-exporter sidecar in each model pod tails
+  # the model's log and exposes the live rate (tg_3s / tokens per second) on
+  # port 9399. A PodMonitor (not ServiceMonitor) selects the pods directly —
+  # the sidecar's port isn't on the model Service. No auth (plain http.server).
+  # 2s interval (bumped from 5s, 2026-10-05): prefill is a ~10-15s spike that
+  # decays 5s after the last log line — at 5s the panel caught only 1-2 points
+  # per spike; 2s catches 5-7. Decode spans the whole generation either way.
+  additionalPodMonitors:
+    - name: llm-log-exporter
+      namespaceSelector:
+        matchNames:
+          - default
+      selector:
+        matchLabels:
+          app.kubernetes.io/part-of: ai
+      podMetricsEndpoints:
+        - port: log-exporter
+          path: /metrics
+          interval: 2s
+
+grafana:
+  # Tuned 2026-10-05 after the 100m/512Mi "initial values" starved Grafana
+  # to the wall: cgroup cpu.stat showed 19% of periods throttled (33 min
+  # cumulative throttled) and memory at 99.98% of max (318k limit-hit events)
+  # — dashboard queries stalled/canceled and the readiness probe timed out.
+  # 2 CPU / 2Gi is generous headroom on a 96 GB / 32-thread host.
+  resources:
+    requests:
+      cpu: 200m
+      memory: 1Gi
+    limits:
+      cpu: "2"
+      memory: 2Gi
+  # Loki for the LLM fleet dashboard's log panels. Fixed uids (prometheus/loki)
+  # are referenced directly in the dashboards — the chart's initDatasources
+  # rewrite runs a WATCH-mode init container that never exits and blocks the pod.
+  additionalDataSources:
+    - name: Loki
+      type: loki
+      uid: loki
+      access: proxy
+      url: http://loki-gateway.monitoring.svc.cluster.local
+      isDefault: false
+      editable: true
+      # Loki is multi-tenant; Alloy ships logs under org "loki".
+      jsonData:
+        httpHeaderName1: X-Scope-OrgID
+      secureJsonData:
+        httpHeaderValue1: loki
+  adminUser: admin
+  # Admin creds come from the monitoring-secrets Secret (created by the
+  # activation script in the same apply pass; on a fresh install grafana may
+  # briefly be in CreateContainerConfigError until the Secret lands, and the
+  # pod self-heals on its next restart).
+  admin:
+    existingSecret: monitoring-secrets
+    userKey: admin-user
+    passwordKey: admin-password
+  ingress:
+    enabled: true
+    ingressClassName: traefik
+    hosts:
+      - grafana.mjolnir
+    # TLS: the sops-managed admin password must not cross the LAN in cleartext
+    # (P2-37). The cert is self-signed and untracked — generated at activation
+    # into the grafana-tls Secret (see nix/services/k3s.nix). Browsers show a
+    # self-signed warning on first use; the LAN is trusted.
+    tls:
+      - hosts:
+          - grafana.mjolnir
+        secretName: grafana-tls
+
+
+alertmanager:
+  config:
+    route:
+      receiver: telegram
+      # The chart's default config adds a Watchdog sub-route with receiver "null",
+      # which is undefined and fails validation. Clear it.
+      routes: []
+    receivers:
+      - name: telegram
+        telegram_configs:
+          - bot_token: ${TELEGRAM_BOT_TOKEN}
+            chat_id: ${TELEGRAM_CHAT_ID}
+            api_url: https://api.telegram.org
