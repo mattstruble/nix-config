@@ -11,6 +11,11 @@ data:
   # container-runtime log is empty without the echo). llama.cpp prints the live rate in the log:
   #   decode:  "tg_3s = 31.90 t/s"
   #   prefill: "prompt processing, ... t = 20.59 s / 525.34 tokens per second"
+  # The Strata engine (engine: strata values entries) prints its own formats:
+  #   decode (live, ~1s):  "[strata] answering: 96 of max 120 tokens, 35.9 tok/s, 3 s"
+  #                         ("[strata] thinking: ..." during reasoning blocks - also decode)
+  #   prefill (per request): "strata serve: prompt 22 tokens = 0 reused + 22 read in 469 ms (46.9 tok/s), ..."
+  # Same gauges: each engine's regexes feed the same llamacpp_live_*_tps metrics.
   # The /metrics endpoint only has completion gauges, so the log is the only
   # source of the live rate. Stdlib-only (no pip install): http.server + re.
   # Rotates the log when it exceeds ROTATE_BYTES (the model writes O_APPEND, so
@@ -31,6 +36,10 @@ data:
 
     decode_re = re.compile(r"tg_3s\s*=\s*([0-9.]+)\s*t/s")
     prefill_re = re.compile(r"prompt processing.*?([0-9.]+)\s*tokens per second")
+    # strata: live decode ("[strata] answering/thinking: N of max M tokens, X tok/s"),
+    # per-request prefill ("prompt N tokens = ... read in T ms (X tok/s)")
+    strata_decode_re = re.compile(r"^\[strata\] (?:answering|thinking): \d+ of max \d+ tokens, ([0-9.]+) tok/s")
+    strata_prefill_re = re.compile(r"prompt \d+ tokens = .*?read in [0-9.]+ ms? \(([0-9.]+) tok/s\)")
 
     def tail():
         f = None
@@ -58,16 +67,17 @@ data:
                             state["prefill"] = 0.0
                     time.sleep(0.2)
                     continue
-                m = decode_re.search(line)
-                if m:
-                    with lock:
-                        state["decode"] = float(m.group(1))
-                        state["last_decode"] = time.time()
-                m = prefill_re.search(line)
-                if m:
-                    with lock:
-                        state["prefill"] = float(m.group(1))
-                        state["last_prefill"] = time.time()
+                for rx, key, last in (
+                    (decode_re, "decode", "last_decode"),
+                    (prefill_re, "prefill", "last_prefill"),
+                    (strata_decode_re, "decode", "last_decode"),
+                    (strata_prefill_re, "prefill", "last_prefill"),
+                ):
+                    m = rx.search(line)
+                    if m:
+                        with lock:
+                            state[key] = float(m.group(1))
+                            state[last] = time.time()
             except FileNotFoundError:
                 f = None
                 time.sleep(1)
