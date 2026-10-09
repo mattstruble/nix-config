@@ -43,19 +43,54 @@ into the vendored template at `xhigh` — not per-request.
 | Sampling | temp 0.6, top-k 20, top-p 0.8, repeat-penalty 1.0 (Qwen coding preset) |
 | Chat template | vendored `qwen3-chat-template.jinja` (chart configmap) |
 
-### GPU 1 — gemma-4-26b-a4b (voice / HA / n8n)
+### GPU 1 — flash-next-strata-iq4xs (general / tools)
 
-Gemma 4 26B-A4B, `--reasoning off` (voice: 0.06s speakable TTFT; reasoning is
-binary on this build and `low` is 40–200× too slow — see the gemma note).
+Qwen3.8-Flash-Next on the **Strata engine** (Niko1221/Strata, MIT) — a Python
+server driving a compiled C++ engine, not llama.cpp. Gateway name
+`qwen3.8-flash-next`, unchanged from the retired llama.cpp fork, so no client
+moved. Built natively for sm_75 by `nix/hosts/mjolnir/_strata.nix`.
 
 | Setting | Value |
 |---------|-------|
-| Model | `gemma-4-26B-A4B-it-UD-Q4_K_XL.gguf` + MTP drafter `mtp-gemma-4-26B-A4B-it-Q8_0.gguf` |
-| Context | 131,072 tokens, `-ub 2048` |
-| KV cache | q8_0 K + q8_0 V |
-| MTP | `draft-mtp`, n-max 2, p-min 0.75 |
-| Flash attention | on |
-| Reasoning | **off** (server-level; per-request `reasoning_effort` is a no-op) |
+| Model | `Qwen3.8-Flash-Next-UD-IQ4_XS` (largest quant that fits the fleet: 24 GB RAM headroom) |
+| Context | 262,144 tokens |
+| KV cache | int8, 32,768 resident |
+| Speculative | `--spec 4`, `--spec-min-p 0.5`, MTP `rt` |
+| Experts | from the pack, 55 GiB resident (`--resident-budget-gib`; this is what `LOW_RAM=on` resolves to) |
+| Decode / prefill | 32–57 t/s, ~1030 t/s prefill (2026-10-07 bench) |
+
+**Disabled:** gemma-4-26b-a4b (voice / HA / n8n). Gemma and Flash-Next do not
+share a card; nothing was migrated off gemma, its callers are quiet. Its values
+entry is `enable: false`, its config and pack are still on the PVC.
+
+### The `engine: strata` recipe
+
+A strata model is rendered by `templates/strata-deployment.yaml`, not
+`model-deployment.yaml`. Four things make one up, and each lives somewhere
+different:
+
+1. **The engine** — `nix/hosts/mjolnir/_strata.nix` builds engine + server +
+   venv as one read-only bundle. `binary:` in the values file pins its
+   `/nix/store` path; `nix/hosts/mjolnir/default.nix` keeps that path a GC root
+   and parks the previous one on `-prev` so a rollback has something to build
+   from. CI fails if the pin drifts from what the config builds.
+2. **Engine settings** — `.strataConfig` in the values file, rendered into a
+   ConfigMap and mounted over `/data/config/strata-<tag>.json`. It is the
+   recorded output of one `setup.py --setup` pass; `@BUNDLE@` inside it expands
+   to `.binary` so a bundle bump moves `exe`/`cwd`/`--expert-profile` with it.
+   `api_key` is empty on purpose: the key comes from the `litellm-keys` Secret
+   and the entrypoint passes it as `--api-key`.
+3. **Model + pack + MTP** — on the models PVC under `/data`, pre-populated so
+   the entrypoint skips the ~90 GB download.
+4. **The ENV surface** — `FAMILY`/`MODEL` pick the config file (for
+   `family: qwen` the tag has **no** `qwen-` prefix: `strata-ud-iq4_xs.json`),
+   `GPU`/`PORT`/`API_KEY` are forwarded as CLI flags. `gpuIndex` is
+   **container-local**, not the host index: the CDI pin exposes only the pinned
+   card, so it is always `0` inside the container.
+
+Rollouts are `Recreate` (the model owns its card) and there is no livenessProbe
+— it would kill a pod mid-generation. A 262k-token prefill (~255 s) exceeds the
+120 s termination grace, so a rollout during one does interrupt it.
 
 ### Dormant chart models (enable: false)
 qwen3-8-flash-next (+256k), qwen3-8-27b (+turboq), qwen3-6-35b-iq4xs,
@@ -68,7 +103,7 @@ deletion because their store paths are hardcoded in the chart values).
 | Endpoint | Model ID | Role |
 |----------|----------|------|
 | `http://mjolnir:8000/v1` | `swift-qwen3.8-27b` | Coding, agentic workflows (GPU0) |
-| `http://mjolnir:8000/v1` | `gemma-4-26b-a4b` | Voice, HA intents, n8n (GPU1) |
+| `http://mjolnir:8000/v1` | `qwen3.8-flash-next` | General, tools, long context (GPU1) |
 
 Pod-internal ports (8556/8555) are not published; only the gateway hostPort
 8000 is. Historical docker endpoints: 8556 = flash-next/27B, 8555 = 3.6/27B/gemma.
