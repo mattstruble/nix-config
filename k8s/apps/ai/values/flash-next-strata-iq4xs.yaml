@@ -1,0 +1,39 @@
+models:
+  # Qwen3.8-Flash-Next on the Strata engine (Niko1221/Strata) — replaces the
+  # mjungnickel18 llama.cpp fork (qwen3-8-flash-next / -256k, both disabled).
+  # IQ4_XS quant (largest that fits the fleet: 24GB RAM headroom, stable prefill,
+  # enables a future 2-GPU variant). 256k context, int8 KV. Benchmark 2026-10-07:
+  # prefill ~1030 t/s, decode 32-57 t/s, needle 18/18, coding 14/15 (see the
+  # qwen-flash-next-strata plan map).
+  #
+  # engine: strata -> rendered by templates/strata-deployment.yaml (not the
+  # llama-server model-deployment.yaml). The engine + server + python env are a
+  # nix bundle (nixBinary pattern, like the llama.cpp fork): `binary` is the
+  # pinned /nix/store path, mounted via the nix-store PVC. The base image only
+  # provides the shell (the bundle is self-contained). The model + pack + MTP +
+  # config are pre-populated on the models PVC at /data so the entrypoint skips
+  # the ~90GB download.
+  #
+  # modelName matches the old fork's gateway name, so existing clients that send
+  # model: "qwen3.8-flash-next" route here with no client change.
+  flash-next-strata-iq4xs:
+    enable: true
+    engine: strata
+    nixBinary: true
+    binary: /nix/store/4wrhyvp6i2f5vyvvv93vrp15xrwclx00-strata-0.1.40.3
+    image: alpine:3.20
+    gpu: "1"
+    # container-local engine index: the CDI pin exposes only this card, so the
+    # single visible card is index 0 inside the container (host index is 1).
+    gpuIndex: "0"
+    port: 8558
+    modelName: "qwen3.8-flash-next"
+    family: qwen
+    model: UD-IQ4_XS
+    # Engine settings (262144 ctx, int8 KV, --spec 4, resident budget, host
+    # bind) are NOT fields here: they live in the PVC config JSON at
+    # /data/config/strata-ud-iq4_xs.json (for family=qwen the entrypoint uses
+    # NO qwen- prefix; see the strata-deployment template comment) — change
+    # them there, not in this file.
+    memoryRequest: 8Gi
+    memoryLimit: 80Gi

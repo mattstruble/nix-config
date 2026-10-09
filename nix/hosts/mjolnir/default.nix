@@ -114,6 +114,23 @@
       hardware.nvidia.cudaCapabilities = [ "7.5" ];
       hardware.cpu.amd.updateMicrocode = true;
 
+      # Strata engine bundle (engine + server + python env) for the Qwen3.8-Flash-Next
+      # pod. Built natively (sm_75) and mounted into the pod via the nix-store PVC
+      # (the nixBinary pattern, like the llama.cpp fork). The model/pack/MTP live on
+      # the models PVC, not here. callPackage auto-provides cudaPackages/python3/deps.
+      system.build.strata = pkgs.callPackage ./_strata.nix { };
+      # The values file pins a literal store path, and the pod mounts /nix/store
+      # (a local PV on the real store) - but system.build.strata only enters the
+      # GC graph via the CURRENT system generation. When a rebuild changes the
+      # bundle hash (new pin), the old pinned path survives only on old
+      # generations, which nix.gc deletes after 30d - then the pod CrashLoops on
+      # a vanished bundle at its next restart. A manual GC root pins whatever
+      # THIS config builds, so the pinned path (kept equal to it at deploy time)
+      # is protected across GCs.
+      systemd.tmpfiles.rules = [
+        "L+ /nix/var/nix/gcroots/manual/strata-bundle - - - - ${config.system.build.strata}"
+      ];
+
       environment.systemPackages = with pkgs; [
         pciutils
         nvtopPackages.nvidia
