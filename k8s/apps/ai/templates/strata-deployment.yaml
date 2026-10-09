@@ -1,5 +1,9 @@
 {{- range $name, $m := .Values.models }}
 {{- if and $m.enable (eq ($m.engine | default "llama") "strata") }}
+{{- /* must match templates/strata-config-configmap.yaml - the entrypoint derives
+     the same tag from FAMILY/MODEL. */}}
+{{- $prefix := (eq ($m.family | default "qwen") "qwen") | ternary "" (printf "%s-" $m.family) }}
+{{- $tag := printf "%s%s" $prefix (lower $m.model) }}
 # Strata engine (Niko1221/Strata): a Python server (serve/server.py) that drives
 # a compiled C++ engine. Unlike llama-server it is configured by a config JSON
 # on the models PVC (for family=qwen: $STRATA_DATA/config/strata-<model>.json,
@@ -65,11 +69,12 @@ spec:
             # what the entrypoint reads (FAMILY/MODEL select the config JSON,
             # GPU/PORT/API_KEY are forwarded as CLI flags). Engine settings
             # (context length, KV cache dtype, spec/resident budget, host bind)
-            # are NOT env: they live in the PVC config JSON at
-            # $STRATA_DATA/config/strata-<family>-<model>.json — the source of
-            # truth (regenerate/edit that file to change them; for family=qwen
+            # are NOT env: they live in the config JSON at
+            # $STRATA_DATA/config/strata-<tag>.json, which is mounted from the
+            # {{ $name }}-strata-config ConfigMap (rendered from .strataConfig in
+            # the values file) - change them there, not on the PVC. For family=qwen
             # the entrypoint reads strata-<model>.json with NO qwen- prefix,
-            # e.g. /data/config/strata-ud-iq4_xs.json).
+            # e.g. /data/config/strata-ud-iq4_xs.json.
             - name: FAMILY
               value: {{ $m.family | default "qwen" | quote }}
             - name: MODEL
@@ -125,6 +130,14 @@ spec:
             - name: models
               mountPath: /data
               readOnly: true
+            # git's copy, over the one the setup pass left on the PVC. subPath
+            # because /data itself is the read-only models PVC; note kubelet
+            # does NOT refresh a subPath mount on ConfigMap change, so editing
+            # the config needs a pod restart, not just an apply.
+            - name: strata-config
+              mountPath: /data/config/strata-{{ $tag }}.json
+              subPath: strata-{{ $tag }}.json
+              readOnly: true
             - name: tmp
               mountPath: /tmp
             - name: log
@@ -148,6 +161,9 @@ spec:
         {{- include "ai.logExporterSidecar" $name | nindent 8 }}
       volumes:
         {{- include "ai.modelCommonVolumes" . | nindent 8 }}
+        - name: strata-config
+          configMap:
+            name: {{ $name }}-strata-config
         - name: shm
           emptyDir:
             medium: Memory

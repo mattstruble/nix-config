@@ -36,10 +36,51 @@ models:
     modelName: "qwen3.8-flash-next"
     family: qwen
     model: UD-IQ4_XS
-    # Engine settings (262144 ctx, int8 KV, --spec 4, resident budget, host
-    # bind) are NOT fields here: they live in the PVC config JSON at
-    # /data/config/strata-ud-iq4_xs.json (for family=qwen the entrypoint uses
-    # NO qwen- prefix; see the strata-deployment template comment) — change
-    # them there, not in this file.
+    # Engine settings live in strataConfig below - rendered into a ConfigMap and
+    # mounted over /data/config/strata-ud-iq4_xs.json, so this file is the source
+    # of truth (see templates/strata-config-configmap.yaml for why).
+    #
+    # This is the recorded output of one `setup.py --setup` pass on mjolnir
+    # (262144 ctx, int8 KV, --spec 4). LOW_RAM=on is not a flag in here: setup.py
+    # resolves it at setup time and records the result as --resident-budget-gib
+    # (55 GiB of experts resident in RAM, the rest paged from the pack).
+    #
+    # @BUNDLE@ is substituted with .binary above, so exe/cwd/--expert-profile
+    # follow a bundle bump instead of silently naming the old store path.
+    strataConfig:
+      args:
+        - "--pack"
+        - "/data/packs/unsloth-ud-iq4_xs"
+        - "--native"
+        - "/data/models/unsloth-UD-IQ4_XS/Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf"
+        - "--expert-profile"
+        - "@BUNDLE@/data/expert-profile.bin"
+        - "--expert-cache"
+        - "auto"
+        - "--prefill"
+        - "auto"
+        - "--spec"
+        - "4"
+        - "--spec-min-p"
+        - "0.5"
+        - "--mtp"
+        - "/data/mtp/rt"
+        - "--max-context"
+        - "262144"
+        - "--kv"
+        - "int8"
+        - "--kv-resident"
+        - "32768"
+        - "--resident-budget-gib"
+        - "55"
+      # nosec-style pragma: "tokenizer:" matches the `token` keyword in the
+      # detect-secrets hook; it is a path, not a credential.
+      tokenizer: "/data/packs/unsloth-ud-iq4_xs/tokenizer" # pragma: allowlist secret
+      model_name: "qwen3.8-flash-next-unsloth-ud-iq4_xs"
+      log: "/var/log/llama.log"
+      lib_dirs: ["/usr/local/cuda/lib64"]
+      gpus_asked: true
+      host: "0.0.0.0"
+      open_browser: false
     memoryRequest: 8Gi
     memoryLimit: 80Gi
