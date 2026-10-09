@@ -30,9 +30,9 @@ models:
     modelName: "qwen3.8-flash-next"
     family: qwen
     model: UD-IQ4_XS
-    context: "262144"
-    kv: int8
-    vision: no
-    lowRam: on
+    # Engine settings (262144 ctx, int8 KV, --spec 4, resident budget, host
+    # bind) are NOT fields here: they live in the PVC config JSON at
+    # /data/config/strata-qwen-ud-iq4_xs.json (see the strata-deployment
+    # template comment) — change them there, not in this file.
     memoryRequest: 8Gi
     memoryLimit: 80Gi
