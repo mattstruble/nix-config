@@ -1620,14 +1620,14 @@
     "list": [
       {
         "name": "model",
-        "label": "Model (job)",
+        "label": "Model",
         "type": "query",
         "datasource": {
           "type": "prometheus",
           "uid": "prometheus"
         },
         "query": {
-          "query": "label_values(llamacpp:tokens_predicted_total, job)",
+          "query": "label_values(llamacpp_live_decode_tps, model)",
           "refId": "StandardVariableQuery"
         },
         "refresh": 2,
