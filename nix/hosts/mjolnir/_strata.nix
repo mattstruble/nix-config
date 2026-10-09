@@ -111,7 +111,11 @@ cudaPackages.backendStdenv.mkDerivation (finalAttrs: {
 #!/bin/sh
 set -e
 BUNDLE="''${STRATA_BUNDLE:-/opt/strata}"
-WORK=/tmp/strata-$(date +%s)
+# Fixed path, NOT /tmp/strata-$(date +%s): the rm -rf below can only remove the
+# directory this start is about to create, so every container restart inside the
+# same pod left a whole copy of serve/ + tools/ + setup.py behind in the /tmp
+# emptyDir (which survives a container restart, though not the pod).
+WORK=/tmp/strata-work
 export HOME="$WORK"
 STRATA_DATA="''${STRATA_DATA:-/data}"
 FAMILY="''${FAMILY:-qwen}"
