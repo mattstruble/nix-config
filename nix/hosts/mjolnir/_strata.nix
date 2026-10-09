@@ -89,6 +89,7 @@ cudaPackages.backendStdenv.mkDerivation (finalAttrs: {
     install -m755 strata $out/bin/strata
     ln -s ${pythonEnv}/bin/python $out/.venv/bin/python
     cp -r $src/serve $out/serve
+    cp -r $src/tools $out/tools
     cp $src/setup.py $out/setup.py
     cp $src/data/expert-profile.bin $out/data/expert-profile.bin
     # the nix bundle is read-only, so the entrypoint (which links the config into
@@ -115,7 +116,12 @@ cfg="$STRATA_DATA/config/strata-$tag.json"
 rm -rf "$WORK"
 mkdir -p "$WORK"
 cp "$cfg" "$WORK/strata-$tag.json"
+# tools/: serve/server.py sys.path-inserts <ROOT>/tools and imports
+# strata_tokenizer from there (pure Python: stdlib + regex, both in the
+# bundle's python env) - without it the server dies on
+# ModuleNotFoundError: strata_tokenizer
 cp -r "$BUNDLE/serve" "$WORK/serve"
+cp -r "$BUNDLE/tools" "$WORK/tools"
 cp "$BUNDLE/setup.py" "$WORK/setup.py"
 cd "$WORK"
 set -- --port "$PORT"

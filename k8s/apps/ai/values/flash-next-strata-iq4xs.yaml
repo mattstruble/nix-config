@@ -20,7 +20,7 @@ models:
     enable: true
     engine: strata
     nixBinary: true
-    binary: /nix/store/c54di7qcrngkcx6hxjvhmxq82p9bkj82-strata-0.1.40.3
+    binary: /nix/store/di92hy9d9vnq4hdqw95gh0ivjjx7sczp-strata-0.1.40.3
     image: alpine:3.20
     gpu: "1"
     # container-local engine index: the CDI pin exposes only this card, so the
