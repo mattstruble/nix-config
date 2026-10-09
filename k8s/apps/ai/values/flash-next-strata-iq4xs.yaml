@@ -20,7 +20,7 @@ models:
     enable: true
     engine: strata
     nixBinary: true
-    binary: /nix/store/di92hy9d9vnq4hdqw95gh0ivjjx7sczp-strata-0.1.40.3
+    binary: /nix/store/4wrhyvp6i2f5vyvvv93vrp15xrwclx00-strata-0.1.40.3
     image: alpine:3.20
     gpu: "1"
     # container-local engine index: the CDI pin exposes only this card, so the
@@ -32,7 +32,8 @@ models:
     model: UD-IQ4_XS
     # Engine settings (262144 ctx, int8 KV, --spec 4, resident budget, host
     # bind) are NOT fields here: they live in the PVC config JSON at
-    # /data/config/strata-qwen-ud-iq4_xs.json (see the strata-deployment
-    # template comment) — change them there, not in this file.
+    # /data/config/strata-ud-iq4_xs.json (for family=qwen the entrypoint uses
+    # NO qwen- prefix; see the strata-deployment template comment) — change
+    # them there, not in this file.
     memoryRequest: 8Gi
     memoryLimit: 80Gi

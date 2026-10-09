@@ -124,6 +124,11 @@ cp -r "$BUNDLE/serve" "$WORK/serve"
 cp -r "$BUNDLE/tools" "$WORK/tools"
 cp "$BUNDLE/setup.py" "$WORK/setup.py"
 cd "$WORK"
+# STRATA_EXECV=1 (like the upstream Docker image): setup.py os.execv's into
+# serve/server.py, making the SERVER PID 1 - without it PID 1 is setup.py (no
+# SIGTERM handler), so every rollout/drain SIGKILLs the engine mid-generation
+# after burning the full termination grace period.
+export STRATA_EXECV=1
 set -- --port "$PORT"
 if [ -n "$GPU" ]; then set -- "$@" --gpu "$GPU"; fi
 # the API key comes from the pod's litellm-keys Secret (chart env API_KEY),
