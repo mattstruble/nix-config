@@ -87,6 +87,17 @@ Usage: {{- include "ai.logExporterSidecar" $name | nindent 8 }}
   ports:
     - name: log-exporter
       containerPort: 9399
+  # It is a stdlib http.server tailing a file, so the numbers are small - but
+  # without a request the container is BestEffort and the first thing evicted
+  # under node memory pressure, which silently stops both the live-rate gauges
+  # and the model log's trip to Loki. The limit is generous against its working
+  # set (one line at a time); OOMKilling the exporter would be the worse failure.
+  resources:
+    requests:
+      cpu: 10m
+      memory: 32Mi
+    limits:
+      memory: 128Mi
   volumeMounts:
     - name: log
       mountPath: /var/log
