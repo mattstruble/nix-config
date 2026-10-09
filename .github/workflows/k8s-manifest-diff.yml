@@ -4,12 +4,52 @@ on:
   pull_request:
     paths:
       - "k8s/**"
+      - "nix/**"
+  push:
+    branches: [main]
+    paths:
+      - "k8s/**"
+      - "nix/**"
+  workflow_dispatch:
 
 permissions:
   contents: read
   pull-requests: write
 
 jobs:
+  strata-bundle-pin:
+    # The strata values file pins a literal /nix/store path for the bundle and
+    # the pod mounts it read-only. When the derivation changes and the pin is
+    # not updated with it, the pod CrashLoops on a path that no longer exists -
+    # and nothing in the render catches it, because the string is still valid
+    # YAML. Assert the pin equals what the config actually builds.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: cachix/install-nix-action@V30
+
+      - name: Pinned bundle path must match what the config builds
+        run: |
+          set -euo pipefail
+          built=$(nix eval --raw .#nixosConfigurations.mjolnir.config.system.build.strata)
+          pinned=$(grep -m1 -oE '/nix/store/[a-z0-9]+-strata-[0-9][^ "[:cntrl:]]*' \
+            k8s/apps/ai/values/flash-next-strata-iq4xs.yaml)
+          echo "built : $built"
+          echo "pinned: $pinned"
+          if [ -z "$pinned" ]; then
+            echo "::error::no /nix/store/*-strata-* pin found in the values file"
+            exit 1
+          fi
+          if [ "$built" != "$pinned" ]; then
+            {
+              echo "::error::the strata values pin does not match the bundle this config builds"
+              echo "  fix: nix eval --raw .#nixosConfigurations.mjolnir.config.system.build.strata"
+              echo "  and set 'binary:' in k8s/apps/ai/values/flash-next-strata-iq4xs.yaml to it"
+            } >&2
+            exit 1
+          fi
+
   manifest-diff:
     runs-on: ubuntu-latest
     steps:
