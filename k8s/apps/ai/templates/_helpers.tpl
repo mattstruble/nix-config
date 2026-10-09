@@ -44,6 +44,22 @@ securityContext:
 {{- end -}}
 
 {{/*
+Graceful-drain pause. The server closes its listener as soon as SIGTERM lands
+(llama.cpp in its handler, Strata via httpd.shutdown first), but the pod is only
+removed from the EndpointSlices asynchronously and the LiteLLM gateway's view
+lags that - requests arriving in the gap get connection-refused instead of being
+served or retried. Sleeping before SIGTERM gives propagation time to catch up;
+it runs inside terminationGracePeriodSeconds, which is 120s here.
+Usage: {{- include "ai.preStopDrain" . | nindent 10 }}
+*/}}
+{{- define "ai.preStopDrain" -}}
+lifecycle:
+  preStop:
+    exec:
+      command: [sh, -c, "sleep 5"]
+{{- end -}}
+
+{{/*
 The log-exporter sidecar: tails the model's log (shared emptyDir), exposes the
 live decode/prefill rates, and echoes each line to its own stdout so Alloy ships
 the model log to Loki. Port 9399 is scraped by the llm-log-exporter PodMonitor

@@ -47,6 +47,7 @@ spec:
           {{- include "ai.harden" . | nindent 10 }}
           image: {{ $m.image }}
           imagePullPolicy: {{ $m.imagePullPolicy | default "IfNotPresent" }}
+          {{- include "ai.preStopDrain" . | nindent 10 }}
           # the nix bundle entrypoint exports STRATA_EXECV=1, so setup.py
           # os.execv's into serve/server.py: the SERVER is PID 1 and SIGTERM
           # reaches its drain handler (in-flight generations finish on

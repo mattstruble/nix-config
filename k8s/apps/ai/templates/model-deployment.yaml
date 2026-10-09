@@ -44,6 +44,7 @@ spec:
         - name: llama-server
           {{- include "ai.harden" . | nindent 10 }}
           image: {{ $m.image }}
+          {{- include "ai.preStopDrain" . | nindent 10 }}
           # redirect stdout to /var/log/llama.log so the log-exporter sidecar can
           # tail it and expose the live decode/prefill rates (tg_3s / tokens per
           # second) as gauges — the native gauges only tick at completion
