@@ -45,6 +45,15 @@ let
   };
 
 in
+# Checked against the nixpkgs CUDA guidance: it recommends __structuredAttrs for
+# cudaPackages.mkDerivation, where the wrapper turns cudaFlags into per-arch
+# compile invocations. This is a plain cmake + nvcc-as-a-tool build with no
+# cudaFlags handling, so structured attrs would buy nothing - and flipping them
+# changes the output path, which forces a full native sm_75 rebuild on mjolnir
+# and a new pinned path in the values file for zero correctness gain. Not set on
+# purpose. strictDeps is the same story: cmake resolves cuda_cudart/cccl out of
+# buildInputs, so restricting the native env risks the configure step for no
+# gain here either.
 cudaPackages.backendStdenv.mkDerivation (finalAttrs: {
   pname = "strata";
   version = "0.1.40.3";

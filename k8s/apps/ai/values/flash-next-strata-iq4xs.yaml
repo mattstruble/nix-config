@@ -21,7 +21,13 @@ models:
     engine: strata
     nixBinary: true
     binary: /nix/store/4wrhyvp6i2f5vyvvv93vrp15xrwclx00-strata-0.1.40.3
-    image: alpine:3.20
+    # digest-pinned, not alpine:3.20: this is only the shell the bundle's
+    # entrypoint runs in, but a mutable tag means the pod's base can change under
+    # a redeploy (or fail to start after a node rebuild if the tag is ever
+    # removed upstream). Digest is what containerd resolves the tag to on mjolnir
+    # today (crictl inspecti docker.io/library/alpine:3.20), so pinning it is a
+    # no-op pull-wise. Regenerate with that command when bumping.
+    image: alpine@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc  # alpine:3.20
     gpu: "1"
     # container-local engine index: the CDI pin exposes only this card, so the
     # single visible card is index 0 inside the container (host index is 1).
