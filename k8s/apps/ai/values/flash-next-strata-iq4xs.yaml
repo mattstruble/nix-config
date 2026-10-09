@@ -23,6 +23,9 @@ models:
     binary: /nix/store/c54di7qcrngkcx6hxjvhmxq82p9bkj82-strata-0.1.40.3
     image: alpine:3.20
     gpu: "1"
+    # container-local engine index: the CDI pin exposes only this card, so the
+    # single visible card is index 0 inside the container (host index is 1).
+    gpuIndex: "0"
     port: 8558
     modelName: "qwen3.8-flash-next"
     family: qwen

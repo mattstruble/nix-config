@@ -78,8 +78,14 @@ spec:
               value: {{ $m.vision | default "no" | quote }}
             - name: KV
               value: {{ $m.kv | default "int8" | quote }}
+            # the ENGINE's gpu index is container-local, NOT the host index:
+            # NVIDIA_VISIBLE_DEVICES exposes only the pinned card(s), so the
+            # single visible card is always index 0 inside the container (the
+            # host's GPU 1 passed as --gpu 1 fails: "GPU 1 cannot be used: not
+            # found on this PC"). gpuIndex defaults to 0 (single-card entries);
+            # a 2-GPU entry would see both cards as 0,1 and set it explicitly.
             - name: GPU
-              value: {{ $m.gpu | quote }}
+              value: {{ $m.gpuIndex | default "0" | quote }}
             - name: LOW_RAM
               value: {{ $m.lowRam | default "on" | quote }}
             - name: STRATA_DATA
