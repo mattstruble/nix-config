@@ -18,9 +18,7 @@ kind: Deployment
 metadata:
   name: {{ $name }}
   labels:
-    app: {{ $name }}
-    app.kubernetes.io/part-of: ai
-    app.kubernetes.io/component: model
+    {{- include "ai.modelLabels" $name | nindent 4 }}
 spec:
   # Recreate: the model owns its whole GPU, so a RollingUpdate would run old +
   # new pods concurrently and OOM the load.
@@ -33,11 +31,7 @@ spec:
   template:
     metadata:
       labels:
-        app: {{ $name }}
-        app.kubernetes.io/part-of: ai
-        # netpol selector (k8s/manifests/ai-networkpolicies.yaml): shared by all
-        # model pods and no other ai-chart pod.
-        app.kubernetes.io/component: model
+        {{- include "ai.modelLabels" $name | nindent 8 }}
     spec:
       runtimeClassName: nvidia
       # let in-flight generations finish on shutdown/rollout (default 30s
@@ -50,14 +44,7 @@ spec:
       automountServiceAccountToken: false
       containers:
         - name: strata-server
-          securityContext:
-            allowPrivilegeEscalation: false
-            capabilities:
-              drop:
-                - ALL
-            seccompProfile:
-              type: RuntimeDefault
-            readOnlyRootFilesystem: true
+          {{- include "ai.harden" . | nindent 10 }}
           image: {{ $m.image }}
           imagePullPolicy: {{ $m.imagePullPolicy | default "IfNotPresent" }}
           # the nix bundle entrypoint exports STRATA_EXECV=1, so setup.py
@@ -113,14 +100,14 @@ spec:
               value: {{ $m.binary | quote }}
           ports:
             - containerPort: {{ $m.port }}
-          # /health is answered before the model finishes loading (and before the
-          # API-key gate), so it is a correct ready signal. startupProbe covers the
-          # multi-minute engine + model load (30 x 10s = 5 min); readinessProbe
-          # gates gateway traffic. No livenessProbe: it would kill pods mid-generation.
-          # startupProbe covers the multi-minute engine + model load (45 x 10s
-          # = 7.5 min; 30 x 10s was tight for the worst case, a cold first load
-          # after a host reboot reading the 94GB GGUF); readinessProbe gates
-          # gateway traffic. No livenessProbe: it would kill pods mid-generation.
+          # /health is not auth-gated, and main() binds the socket only AFTER the
+          # engine has loaded, so nothing answers until the model is up - that is
+          # what makes /health a correct ready signal here (it returns 200 with
+          # "loaded": false rather than a non-200, so the bind is doing the work).
+          # startupProbe covers the multi-minute engine + model load (45 x 10s =
+          # 7.5 min; 30 x 10s was tight for the worst case, a cold first load after
+          # a host reboot reading the 94GB GGUF); readinessProbe gates gateway
+          # traffic. No livenessProbe: it would kill pods mid-generation.
           startupProbe:
             httpGet:
               path: /health
@@ -157,45 +144,9 @@ spec:
               memory: {{ $m.memoryRequest }}
             limits:
               memory: {{ $m.memoryLimit }}
-        - name: log-exporter
-          image: python:3.12-alpine
-          command: [python, /exporter.py]
-          env:
-            - name: LOG_FILE
-              value: /var/log/llama.log
-            - name: MODEL
-              # deployment name (== Prometheus job label), NOT modelName.
-              value: {{ $name }}
-            - name: POD
-              valueFrom:
-                fieldRef:
-                  fieldPath: metadata.name
-            - name: PORT
-              value: "9399"
-          ports:
-            - name: log-exporter
-              containerPort: 9399
-          volumeMounts:
-            - name: log
-              mountPath: /var/log
-              readOnly: true
-            - name: exporter-script
-              mountPath: /exporter.py
-              subPath: exporter.py
-              readOnly: true
+        {{- include "ai.logExporterSidecar" $name | nindent 8 }}
       volumes:
-        - name: tmp
-          emptyDir:
-            sizeLimit: 1Gi
-        - name: models
-          persistentVolumeClaim:
-            claimName: llama-models-pvc
-        - name: log
-          emptyDir:
-            sizeLimit: 200Mi
-        - name: exporter-script
-          configMap:
-            name: llm-log-exporter
+        {{- include "ai.modelCommonVolumes" . | nindent 8 }}
         - name: shm
           emptyDir:
             medium: Memory

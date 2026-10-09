@@ -13,9 +13,7 @@ kind: Deployment
 metadata:
   name: {{ $name }}
   labels:
-    app: {{ $name }}
-    app.kubernetes.io/part-of: ai
-    app.kubernetes.io/component: model
+    {{- include "ai.modelLabels" $name | nindent 4 }}
 spec:
   # Recreate: each model owns its whole GPU (20+ GiB of 24 GiB), so a
   # RollingUpdate would run old + new pods concurrently and OOM the load.
@@ -28,11 +26,7 @@ spec:
   template:
     metadata:
       labels:
-        app: {{ $name }}
-        app.kubernetes.io/part-of: ai
-        # netpol selector (k8s/manifests/ai-networkpolicies.yaml): the only
-        # label shared by all model pods and no other ai-chart pod.
-        app.kubernetes.io/component: model
+        {{- include "ai.modelLabels" $name | nindent 8 }}
     spec:
       runtimeClassName: nvidia
       # let in-flight generations finish on shutdown/rollout (default 30s
@@ -48,20 +42,7 @@ spec:
       automountServiceAccountToken: false
       containers:
         - name: llama-server
-          securityContext:
-            allowPrivilegeEscalation: false
-            capabilities:
-              drop:
-                - ALL
-            seccompProfile:
-              type: RuntimeDefault
-            # image layers read-only; the only writable scratch is the /tmp
-            # emptyDir (dies with the pod). Validated on gemma 2026-09-24:
-            # clean logs, /tmp writable, completions OK. Container-level, not
-            # pod-level: this k3s build's PodSecurityContext struct drops the
-            # field (unknown-field rejection), the container SecurityContext
-            # keeps it.
-            readOnlyRootFilesystem: true
+          {{- include "ai.harden" . | nindent 10 }}
           image: {{ $m.image }}
           # redirect stdout to /var/log/llama.log so the log-exporter sidecar can
           # tail it and expose the live decode/prefill rates (tg_3s / tokens per
@@ -160,47 +141,9 @@ spec:
               memory: {{ $m.memoryRequest }}
             limits:
               memory: {{ $m.memoryLimit }}
-        - name: log-exporter
-          image: python:3.12-alpine
-          command: [python, /exporter.py]
-          env:
-            - name: LOG_FILE
-              value: /var/log/llama.log
-            - name: MODEL
-              # deployment name (== Prometheus job label), NOT modelName (the
-              # dotted gateway name): the dashboard's $model var is job-sourced,
-              # so the label must match it for per-model filtering to work.
-              value: {{ $name }}
-            - name: POD
-              valueFrom:
-                fieldRef:
-                  fieldPath: metadata.name
-            - name: PORT
-              value: "9399"
-          ports:
-            - name: log-exporter
-              containerPort: 9399
-          volumeMounts:
-            - name: log
-              mountPath: /var/log
-              readOnly: true
-            - name: exporter-script
-              mountPath: /exporter.py
-              subPath: exporter.py
-              readOnly: true
+        {{- include "ai.logExporterSidecar" $name | nindent 8 }}
       volumes:
-        - name: tmp
-          emptyDir:
-            sizeLimit: 1Gi
-        - name: models
-          persistentVolumeClaim:
-            claimName: llama-models-pvc
-        - name: log
-          emptyDir:
-            sizeLimit: 200Mi
-        - name: exporter-script
-          configMap:
-            name: llm-log-exporter
+        {{- include "ai.modelCommonVolumes" . | nindent 8 }}
         {{- if $m.nixBinary }}
         - name: nix-store
           persistentVolumeClaim:
