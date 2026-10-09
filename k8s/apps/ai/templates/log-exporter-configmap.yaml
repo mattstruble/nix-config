@@ -8,16 +8,41 @@ data:
   # Tails the model's log (shared emptyDir), exposes the LIVE decode/prefill
   # rates as gauges, and echoes each line to its own stdout so Alloy ships the
   # model's log to Loki (the model's stdout is redirected to this file, so the
-  # container-runtime log is empty without the echo). llama.cpp prints the live rate in the log:
-  #   decode:  "tg_3s = 31.90 t/s"
-  #   prefill: "prompt processing, ... t = 20.59 s / 525.34 tokens per second"
-  # The Strata engine (engine: strata values entries) prints its own formats:
-  #   decode (live, ~1s):  "[strata] answering: 96 of max 120 tokens, 35.9 tok/s, 3 s"
-  #                         ("[strata] thinking: ..." during reasoning blocks - also decode)
-  #   prefill (per request): "strata serve: prompt 22 tokens = 0 reused + 22 read in 469 ms (46.9 tok/s), ..."
-  # Same gauges: each engine's regexes feed the same llamacpp_live_*_tps metrics.
-  # The /metrics endpoint only has completion gauges, so the log is the only
-  # source of the live rate. Stdlib-only (no pip install): http.server + re.
+  # container-runtime log is empty without the echo).
+  #
+  # WHY THIS SIDECAR EXISTS — keep these two facts apart, conflating them has
+  # caused the wrong conclusion twice:
+  #   - an engine's NATIVE Prometheus gauges are not live. llama.cpp's llamacpp:*
+  #     only tick when a turn completes; strata's strata:* are live but scraped
+  #     at 30s (the ServiceMonitor) against this exporter's 2s (the PodMonitor),
+  #     and a gauge that is only non-zero while generating is 15x likelier to be
+  #     missed. So the log is the live source AND the 2s scrape is load-bearing.
+  #   - that does NOT mean the log parse is not live. Both engines print live,
+  #     periodic progress lines; the exporter's job is to pick the live one.
+  #
+  # llama.cpp (print_timing, periodic during the phase — both are live):
+  #   decode:  "n_gen = 7792, tg = 34.62 t/s, tg_3s = 34.33 t/s"
+  #   prefill: "prompt processing, n_tokens = 4096, progress = 0.98, t = 8.97 s / 456.69 tokens per second"
+  # Strata (engine: strata entries) prints its own formats:
+  #   decode (live, ~1s):  "[strata] <phase>: 96 of max 16384 tokens, 35.9 tok/s, 3 s"
+  #     <phase> is set from the event kind, so it is "thinking", "answering",
+  #     "writing a tool call: bash" (note the inner colon), "tool call complete"...
+  #     Match the LINE SHAPE, never the phase name: pinning it to
+  #     (answering|thinking) silently dropped 867 of 2356 progress lines (37% of
+  #     decode time — all of it tool-call writing, which is most agentic traffic).
+  #   prefill (live, ~1s):  "[strata] reading the prompt: 135,756 of 135,761 tokens, 3 s so far"
+  #     (the "of B" part is absent when the engine reports no progress tuple). It
+  #     carries no tok/s, so the rate is DERIVED from consecutive lines. Do not
+  #     parse the per-request summary ("prompt N tokens = ... read in T ms (X tok/s),
+  #     M generated in ...") instead: that line is printed ONCE WHEN THE REQUEST
+  #     FINISHES, so the gauge holds a dead request's mean for DECAY_S and the
+  #     panel draws one isolated point per request instead of a live trace.
+  #
+  # Same gauges: each engine's regexes feed the same llamacpp_live_*_tps metrics
+  # (the name is historical — it is the fleet's engine-neutral live-rate name).
+  # Stdlib-only (no pip install): http.server + re. Rotates the log when it
+  # exceeds ROTATE_BYTES (the model writes O_APPEND, so truncation is clean — the
+  # next write goes to the new end).
   # Rotates the log when it exceeds ROTATE_BYTES (the model writes O_APPEND, so
   # truncation is clean — the next write goes to the new end).
   exporter.py: |
@@ -32,14 +57,18 @@ data:
     ROTATE_BYTES = 100 * 1024 * 1024  # rotate the log past this size
 
     state = {"decode": 0.0, "prefill": 0.0, "last_decode": 0.0, "last_prefill": 0.0}
+    # last live prompt-read progress sample, to derive tokens/s between two lines
+    prog = {"pos": 0, "at": 0.0}
     lock = threading.Lock()
 
     decode_re = re.compile(r"tg_3s\s*=\s*([0-9.]+)\s*t/s")
     prefill_re = re.compile(r"prompt processing.*?([0-9.]+)\s*tokens per second")
-    # strata: live decode ("[strata] answering/thinking: N of max M tokens, X tok/s"),
-    # per-request prefill ("prompt N tokens = ... read in T ms (X tok/s)")
-    strata_decode_re = re.compile(r"^\[strata\] (?:answering|thinking): \d+ of max \d+ tokens, ([0-9.]+) tok/s")
-    strata_prefill_re = re.compile(r"prompt \d+ tokens = .*?read in [0-9.]+ ms? \(([0-9.]+) tok/s\)")
+    # strata live decode: line shape, NOT phase name (a phase can contain a colon:
+    # "writing a tool call: bash"). The non-greedy .+? backtracks past that colon.
+    strata_decode_re = re.compile(r"^\[strata\] .+?: \d+ of max \d+ tokens, ([0-9.]+) tok/s")
+    # strata live prompt read: position reached (comma-grouped), optional total
+    strata_reading_re = re.compile(
+        r"^\[strata\] reading the prompt: ([\d,]+)(?: of [\d,]+)? tokens, \d+ s so far")
 
     def tail():
         f = None
@@ -67,17 +96,31 @@ data:
                             state["prefill"] = 0.0
                     time.sleep(0.2)
                     continue
-                for rx, key, last in (
-                    (decode_re, "decode", "last_decode"),
-                    (prefill_re, "prefill", "last_prefill"),
-                    (strata_decode_re, "decode", "last_decode"),
-                    (strata_prefill_re, "prefill", "last_prefill"),
-                ):
-                    m = rx.search(line)
-                    if m:
-                        with lock:
-                            state[key] = float(m.group(1))
-                            state[last] = time.time()
+                m = strata_reading_re.search(line)
+                if m:
+                    # tokens/s between this line and the previous one (~1s apart).
+                    # A position that went backwards is a new request: re-baseline
+                    # instead of reporting a negative rate.
+                    pos = int(m.group(1).replace(",", ""))
+                    now = time.time()
+                    with lock:
+                        dt = now - prog["at"] if prog["at"] else 0.0
+                        if dt >= 0.5 and pos >= prog["pos"]:
+                            state["prefill"] = round((pos - prog["pos"]) / dt, 1)
+                            state["last_prefill"] = now
+                        prog["pos"], prog["at"] = pos, now
+                else:
+                    prog["at"] = 0.0        # any other line ends the reading phase
+                    for rx, key, last in (
+                        (decode_re, "decode", "last_decode"),
+                        (prefill_re, "prefill", "last_prefill"),
+                        (strata_decode_re, "decode", "last_decode"),
+                    ):
+                        m = rx.search(line)
+                        if m:
+                            with lock:
+                                state[key] = float(m.group(1))
+                                state[last] = time.time()
             except FileNotFoundError:
                 f = None
                 time.sleep(1)
