@@ -1,5 +1,5 @@
 {{- range $name, $m := .Values.models }}
-{{- if $m.enable }}
+{{- if and $m.enable (ne ($m.engine | default "llama") "strata") }}
 {{- $binary := "" }}
 {{- if $m.binary }}
 {{- $binary = $m.binary }}

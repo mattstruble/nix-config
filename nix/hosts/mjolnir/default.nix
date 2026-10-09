@@ -114,6 +114,12 @@
       hardware.nvidia.cudaCapabilities = [ "7.5" ];
       hardware.cpu.amd.updateMicrocode = true;
 
+      # Strata engine bundle (engine + server + python env) for the Qwen3.8-Flash-Next
+      # pod. Built natively (sm_75) and mounted into the pod via the nix-store PVC
+      # (the nixBinary pattern, like the llama.cpp fork). The model/pack/MTP live on
+      # the models PVC, not here. callPackage auto-provides cudaPackages/python3/deps.
+      system.build.strata = pkgs.callPackage ./_strata.nix { };
+
       environment.systemPackages = with pkgs; [
         pciutils
         nvtopPackages.nvidia

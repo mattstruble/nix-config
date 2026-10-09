@@ -1,0 +1,196 @@
+{{- range $name, $m := .Values.models }}
+{{- if and $m.enable (eq ($m.engine | default "llama") "strata") }}
+# Strata engine (Niko1221/Strata): a Python server (serve/server.py) that drives
+# a compiled C++ engine. Unlike llama-server it is configured by ENV (FAMILY,
+# MODEL, CONTEXT, KV, GPU, API_KEY, ...) read by docker-entrypoint.sh, not by CLI
+# flags. The engine + server + python env are a nix bundle (nixBinary pattern,
+# like the llama.cpp fork): the bundle is mounted via the nix-store PVC and the
+# entrypoint cds to it (STRATA_BUNDLE). The model + pack + MTP + config live on
+# the models PVC at /data (STRATA_DATA), pre-populated so the entrypoint skips
+# the ~90GB download and goes straight to serving. /health is answered before
+# the API-key gate, so the probes work without a key. stdout is redirected to
+# /var/log/llama.log so the log-exporter sidecar can tail it (same as the llama
+# models).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  labels:
+    app: {{ $name }}
+    app.kubernetes.io/part-of: ai
+    app.kubernetes.io/component: model
+spec:
+  # Recreate: the model owns its whole GPU, so a RollingUpdate would run old +
+  # new pods concurrently and OOM the load.
+  strategy:
+    type: Recreate
+  replicas: 1
+  selector:
+    matchLabels:
+      app: {{ $name }}
+  template:
+    metadata:
+      labels:
+        app: {{ $name }}
+        app.kubernetes.io/part-of: ai
+        # netpol selector (k8s/manifests/ai-networkpolicies.yaml): shared by all
+        # model pods and no other ai-chart pod.
+        app.kubernetes.io/component: model
+    spec:
+      runtimeClassName: nvidia
+      # let in-flight generations finish on shutdown/rollout (default 30s
+      # SIGKILLs mid-token)
+      terminationGracePeriodSeconds: 120
+      securityContext:
+        runAsUser: 1000
+        runAsGroup: 1000
+        runAsNonRoot: true
+      automountServiceAccountToken: false
+      containers:
+        - name: strata-server
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            seccompProfile:
+              type: RuntimeDefault
+            readOnlyRootFilesystem: true
+          image: {{ $m.image }}
+          imagePullPolicy: {{ $m.imagePullPolicy | default "IfNotPresent" }}
+          # docker-entrypoint.sh execs setup.py (STRATA_EXECV=1 in the image), so
+          # the server is PID 1 and SIGTERM reaches it. Redirect stdout+stderr to
+          # /var/log/llama.log for the log-exporter sidecar (exec keeps the server
+          # as PID 1; no tee, which would break graceful shutdown).
+          command:
+            - sh
+            - -c
+            - 'exec "$STRATA_BUNDLE/docker-entrypoint.sh" >> /var/log/llama.log 2>&1'
+          env:
+            # which model + how to run it (read by docker-entrypoint.sh)
+            - name: FAMILY
+              value: {{ $m.family | default "qwen" | quote }}
+            - name: MODEL
+              value: {{ $m.model | quote }}
+            - name: CONTEXT
+              value: {{ $m.context | quote }}
+            - name: VISION
+              value: {{ $m.vision | default "no" | quote }}
+            - name: KV
+              value: {{ $m.kv | default "int8" | quote }}
+            - name: GPU
+              value: {{ $m.gpu | quote }}
+            - name: LOW_RAM
+              value: {{ $m.lowRam | default "on" | quote }}
+            - name: STRATA_DATA
+              value: /data
+            - name: HOST
+              value: "0.0.0.0"
+            - name: PORT
+              value: {{ $m.port | quote }}
+            # the same shared pod key the llama models use (litellm-keys/pod-api-key);
+            # the gateway authenticates with it (its OPENAI_API_KEY is the same value).
+            - name: API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: litellm-keys
+                  key: pod-api-key
+            - name: NVIDIA_VISIBLE_DEVICES
+              value: {{ $m.gpu | quote }}
+            # the nix bundle's store path (the entrypoint cds to it). Set by the
+            # values file's `binary` field (the pinned /nix/store path).
+            - name: STRATA_BUNDLE
+              value: {{ $m.binary | quote }}
+          ports:
+            - containerPort: {{ $m.port }}
+          # /health is answered before the model finishes loading (and before the
+          # API-key gate), so it is a correct ready signal. startupProbe covers the
+          # multi-minute engine + model load (30 x 10s = 5 min); readinessProbe
+          # gates gateway traffic. No livenessProbe: it would kill pods mid-generation.
+          startupProbe:
+            httpGet:
+              path: /health
+              port: {{ $m.port }}
+            periodSeconds: 10
+            failureThreshold: 30
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: {{ $m.port }}
+            periodSeconds: 10
+          volumeMounts:
+            # the models PVC, read-only: model GGUFs + pack + MTP + config.
+            - name: models
+              mountPath: /data
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+            - name: log
+              mountPath: /var/log
+            - name: exporter-script
+              mountPath: /exporter.py
+              subPath: exporter.py
+              readOnly: true
+            - name: shm
+              mountPath: /dev/shm
+            {{- if $m.nixBinary }}
+            - name: nix-store
+              mountPath: /nix/store
+              readOnly: true
+            {{- end }}
+          resources:
+            requests:
+              memory: {{ $m.memoryRequest }}
+            limits:
+              memory: {{ $m.memoryLimit }}
+        - name: log-exporter
+          image: python:3.12-alpine
+          command: [python, /exporter.py]
+          env:
+            - name: LOG_FILE
+              value: /var/log/llama.log
+            - name: MODEL
+              # deployment name (== Prometheus job label), NOT modelName.
+              value: {{ $name }}
+            - name: POD
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: PORT
+              value: "9399"
+          ports:
+            - name: log-exporter
+              containerPort: 9399
+          volumeMounts:
+            - name: log
+              mountPath: /var/log
+              readOnly: true
+            - name: exporter-script
+              mountPath: /exporter.py
+              subPath: exporter.py
+              readOnly: true
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 1Gi
+        - name: models
+          persistentVolumeClaim:
+            claimName: llama-models-pvc
+        - name: log
+          emptyDir:
+            sizeLimit: 200Mi
+        - name: exporter-script
+          configMap:
+            name: llm-log-exporter
+        - name: shm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 32Gi
+        {{- if $m.nixBinary }}
+        - name: nix-store
+          persistentVolumeClaim:
+            claimName: nix-store-pvc
+        {{- end }}
+---
+{{- end }}
+{{- end }}
