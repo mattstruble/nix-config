@@ -20,7 +20,10 @@ models:
     enable: true
     engine: strata
     nixBinary: true
-    binary: /nix/store/4wrhyvp6i2f5vyvvv93vrp15xrwclx00-strata-0.1.40.3
+    # No `binary:` here on purpose. The bundle path is injected by the nix render
+    # (services.k3s.aiChart.strataBundle -> .Values.strataBundle), so the pod
+    # mounts whatever this system's build produced. A literal path here would
+    # only be a per-model override for standalone `helm template` runs.
     # digest-pinned, not alpine:3.20: this is only the shell the bundle's
     # entrypoint runs in, but a mutable tag means the pod's base can change under
     # a redeploy (or fail to start after a node rebuild if the tag is ever
@@ -45,8 +48,9 @@ models:
     # resolves it at setup time and records the result as --resident-budget-gib
     # (55 GiB of experts resident in RAM, the rest paged from the pack).
     #
-    # @BUNDLE@ is substituted with .binary above, so exe/cwd/--expert-profile
-    # follow a bundle bump instead of silently naming the old store path.
+    # @BUNDLE@ is substituted with the bundle path the render resolved, so
+    # exe/cwd/--expert-profile follow a bundle bump instead of silently naming
+    # the old store path.
     strataConfig:
       args:
         - "--pack"

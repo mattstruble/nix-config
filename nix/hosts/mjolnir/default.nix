@@ -119,44 +119,20 @@
       # (the nixBinary pattern, like the llama.cpp fork). The model/pack/MTP live on
       # the models PVC, not here. callPackage auto-provides cudaPackages/python3/deps.
       system.build.strata = pkgs.callPackage ./_strata.nix { };
-      # The values file pins a literal store path, and the pod mounts /nix/store
-      # (a local PV on the real store) - but system.build.strata only enters the
-      # GC graph through whatever root points at it. Verified on mjolnir: neither
-      # the current nor the previous system profile references the bundle
-      # (`nix-store -q --references /nix/var/nix/profiles/system-169-link | grep
-      # strata` is empty), so a generation is NOT a reference - the only roots
-      # were the manual one below and a transient /nix/var/nix/gcroots/auto entry
-      # from the build itself. Without a root the pod CrashLoops on a vanished
-      # bundle at its next restart.
+      # The bundle reaches the pod through the build, not through a value typed
+      # into a values file: services.k3s.aiChart.strataBundle feeds the chart
+      # render (nix/services/k3s.nix), so aiChartRendered takes the bundle as a
+      # build input and the system generation that produced it retains it - and
+      # so does the previous generation, which is what a rollback needs.
       #
-      # The root is maintained by a service rather than a tmpfiles rule so that
-      # the outgoing target can be snapshotted first: a tmpfiles rule rewrites
-      # strata-bundle in place, which makes the bundle the running pod is still
-      # executing collectable the moment the new one lands (and a rollback would
-      # have nothing to build from). One unit, no ordering race with
-      # systemd-tmpfiles-setup: read the old target, park it on -prev, then point
-      # the root at the new path. Exactly one prior bundle is kept - enough to
-      # roll back to, and it does not accumulate.
-      systemd.services."strata-bundle-roots" = {
-        wantedBy = [ "multi-user.target" ];
-        before = [ "k3s.service" ];
-        serviceConfig = {
-          type = "oneshot";
-          remainAfterExit = true;
-        };
-        # the script embeds the new path, so its unit definition changes on every
-        # bundle change - which is what makes the activation restart it.
-        script = ''
-          cur=/nix/var/nix/gcroots/manual/strata-bundle
-          prev=/nix/var/nix/gcroots/manual/strata-bundle-prev
-          new=${config.system.build.strata}
-          if [ -L "$cur" ]; then
-            old=${pkgs.coreutils}/bin/readlink "$cur"
-            if [ "$old" != "$new" ]; then ${pkgs.coreutils}/bin/ln -sfn "$old" "$prev"; fi
-          fi
-          ${pkgs.coreutils}/bin/ln -sfn "$new" "$cur"
-        '';
-      };
+      # This replaced three workarounds for the transcription that used to sit
+      # here: a literal /nix/store path in the values file, a CI job to notice
+      # when it drifted from what the config built, and a manual GC root (plus a
+      # -prev root for rollbacks) to stop the path being collected out from under
+      # a running pod. None of them were needed once the path was linked; a
+      # generation is not a reference to paths merely mentioned in its scripts,
+      # which is why the literal needed all that scaffolding and this does not.
+      services.k3s.aiChart.strataBundle = toString config.system.build.strata;
 
       environment.systemPackages = with pkgs; [
         pciutils

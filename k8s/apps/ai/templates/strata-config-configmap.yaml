@@ -14,7 +14,8 @@ source of truth and the PVC copy is just where the setup pass left it.
 
 Two things to know before changing anything here:
   - exe / cwd / --expert-profile embed the bundle's /nix/store path. They are
-    rendered from .binary, so bumping the bundle moves them automatically -
+    rendered from the bundle path (see the ai.strataBundle helper), so bumping
+    the bundle moves them automatically -
     which is the point, because by hand they silently keep pointing at the old
     bundle.
   - api_key is deliberately empty. The real key comes from the litellm-keys
@@ -28,15 +29,16 @@ Two things to know before changing anything here:
 {{- $prefix := (eq $family "qwen") | ternary "" (printf "%s-" $family) }}
 {{- $tag := printf "%s%s" $prefix (lower $m.model) }}
 {{- $cfg := deepCopy $m.strataConfig }}
+{{- $bundle := include "ai.strataBundle" (dict "root" $ "m" $m "name" $name) }}
 {{- /* @BUNDLE@ in args is the bundle path, so the config cannot keep pointing
      at a bundle that no longer exists. */}}
 {{- $args := list }}
 {{- range $a := $cfg.args }}
-{{- $args = append $args (replace "@BUNDLE@" $m.binary $a) }}
+{{- $args = append $args (replace "@BUNDLE@" $bundle $a) }}
 {{- end }}
 {{- $_ := set $cfg "args" $args }}
-{{- $_ := set $cfg "exe" (printf "%s/bin/strata" $m.binary) }}
-{{- $_ := set $cfg "cwd" $m.binary }}
+{{- $_ := set $cfg "exe" (printf "%s/bin/strata" $bundle) }}
+{{- $_ := set $cfg "cwd" $bundle }}
 {{- $_ := set $cfg "port" (int $m.port) }}
 {{- $_ := set $cfg "gpu" (int $m.gpuIndex) }}
 {{- $_ := set $cfg "api_key" "" }}

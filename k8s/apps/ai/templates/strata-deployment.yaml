@@ -4,6 +4,7 @@
      the same tag from FAMILY/MODEL. */}}
 {{- $prefix := (eq ($m.family | default "qwen") "qwen") | ternary "" (printf "%s-" $m.family) }}
 {{- $tag := printf "%s%s" $prefix (lower $m.model) }}
+{{- $bundle := include "ai.strataBundle" (dict "root" $ "m" $m "name" $name) }}
 # Strata engine (Niko1221/Strata): a Python server (serve/server.py) that drives
 # a compiled C++ engine. Unlike llama-server it is configured by a config JSON
 # on the models PVC (for family=qwen: $STRATA_DATA/config/strata-<model>.json,
@@ -103,7 +104,7 @@ spec:
             # the nix bundle's store path (the entrypoint cds to it). Set by the
             # values file's `binary` field (the pinned /nix/store path).
             - name: STRATA_BUNDLE
-              value: {{ $m.binary | quote }}
+              value: {{ $bundle | quote }}
           ports:
             - containerPort: {{ $m.port }}
           # /health is not auth-gated, and main() binds the socket only AFTER the

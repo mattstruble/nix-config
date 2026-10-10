@@ -1,4 +1,26 @@
 {{/*
+The Strata bundle's /nix/store path.
+
+Injected by the nix render through .Values.strataBundle (fed by
+services.k3s.aiChart.strataBundle in nix/hosts/mjolnir/default.nix), so the path
+the pod mounts is produced by the build rather than transcribed into a values
+file - which is what puts the bundle in the generation's closure instead of
+needing a hand-maintained pin, a drift check and a manual GC root.
+
+Per-model `binary:` still wins for a standalone `helm template` (CI manifest
+diff, `just k8s-render`) where no nix render supplied a path.
+
+Usage: {{ include "ai.strataBundle" (dict "root" $ "m" $m "name" $name) }}
+*/}}
+{{- define "ai.strataBundle" -}}
+{{- $b := .root.Values.strataBundle | default .m.binary | default "" -}}
+{{- if not $b -}}
+{{- fail (printf "strata model %q has no bundle: .Values.strataBundle is empty and the model sets no binary. The nix render injects it from services.k3s.aiChart.strataBundle; for a standalone helm render pass --set strataBundle=/nix/store/...-strata-<version>." .name) -}}
+{{- end -}}
+{{- $b -}}
+{{- end -}}
+
+{{/*
 Shared building blocks for the model pods.
 
 model-deployment.yaml (llama.cpp) and strata-deployment.yaml (Strata) render the

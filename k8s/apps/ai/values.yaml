@@ -15,6 +15,14 @@
 # command: path below. These entries are disabled, so a stale path is inert.
 models: {}  # populated by values/*.yaml (one file per model; maps merge across -f)
 
+# The Strata engine bundle the strata model pods mount. Left empty in git: the
+# nix render injects the path it built (nix/services/k3s.nix, fed by
+# services.k3s.aiChart.strataBundle), so production can never mount a bundle
+# that a values file drifted away from. Set it by hand only to render the chart
+# outside nix:
+#   --set strataBundle=$(nix eval --raw .#nixosConfigurations.mjolnir.config.services.k3s.aiChart.strataBundle)
+strataBundle: ""
+
 # LiteLLM gateway: one OpenAI-compatible endpoint, routes by the `model` field
 # to the right pod Service. hostPort exposes it on the host (the single endpoint
 # pi/opencode point to).

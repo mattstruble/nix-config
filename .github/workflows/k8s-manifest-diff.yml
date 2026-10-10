@@ -17,36 +17,30 @@ permissions:
   pull-requests: write
 
 jobs:
-  strata-bundle-pin:
-    # The strata values file pins a literal /nix/store path for the bundle and
-    # the pod mounts it read-only. When the derivation changes and the pin is
-    # not updated with it, the pod CrashLoops on a path that no longer exists -
-    # and nothing in the render catches it, because the string is still valid
-    # YAML. Assert the pin equals what the config actually builds.
+  strata-bundle-linked:
+    # The strata pod's bundle path is produced by the build (nix/services/k3s.nix
+    # injects config.system.build.strata into the chart render), which is what
+    # puts the bundle in the system generation's closure. A literal path
+    # re-appearing in a values file is inert in production but makes every
+    # standalone render disagree with it - and it is the shape that used to drift
+    # silently with no CI signal. Assert the link exists and the pin does not.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
       - uses: cachix/install-nix-action@V30
 
-      - name: Pinned bundle path must match what the config builds
+      - name: Bundle must be linked by the build, not pinned in values
         run: |
           set -euo pipefail
-          built=$(nix eval --raw .#nixosConfigurations.mjolnir.config.system.build.strata)
-          pinned=$(grep -m1 -oE '/nix/store/[a-z0-9]+-strata-[0-9][^ "[:cntrl:]]*' \
-            k8s/apps/ai/values/flash-next-strata-iq4xs.yaml)
-          echo "built : $built"
-          echo "pinned: $pinned"
-          if [ -z "$pinned" ]; then
-            echo "::error::no /nix/store/*-strata-* pin found in the values file"
-            exit 1
-          fi
-          if [ "$built" != "$pinned" ]; then
-            {
-              echo "::error::the strata values pin does not match the bundle this config builds"
-              echo "  fix: nix eval --raw .#nixosConfigurations.mjolnir.config.system.build.strata"
-              echo "  and set 'binary:' in k8s/apps/ai/values/flash-next-strata-iq4xs.yaml to it"
-            } >&2
+          built=$(nix eval --raw .#nixosConfigurations.mjolnir.config.services.k3s.aiChart.strataBundle)
+          echo "linked bundle: $built"
+          case "$built" in
+            /nix/store/*-strata-*) ;;
+            *) echo "::error::services.k3s.aiChart.strataBundle is empty or not a strata bundle - the pod would mount nothing"; exit 1;;
+          esac
+          if grep -rn '^[[:space:]]*binary:[[:space:]]*/nix/store/.*-strata-' k8s/apps/ai/values/; then
+            echo "::error::a strata values file pins a bundle path; the render injects it (see the ai.strataBundle helper)"
             exit 1
           fi
 
@@ -70,6 +64,10 @@ jobs:
             CHART=k8s/apps/ai; [ -d "$CHART" ] || CHART=k8s/llama-fleet
             F=(-f "$CHART/values.yaml")
             for f in "$CHART"/values/*.yaml; do F+=(-f "$f"); done
+            # the nix render injects the bundle it built; without it the preview
+            # shows an empty mount path and disagrees with production
+            BUNDLE=$(nix eval --raw .#nixosConfigurations.mjolnir.config.services.k3s.aiChart.strataBundle 2>/dev/null || true)
+            [ -n "$BUNDLE" ] && F+=(--set "strataBundle=$BUNDLE")
             helm template "$(basename "$CHART")" "$CHART" "${F[@]}"
           }
           render > /tmp/pr.yaml
