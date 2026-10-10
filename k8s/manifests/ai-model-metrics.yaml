@@ -1,0 +1,143 @@
+# Engine-neutral aliases for the local model fleet: ai:model:*
+#
+# WHY. The fleet dashboard read engine-native names directly, so 8 of its 10
+# model panels were llamacpp:*-only and a Strata pod - which serves vllm:* and
+# strata:* - vanished from every one of them while still serving traffic. Writing
+# a per-panel union would have repeated the same join 11 times and re-broken it
+# with each new engine. These rules are the one place that knows what each engine
+# calls things; the dashboards read ai:model:* and nothing else.
+#
+# The label contract is fixed here:
+#   model   the DEPLOYMENT NAME (swift-qwen3-8-27b, flash-next-strata-iq4xs).
+#           Native series carry it as `job`; the log-exporter sidecar carries it
+#           as `model`. Every rule normalises to `model`, so the dashboard's
+#           $model variable (sourced from the sidecar gauge) selects them all.
+#   pod     only on series that are per-pod by nature; do not rely on it in panels.
+#
+# LIVENESS CONTRACT - the class each rule belongs to, and the panel title that
+# may claim it. Two mistakes have been made here by reading one class as another:
+#   LIVE      non-zero only while the phase is running, refreshed every scrape.
+#             May be titled "live" / "... tokens/s".
+#   COMPLETION  an engine-native gauge/counter that only ticks when a turn
+#             finishes. Never title it live. (llamacpp:* and strata:* are all
+#             this class.)
+#   COUNTER   monotonic; panels apply rate()/increase() and the title must say
+#             over what window.
+#   CONFIG    a setting, not a measurement. Never title it as observed.
+#
+# WHAT IS NOT ALIASED, and why:
+#   llamacpp_live_decode_tps / llamacpp_live_prefill_tps are the LIVE rates and
+#   need no alias - they come from the log-exporter sidecar, which every engine
+#   runs, so they are already engine-neutral. The name is a misnomer (it predates
+#   the fleet having two engines); renaming it would cost a GPU-pod rollout and a
+#   metric migration for no functional gain, so it stays and this comment is its
+#   correction. The dashboard's two live panels read these directly.
+#   DCGM (gpu=*) and LiteLLM (requested_model=*) series have their own variables
+#   and are engine-neutral already.
+#
+# COVERAGE - honest about what Strata cannot answer:
+#   ai:model:max_sequence_tokens and ai:model:busy_slots_per_decode are llama.cpp
+#   only. Strata exposes strata:engine_max_context, which is the CONFIGURED
+#   context, not an observed maximum - aliasing it would be a different metric
+#   wearing the same name. Those two panels are empty for strata models, which is
+#   the truth; the panel descriptions say so.
+#
+# Applied at activation (see nix/services/k3s.nix, the monitoring label_all line).
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: ai-model-metrics
+  namespace: monitoring
+  labels:
+    release: kps
+spec:
+  groups:
+    - name: ai-model-counters
+      # COUNTER class. Recorded as counters, not as rates: the panels ask for
+      # increase(...[$__range]), and a recorded rate could not honour a range the
+      # user picks in the UI.
+      interval: 30s
+      rules:
+        # Tokens generated. llama.cpp counts predicted tokens; Strata reports the
+        # vLLM-compatible generation counter.
+        - record: ai:model:tokens_generated_total
+          expr: |
+            sum by (model) (
+                label_replace(llamacpp:tokens_predicted_total, "model", "$1", "job", "(.*)")
+              or
+                label_replace(vllm:generation_tokens_total, "model", "$1", "job", "(.*)")
+            )
+        # Prompt tokens actually processed. Both engines count these, and both
+        # count CACHED tokens inside the same total - the cache-hit rule below is
+        # the separate figure.
+        - record: ai:model:prompt_tokens_total
+          expr: |
+            sum by (model) (
+                label_replace(llamacpp:prompt_tokens_total, "model", "$1", "job", "(.*)")
+              or
+                label_replace(vllm:prompt_tokens_total, "model", "$1", "job", "(.*)")
+            )
+        # Seconds spent prefilling. Strata's is strata:totals_prompt_seconds_total,
+        # the only strata:* name in here.
+        - record: ai:model:prompt_seconds_total
+          expr: |
+            sum by (model) (
+                label_replace(llamacpp:prompt_seconds_total, "model", "$1", "job", "(.*)")
+              or
+                label_replace(strata:totals_prompt_seconds_total, "model", "$1", "job", "(.*)")
+            )
+        # Prompt tokens served from the prefix cache. llama.cpp counts tokens;
+        # vllm:prefix_cache_hits_total counts the same thing (queries/hits are
+        # token-denominated in both engines - verified against both /metrics).
+        - record: ai:model:prompt_tokens_cached_total
+          expr: |
+            sum by (model) (
+                label_replace(llamacpp:prompt_tokens_cached_total, "model", "$1", "job", "(.*)")
+              or
+                label_replace(vllm:prefix_cache_hits_total, "model", "$1", "job", "(.*)")
+            )
+        # Speculative decoding, as a pair so the panel can divide them.
+        - record: ai:model:spec_accepted_tokens_total
+          expr: |
+            sum by (model) (
+                label_replace(llamacpp:spec_decode_num_accepted_tokens_total, "model", "$1", "job", "(.*)")
+              or
+                label_replace(vllm:spec_decode_num_accepted_tokens_total, "model", "$1", "job", "(.*)")
+            )
+        - record: ai:model:spec_draft_tokens_total
+          expr: |
+            sum by (model) (
+                label_replace(llamacpp:spec_decode_num_draft_tokens_total, "model", "$1", "job", "(.*)")
+              or
+                label_replace(vllm:spec_decode_num_draft_tokens_total, "model", "$1", "job", "(.*)")
+            )
+
+    - name: ai-model-gauges
+      # COMPLETION / instantaneous gauges. These tick when a turn finishes or a
+      # slot changes, not continuously - a panel over them is allowed to say
+      # "current", never "live".
+      interval: 30s
+      rules:
+        - record: ai:model:requests_waiting
+          expr: |
+            sum by (model) (
+                label_replace(llamacpp:requests_deferred, "model", "$1", "job", "(.*)")
+              or
+                label_replace(vllm:num_requests_waiting, "model", "$1", "job", "(.*)")
+            )
+        - record: ai:model:requests_running
+          expr: |
+            sum by (model) (
+                label_replace(llamacpp:requests_processing, "model", "$1", "job", "(.*)")
+              or
+                label_replace(vllm:num_requests_running, "model", "$1", "job", "(.*)")
+            )
+        # llama.cpp only - see COVERAGE above. Recorded with an engine label so a
+        # panel can say which engine it is actually showing rather than letting a
+        # blank tile imply the model is idle.
+        - record: ai:model:max_sequence_tokens
+          expr: |
+            label_replace(llamacpp:n_tokens_max, "model", "$1", "job", "(.*)")
+        - record: ai:model:busy_slots_per_decode
+          expr: |
+            label_replace(llamacpp:n_busy_slots_per_decode, "model", "$1", "job", "(.*)")
