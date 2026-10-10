@@ -65,8 +65,16 @@ spec:
           command:
             - sh
             - -c
-            - 'exec "$STRATA_BUNDLE/docker-entrypoint.sh" >> /var/log/llama.log 2>&1'
+            - 'exec "$STRATA_BUNDLE/bin/strata-pod-entrypoint" >> /var/log/llama.log 2>&1'
           env:
+            # Upstream's entrypoint execs setup.py, which then stays PID 1 with no
+            # SIGTERM handler: every rollout SIGKILLs the engine mid-generation
+            # after burning the whole terminationGracePeriodSeconds. STRATA_EXECV=1
+            # makes setup.py execv into serve/server.py, so PID 1 is the server and
+            # SIGTERM drains (in-flight generations complete). Set here rather than
+            # in the bundle so it sits next to the grace period it depends on.
+            - name: STRATA_EXECV
+              value: "1"
             # what the entrypoint reads (FAMILY/MODEL select the config JSON,
             # GPU/PORT/API_KEY are forwarded as CLI flags). Engine settings
             # (context length, KV cache dtype, spec/resident budget, host bind)
@@ -141,6 +149,13 @@ spec:
               readOnly: true
             - name: tmp
               mountPath: /tmp
+            # upstream's entrypoint needs a writable /opt/strata (it cds there and
+            # setup.py writes the config it starts from); the bundle itself is
+            # read-only, so the wrapper symlinks the bundle in here. Writable by
+            # uid 1000 without fsGroup - same emptyDir behaviour the log and tmp
+            # mounts already rely on.
+            - name: strata-work
+              mountPath: /opt/strata
             - name: log
               mountPath: /var/log
             - name: exporter-script
@@ -165,6 +180,9 @@ spec:
         - name: strata-config
           configMap:
             name: {{ $name }}-strata-config
+        - name: strata-work
+          emptyDir:
+            sizeLimit: 64Mi
         - name: shm
           emptyDir:
             medium: Memory

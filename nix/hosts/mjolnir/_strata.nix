@@ -103,56 +103,79 @@ cudaPackages.backendStdenv.mkDerivation (finalAttrs: {
     cp $src/data/expert-profile.bin $out/data/expert-profile.bin
     # the nix bundle is read-only, so the entrypoint (which links the config into
     # the cwd) can't run in place. This wrapper copies the config + server source
-    # to a writable dir (/tmp/strata) and runs setup.py from there (the engine +
-    # python stay in the read-only bundle; the config's exe/cwd/expert-profile
-    # already point at the bundle's paths). The ''${} escapes keep the shell
-    # variables literal (not interpolated by nix).
-    cat > $out/docker-entrypoint.sh <<'ENTRYPOINT'
+    # The upstream container entrypoint, vendored UNMODIFIED. Byte-identical is
+    # the point: it is what knows CONTEXT / VISION / KV / GPUS / LAYER_SPLIT /
+    # LOW_RAM / GGUF_DIR / RESIDENT_BUDGET_GIB / KV_STREAMING / REINSTALL /
+    # CONFIG. A fork of it silently freezes that surface at whatever knobs the
+    # fork happens to read - the first bundle here read four of fifteen. Bump the
+    # pin, get the new knobs, with no merge conflict to notice.
+    cp $src/docker-entrypoint.sh $out/docker-entrypoint.sh
+    chmod +x $out/docker-entrypoint.sh
+
+    # The one thing upstream cannot assume: its image has a WRITABLE /opt/strata
+    # and this bundle is read-only. Stage what it needs writable, then hand over -
+    # still without editing it.
+    #
+    #   /opt/strata   upstream does `cd /opt/strata` and runs `.venv/bin/python
+    #                 setup.py`. Symlinked to the bundle, not copied: serve/ and
+    #                 tools/ are only ever read.
+    #   $CONFIGDIR    a REAL file, because setup.py rewrites the config it starts
+    #                 from and both the ConfigMap and PVC copies are read-only.
+    #                 Upstream's CONFIG branch symlinks it into /opt/strata, so a
+    #                 rewrite lands here instead of failing on the read-only
+    #                 mount. Fixed path, not a per-start timestamp: a timestamped
+    #                 dir can never be reclaimed by the start that follows it.
+    #
+    # STRATA_EXECV=1 is set by the POD, not here. Upstream execs setup.py, which
+    # leaves setup.py as PID 1 with no SIGTERM handler, so every rollout SIGKILLs
+    # the engine mid-generation after burning the full termination grace. Opting
+    # in from the pod spec keeps that dependency visible where the grace period
+    # is set.
+    cat > $out/bin/strata-pod-entrypoint <<'WRAPPER'
 #!/bin/sh
 set -e
-BUNDLE="''${STRATA_BUNDLE:-/opt/strata}"
-# Fixed path, NOT /tmp/strata-$(date +%s): the rm -rf below can only remove the
-# directory this start is about to create, so every container restart inside the
-# same pod left a whole copy of serve/ + tools/ + setup.py behind in the /tmp
-# emptyDir (which survives a container restart, though not the pod).
-WORK=/tmp/strata-work
-export HOME="$WORK"
-STRATA_DATA="''${STRATA_DATA:-/data}"
+BUNDLE="''${STRATA_BUNDLE:?STRATA_BUNDLE must point at the strata bundle}"
+WORK="''${STRATA_WORK:-/opt/strata}"   # overridable so the staging logic is testable off-host
+# /dev/shm, not /tmp: the API key is written into the config copy below, and
+    # /dev/shm is the tmpfs the pod already mounts.
+    CONFIGDIR="''${STRATA_CONFIG_DIR:-/dev/shm/strata}"
+mkdir -p "$WORK"
+for f in .venv serve tools setup.py data; do
+  [ -e "$BUNDLE/$f" ] && ln -sfn "$BUNDLE/$f" "$WORK/$f"
+done
+# the same tag upstream derives from FAMILY/MODEL (family qwen has no prefix)
 FAMILY="''${FAMILY:-qwen}"
 MODEL="''${MODEL:-IQ2_XS}"
-PORT="''${PORT:-8080}"
-GPU="''${GPU:-}"
 case "$FAMILY" in qwen) prefix="" ;; *) prefix="''${FAMILY}-" ;; esac
 tag="''${prefix}$(printf '%s' "$MODEL" | tr 'A-Z' 'a-z')"
-cfg="$STRATA_DATA/config/strata-$tag.json"
+cfg="''${STRATA_DATA:-/data}/config/strata-$tag.json"
 [ -f "$cfg" ] || { echo "config $cfg not found" >&2; exit 1; }
-rm -rf "$WORK"
-mkdir -p "$WORK"
-cp "$cfg" "$WORK/strata-$tag.json"
-# tools/: serve/server.py sys.path-inserts <ROOT>/tools and imports
-# strata_tokenizer from there (pure Python: stdlib + regex, both in the
-# bundle's python env) - without it the server dies on
-# ModuleNotFoundError: strata_tokenizer
-cp -r "$BUNDLE/serve" "$WORK/serve"
-cp -r "$BUNDLE/tools" "$WORK/tools"
-cp "$BUNDLE/setup.py" "$WORK/setup.py"
-cd "$WORK"
-# STRATA_EXECV=1 (like the upstream Docker image): setup.py os.execv's into
-# serve/server.py, making the SERVER PID 1 - without it PID 1 is setup.py (no
-# SIGTERM handler), so every rollout/drain SIGKILLs the engine mid-generation
-# after burning the full termination grace period.
-export STRATA_EXECV=1
-set -- --port "$PORT"
-if [ -n "$GPU" ]; then set -- "$@" --gpu "$GPU"; fi
-# the API key comes from the pod's litellm-keys Secret (chart env API_KEY),
-# NOT the config json (whose api_key is a prototype-era placeholder): setup.py
-# line ~5416 lets a CLI --api-key override the config, and setup.py reads
-# STRATA_API_KEY as the --api-key default - but neither is how the chart wires
-# it, so forward the API_KEY env explicitly (the upstream image does the same).
-if [ -n "$API_KEY" ]; then set -- "$@" --api-key "$API_KEY"; fi
-exec "$BUNDLE/.venv/bin/python" setup.py "$@"
-ENTRYPOINT
-    chmod +x $out/docker-entrypoint.sh
+rm -rf "$CONFIGDIR"
+mkdir -p "$CONFIGDIR"
+cp "$cfg" "$CONFIGDIR/strata-$tag.json"
+export CONFIG="$CONFIGDIR/strata-$tag.json"
+
+# The key goes INTO the config, not onto the command line. Upstream's entrypoint
+# passes --api-key only on the setup pass; on the serve pass it passes just
+# --port/--gpus/--gpu/--layer-split, and setup.py keeps cfg["api_key"] unless the
+# CLI supplies one (setup.py:5416) - so an empty config api_key means the server
+# starts with no auth at all (setup.py:3989, and it says so at :5472). The
+# rendered config is deliberately empty because the key lives in the
+# litellm-keys Secret, so the Secret has to reach the copy that actually starts.
+if [ -n "''${API_KEY:-}" ]; then
+  "$BUNDLE/.venv/bin/python" - "$CONFIG" "$API_KEY" <<'KEYPY'
+import json, sys
+path, key = sys.argv[1], sys.argv[2]
+with open(path) as f:
+    cfg = json.load(f)
+cfg["api_key"] = key
+with open(path, "w") as f:
+    json.dump(cfg, f, indent=1)
+KEYPY
+fi
+exec "$BUNDLE/docker-entrypoint.sh" "$@"
+WRAPPER
+    chmod +x $out/bin/strata-pod-entrypoint
     runHook postInstall
   '';
 
