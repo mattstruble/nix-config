@@ -34,8 +34,9 @@
       #
       # Empty on hosts that build no strata bundle; the chart then refuses to
       # render a strata model rather than mounting an empty path.
-      strataBundleValues = pkgs.writeText "strata-bundle-values.yaml"
-        (lib.generators.toYAML [ ] { strataBundle = cfg.aiChart.strataBundle; });
+      strataBundleValues = pkgs.writeText "strata-bundle-values.yaml" ''
+        strataBundle: ${cfg.aiChart.strataBundle}
+      '';
       # Render the ai chart (helm from nixpkgs) into one manifest file; the
       # post-activation hook below applies it, so `just deploy mjolnir` ships
       # host config + cluster manifests in one generation. ponytail: one chart
