@@ -140,9 +140,16 @@ WORK="''${STRATA_WORK:-/opt/strata}"   # overridable so the staging logic is tes
     # /dev/shm is the tmpfs the pod already mounts.
     CONFIGDIR="''${STRATA_CONFIG_DIR:-/dev/shm/strata}"
 mkdir -p "$WORK"
-for f in .venv serve tools setup.py data; do
+for f in .venv serve tools data; do
   [ -e "$BUNDLE/$f" ] && ln -sfn "$BUNDLE/$f" "$WORK/$f"
 done
+# setup.py must be a REAL file, not a symlink: it computes ROOT via
+# Path(__file__).resolve().parent (setup.py:61), and resolve() follows a symlink
+# back into the read-only bundle - where there is no strata-*.json - so
+# installed_configs() finds nothing and setup.py drops into the interactive setup
+# pass ("Which model?"), which dies on EOF. A copy keeps ROOT at $WORK, where the
+# config link the entrypoint creates is found.
+cp "$BUNDLE/setup.py" "$WORK/setup.py"
 # the same tag upstream derives from FAMILY/MODEL (family qwen has no prefix)
 FAMILY="''${FAMILY:-qwen}"
 MODEL="''${MODEL:-IQ2_XS}"
