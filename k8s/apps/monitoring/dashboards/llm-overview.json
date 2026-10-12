@@ -1214,7 +1214,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum(llamacpp:requests_processing)",
+          "expr": "sum(ai:model:requests_running)",
           "instant": true,
           "legendFormat": "",
           "refId": "A"

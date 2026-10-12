@@ -21,6 +21,23 @@ data:
       {{- end }}
     # Prometheus metrics at /metrics (pre-installed in the image).
     litellm_settings:
+      # Cross-model fallback. A model route whose pod is down (rollout, GPU
+      # window, crash) otherwise errors every client of that route; with a
+      # fallback the router cools the dead deployment and retries elsewhere.
+      # Mechanism only - no model sets fallbackTo today, so this renders [] and
+      # changes nothing. Enabling it is a policy call, not a config detail: the
+      # fallback answers from a DIFFERENT model, so a strata outage would
+      # silently serve swift-qwen3-8-27b (27B Q4_K_M, -c 131072) to clients that
+      # asked for qwen3.8-flash-next (262144 ctx). Prompts over 128k still fail,
+      # just later. Decide per window, not permanently.
+      # Needs a gateway restart to take effect - routes are not hot-reloaded.
+      {{- $fallbacks := list }}
+      {{- range $name, $m := .Values.models }}
+      {{- if and $m.enable $m.fallbackTo }}
+      {{- $fallbacks = append $fallbacks (dict $m.modelName $m.fallbackTo) }}
+      {{- end }}
+      {{- end }}
+      fallbacks: {{ toYaml $fallbacks | nindent 8 }}
       callbacks:
         - prometheus
       # The litellm ServiceMonitor presents the dedicated metrics key

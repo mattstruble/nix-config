@@ -1,6 +1,9 @@
 models:
   gemma-4-26b-a4b:
-    enable: true
+    # disabled 2026-10-07: GPU 1 is taken by flash-next-strata-iq4xs (Strata
+    # engine). Re-enable by flipping this back to true (and giving Strata a
+    # different GPU) if gemma is needed again.
+    enable: false
     image: ghcr.io/ggml-org/llama.cpp:server-cuda12-b11151
     gpu: "1"
     port: 8555

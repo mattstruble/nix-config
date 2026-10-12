@@ -29,9 +29,13 @@ build-rpi-images:
 
 build: build-rpi-images
 
-# render the ai chart with all per-model values files (one -f each; maps merge)
+# render the ai chart with all per-model values files (one -f each; maps merge).
+# The strata bundle is injected the same way the nix render does it, so the
+# preview matches production instead of rendering an empty mount path.
 k8s-render:
-	F=(-f k8s/apps/ai/values.yaml); for f in k8s/apps/ai/values/*.yaml; do F+=(-f "$f"); done; helm template ai k8s/apps/ai "${F[@]}"
+	F=(-f k8s/apps/ai/values.yaml); for f in k8s/apps/ai/values/*.yaml; do F+=(-f "$f"); done; \
+	B=$(nix eval --raw .#nixosConfigurations.mjolnir.config.services.k3s.aiChart.strataBundle); \
+	helm template ai k8s/apps/ai "${F[@]}" --set "strataBundle=$B"
 
 # Mint a named LiteLLM key (alias=<name> -> per-source prometheus label), store
 # it in sops, print it. Requires the gateway deployed (just deploy mjolnir).

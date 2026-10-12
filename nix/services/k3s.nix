@@ -16,6 +16,27 @@
       # is unusable here (it needs nvidia-ctk inside the container, which the nix
       # store doesn't provide). Lives in the toolkit's `tools` output.
       nvidiaRuntime = "${pkgs.nvidia-container-toolkit.tools}/bin/nvidia-container-runtime.cdi";
+      # Values overlay carrying the store path of the strata bundle THIS config
+      # builds. Injected into the chart render above, so the pod's bundle path is
+      # produced by the build instead of transcribed into a values file.
+      #
+      # Why that matters more than it looks. While the path was a literal in
+      # k8s/apps/ai/values/, nothing in the Nix graph referenced the bundle: a
+      # system generation is NOT a reference to paths merely mentioned in its
+      # scripts (verified - nix-store -q --references on the last two system
+      # profiles showed zero strata hits). Three separate mechanisms existed to
+      # work around that one omission: a hand-maintained pin that drifted
+      # silently, a CI job to notice the drift, and a manual GC root to stop the
+      # path being collected out from under a running pod. With the path flowing
+      # through the render, aiChartRendered takes the bundle as a build input, so
+      # the generation that produced it retains it and a rollback still has the
+      # bundle its pod was built against.
+      #
+      # Empty on hosts that build no strata bundle; the chart then refuses to
+      # render a strata model rather than mounting an empty path.
+      strataBundleValues = pkgs.writeText "strata-bundle-values.yaml" ''
+        strataBundle: ${cfg.aiChart.strataBundle}
+      '';
       # Render the ai chart (helm from nixpkgs) into one manifest file; the
       # post-activation hook below applies it, so `just deploy mjolnir` ships
       # host config + cluster manifests in one generation. ponytail: one chart
@@ -34,6 +55,10 @@
         # one -f per values file (a bare glob expands to positional chart args)
         F=(-f $src/apps/ai/values.yaml)
         for f in $src/apps/ai/values/*.yaml; do F+=(-f "$f"); done
+        # The strata bundle is BUILT here, not pinned in a values file: this
+        # -f is what links config.system.build.strata into the pod. See
+        # strataBundleValues below for why that link is the whole design.
+        F+=(-f ${strataBundleValues})
         helm template ai $src/apps/ai "''${F[@]}" > $out/rendered.yaml
       '';
 
@@ -112,6 +137,22 @@
       ) monitoringCharts;
     in
     {
+      options.services.k3s.aiChart = {
+        strataBundle = lib.mkOption {
+          type = lib.types.str;
+          default = "";
+          example = "/nix/store/xxxx-strata-0.1.40.3";
+          description = ''
+            Store path of the Strata engine bundle to render into the ai chart's
+            strata model pods. Set it to config.system.build.strata on a host
+            that builds one; the render then references the bundle, which is what
+            keeps it out of the garbage collector's reach. Left empty, any
+            enabled engine: strata model fails to render rather than mounting an
+            empty path.
+          '';
+        };
+      };
+
       config = lib.mkIf cfg.enable {
         # Host dir for the Postgres static PV (LiteLLM key store). Pre-owned by
         # uid 999 (the postgres image user) so the non-root pod can write it —
@@ -478,7 +519,7 @@
             label_all monitoring ".kind == \"ServiceAccount\"" ${k8sDir}/manifests/kubelet-monitoring.yaml > "$T/monitoring-kubelet-sa.json"
             label_all cluster ".kind == \"ClusterRoleBinding\" or .kind == \"ClusterRole\"" ${k8sDir}/manifests/kubelet-monitoring.yaml > "$T/cluster-kubelet-crb.json"
             label_all default "true" ${aiChartRendered}/rendered.yaml ${k8sDir}/manifests/ai-networkpolicies.yaml > "$T/default-ai.json"
-            label_all monitoring "true" ${monitoringChartRendered.loki}/rendered.yaml ${monitoringChartRendered.alloy}/rendered.yaml ${k8sDir}/manifests/cloud-model-rates.yaml > "$T/monitoring-charts.json"
+            label_all monitoring "true" ${monitoringChartRendered.loki}/rendered.yaml ${monitoringChartRendered.alloy}/rendered.yaml ${k8sDir}/manifests/cloud-model-rates.yaml ${k8sDir}/manifests/ai-model-metrics.yaml > "$T/monitoring-charts.json"
             # gpu/ pass: dcgm-exporter + its netpol + its ServiceMonitor
             # (standalone manifest, not a kps additionalServiceMonitor — the
             # chart renders those as one v1 List that cannot be split by

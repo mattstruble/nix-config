@@ -1,0 +1,90 @@
+models:
+  # Qwen3.8-Flash-Next on the Strata engine (Niko1221/Strata) — replaces the
+  # mjungnickel18 llama.cpp fork (qwen3-8-flash-next / -256k, both disabled).
+  # IQ4_XS quant (largest that fits the fleet: 24GB RAM headroom, stable prefill,
+  # enables a future 2-GPU variant). 256k context, int8 KV. Benchmark 2026-10-07:
+  # prefill ~1030 t/s, decode 32-57 t/s, needle 18/18, coding 14/15 (see the
+  # qwen-flash-next-strata plan map).
+  #
+  # engine: strata -> rendered by templates/strata-deployment.yaml (not the
+  # llama-server model-deployment.yaml). The engine + server + python env are a
+  # nix bundle (nixBinary pattern, like the llama.cpp fork): `binary` is the
+  # pinned /nix/store path, mounted via the nix-store PVC. The base image only
+  # provides the shell (the bundle is self-contained). The model + pack + MTP +
+  # config are pre-populated on the models PVC at /data so the entrypoint skips
+  # the ~90GB download.
+  #
+  # modelName matches the old fork's gateway name, so existing clients that send
+  # model: "qwen3.8-flash-next" route here with no client change.
+  flash-next-strata-iq4xs:
+    enable: true
+    engine: strata
+    nixBinary: true
+    # No `binary:` here on purpose. The bundle path is injected by the nix render
+    # (services.k3s.aiChart.strataBundle -> .Values.strataBundle), so the pod
+    # mounts whatever this system's build produced. A literal path here would
+    # only be a per-model override for standalone `helm template` runs.
+    # digest-pinned, not alpine:3.20: this is only the shell the bundle's
+    # entrypoint runs in, but a mutable tag means the pod's base can change under
+    # a redeploy (or fail to start after a node rebuild if the tag is ever
+    # removed upstream). Digest is what containerd resolves the tag to on mjolnir
+    # today (crictl inspecti docker.io/library/alpine:3.20), so pinning it is a
+    # no-op pull-wise. Regenerate with that command when bumping.
+    image: alpine@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc  # alpine:3.20
+    gpu: "1"
+    # container-local engine index: the CDI pin exposes only this card, so the
+    # single visible card is index 0 inside the container (host index is 1).
+    gpuIndex: "0"
+    port: 8558
+    modelName: "qwen3.8-flash-next"
+    family: qwen
+    model: UD-IQ4_XS
+    # Engine settings live in strataConfig below - rendered into a ConfigMap and
+    # mounted over /data/config/strata-ud-iq4_xs.json, so this file is the source
+    # of truth (see templates/strata-config-configmap.yaml for why).
+    #
+    # This is the recorded output of one `setup.py --setup` pass on mjolnir
+    # (262144 ctx, int8 KV, --spec 4). LOW_RAM=on is not a flag in here: setup.py
+    # resolves it at setup time and records the result as --resident-budget-gib
+    # (55 GiB of experts resident in RAM, the rest paged from the pack).
+    #
+    # @BUNDLE@ is substituted with the bundle path the render resolved, so
+    # exe/cwd/--expert-profile follow a bundle bump instead of silently naming
+    # the old store path.
+    strataConfig:
+      args:
+        - "--pack"
+        - "/data/packs/unsloth-ud-iq4_xs"
+        - "--native"
+        - "/data/models/unsloth-UD-IQ4_XS/Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf"
+        - "--expert-profile"
+        - "@BUNDLE@/data/expert-profile.bin"
+        - "--expert-cache"
+        - "auto"
+        - "--prefill"
+        - "auto"
+        - "--spec"
+        - "4"
+        - "--spec-min-p"
+        - "0.5"
+        - "--mtp"
+        - "/data/mtp/rt"
+        - "--max-context"
+        - "262144"
+        - "--kv"
+        - "int8"
+        - "--kv-resident"
+        - "32768"
+        - "--resident-budget-gib"
+        - "55"
+      # nosec-style pragma: "tokenizer:" matches the `token` keyword in the
+      # detect-secrets hook; it is a path, not a credential.
+      tokenizer: "/data/packs/unsloth-ud-iq4_xs/tokenizer" # pragma: allowlist secret
+      model_name: "qwen3.8-flash-next-unsloth-ud-iq4_xs"
+      log: "/var/log/llama.log"
+      lib_dirs: ["/usr/local/cuda/lib64"]
+      gpus_asked: true
+      host: "0.0.0.0"
+      open_browser: false
+    memoryRequest: 8Gi
+    memoryLimit: 80Gi

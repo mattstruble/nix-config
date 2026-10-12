@@ -114,6 +114,26 @@
       hardware.nvidia.cudaCapabilities = [ "7.5" ];
       hardware.cpu.amd.updateMicrocode = true;
 
+      # Strata engine bundle (engine + server + python env) for the Qwen3.8-Flash-Next
+      # pod. Built natively (sm_75) and mounted into the pod via the nix-store PVC
+      # (the nixBinary pattern, like the llama.cpp fork). The model/pack/MTP live on
+      # the models PVC, not here. callPackage auto-provides cudaPackages/python3/deps.
+      system.build.strata = pkgs.callPackage ./_strata.nix { };
+      # The bundle reaches the pod through the build, not through a value typed
+      # into a values file: services.k3s.aiChart.strataBundle feeds the chart
+      # render (nix/services/k3s.nix), so aiChartRendered takes the bundle as a
+      # build input and the system generation that produced it retains it - and
+      # so does the previous generation, which is what a rollback needs.
+      #
+      # This replaced three workarounds for the transcription that used to sit
+      # here: a literal /nix/store path in the values file, a CI job to notice
+      # when it drifted from what the config built, and a manual GC root (plus a
+      # -prev root for rollbacks) to stop the path being collected out from under
+      # a running pod. None of them were needed once the path was linked; a
+      # generation is not a reference to paths merely mentioned in its scripts,
+      # which is why the literal needed all that scaffolding and this does not.
+      services.k3s.aiChart.strataBundle = toString config.system.build.strata;
+
       environment.systemPackages = with pkgs; [
         pciutils
         nvtopPackages.nvidia

@@ -258,7 +258,7 @@
               },
               "editorMode": "code",
               "exemplar": true,
-              "expr": "(sum by (job) (rate(llamacpp:prompt_seconds_total{job=~\"$model\"}[5m])) / sum by (job) (rate(llamacpp:prompt_tokens_total{job=~\"$model\"}[5m]))) > 0",
+              "expr": "(sum by (model) (rate(ai:model:prompt_seconds_total{model=~\"$model\"}[5m])) / sum by (model) (rate(ai:model:prompt_tokens_total{model=~\"$model\"}[5m]))) > 0",
               "legendFormat": "{{job}}",
               "range": true,
               "refId": "A"
@@ -338,7 +338,7 @@
               },
               "editorMode": "code",
               "exemplar": true,
-              "expr": "sum by (job) (increase(llamacpp:tokens_predicted_total{job=~\"$model\"}[$__range]))",
+              "expr": "sum by (model) (increase(ai:model:tokens_generated_total{model=~\"$model\"}[$__range]))",
               "legendFormat": "{{job}}",
               "range": true,
               "refId": "A"
@@ -398,7 +398,7 @@
                 "uid": "prometheus"
               },
               "editorMode": "code",
-              "expr": "max by (job) (llamacpp:requests_deferred{job=~\"$model\"})",
+              "expr": "max by (model) (ai:model:requests_waiting{model=~\"$model\"})",
               "legendFormat": "{{job}}",
               "refId": "A",
               "instant": true
@@ -458,7 +458,7 @@
                 "uid": "prometheus"
               },
               "editorMode": "code",
-              "expr": "max by (job) (llamacpp:requests_processing{job=~\"$model\"})",
+              "expr": "max by (model) (ai:model:requests_running{model=~\"$model\"})",
               "legendFormat": "{{job}}",
               "refId": "A",
               "instant": true
@@ -518,7 +518,7 @@
                 "uid": "prometheus"
               },
               "editorMode": "code",
-              "expr": "sum by (job) (rate(llamacpp:spec_decode_num_accepted_tokens_total{job=~\"$model\"}[5m])) / sum by (job) (rate(llamacpp:spec_decode_num_draft_tokens_total{job=~\"$model\"}[5m]))",
+              "expr": "sum by (model) (rate(ai:model:spec_accepted_tokens_total{model=~\"$model\"}[5m])) / sum by (model) (rate(ai:model:spec_draft_tokens_total{model=~\"$model\"}[5m]))",
               "legendFormat": "{{job}}",
               "refId": "A",
               "instant": true
@@ -578,7 +578,7 @@
                 "uid": "prometheus"
               },
               "editorMode": "code",
-              "expr": "sum by (job) (increase(llamacpp:prompt_tokens_cached_total{job=~\"$model\"}[$__range]))",
+              "expr": "sum by (model) (increase(ai:model:prompt_tokens_cached_total{model=~\"$model\"}[$__range]))",
               "legendFormat": "{{job}}",
               "refId": "A",
               "instant": true
@@ -638,12 +638,13 @@
                 "uid": "prometheus"
               },
               "editorMode": "code",
-              "expr": "max by (job) (llamacpp:n_tokens_max{job=~\"$model\"})",
+              "expr": "max by (model) (ai:model:max_sequence_tokens{model=~\"$model\"})",
               "legendFormat": "{{job}}",
               "refId": "A",
               "instant": true
             }
-          ]
+          ],
+          "description": "llama.cpp only - Strata exposes strata:engine_max_context, which is the configured context rather than an observed maximum, so there is nothing honest to alias here. An empty tile means the engine does not report this, not that the model is idle."
         },
         {
           "type": "stat",
@@ -698,12 +699,13 @@
                 "uid": "prometheus"
               },
               "editorMode": "code",
-              "expr": "max by (job) (llamacpp:n_busy_slots_per_decode{job=~\"$model\"})",
+              "expr": "max by (model) (ai:model:busy_slots_per_decode{model=~\"$model\"})",
               "legendFormat": "{{job}}",
               "refId": "A",
               "instant": true
             }
-          ]
+          ],
+          "description": "llama.cpp only - Strata exposes strata:engine_max_context, which is the configured context rather than an observed maximum, so there is nothing honest to alias here. An empty tile means the engine does not report this, not that the model is idle."
         }
       ]
     },
@@ -1620,14 +1622,14 @@
     "list": [
       {
         "name": "model",
-        "label": "Model (job)",
+        "label": "Model",
         "type": "query",
         "datasource": {
           "type": "prometheus",
           "uid": "prometheus"
         },
         "query": {
-          "query": "label_values(llamacpp:tokens_predicted_total, job)",
+          "query": "label_values(llamacpp_live_decode_tps, model)",
           "refId": "StandardVariableQuery"
         },
         "refresh": 2,

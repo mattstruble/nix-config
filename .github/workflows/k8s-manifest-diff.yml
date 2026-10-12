@@ -4,12 +4,46 @@ on:
   pull_request:
     paths:
       - "k8s/**"
+      - "nix/**"
+  push:
+    branches: [main]
+    paths:
+      - "k8s/**"
+      - "nix/**"
+  workflow_dispatch:
 
 permissions:
   contents: read
   pull-requests: write
 
 jobs:
+  strata-bundle-linked:
+    # The strata pod's bundle path is produced by the build (nix/services/k3s.nix
+    # injects config.system.build.strata into the chart render), which is what
+    # puts the bundle in the system generation's closure. A literal path
+    # re-appearing in a values file is inert in production but makes every
+    # standalone render disagree with it - and it is the shape that used to drift
+    # silently with no CI signal. Assert the link exists and the pin does not.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: cachix/install-nix-action@V30
+
+      - name: Bundle must be linked by the build, not pinned in values
+        run: |
+          set -euo pipefail
+          built=$(nix eval --raw .#nixosConfigurations.mjolnir.config.services.k3s.aiChart.strataBundle)
+          echo "linked bundle: $built"
+          case "$built" in
+            /nix/store/*-strata-*) ;;
+            *) echo "::error::services.k3s.aiChart.strataBundle is empty or not a strata bundle - the pod would mount nothing"; exit 1;;
+          esac
+          if grep -rn '^[[:space:]]*binary:[[:space:]]*/nix/store/.*-strata-' k8s/apps/ai/values/; then
+            echo "::error::a strata values file pins a bundle path; the render injects it (see the ai.strataBundle helper)"
+            exit 1
+          fi
+
   manifest-diff:
     runs-on: ubuntu-latest
     steps:
@@ -30,6 +64,10 @@ jobs:
             CHART=k8s/apps/ai; [ -d "$CHART" ] || CHART=k8s/llama-fleet
             F=(-f "$CHART/values.yaml")
             for f in "$CHART"/values/*.yaml; do F+=(-f "$f"); done
+            # the nix render injects the bundle it built; without it the preview
+            # shows an empty mount path and disagrees with production
+            BUNDLE=$(nix eval --raw .#nixosConfigurations.mjolnir.config.services.k3s.aiChart.strataBundle 2>/dev/null || true)
+            [ -n "$BUNDLE" ] && F+=(--set "strataBundle=$BUNDLE")
             helm template "$(basename "$CHART")" "$CHART" "${F[@]}"
           }
           render > /tmp/pr.yaml
