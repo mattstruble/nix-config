@@ -3,6 +3,13 @@ models:
   # (2026-09-15): parity with qwen3-8-27b, NOT adopted. Kept inert so the comparison
   # can be re-run. MTP head is embedded (no -md). reasoning_effort xhigh (vendor default).
   swift-qwen3-8-27b:
+    # Cut over 2026-10-12: no static Deployment; the swapper wakes it on
+    # request. 23 minutes of weight loading off the models PVC is the honest
+    # number - the shim's readiness budget and llama-swap's healthCheckTimeout
+    # both derive from it, so a client that will not wait that long should not
+    # ask for this model.
+    lifecycle: on-demand
+    coldStartSeconds: 1500
     enable: true
     image: ghcr.io/ggml-org/llama.cpp:server-cuda12-b11151
     gpu: "0"
@@ -54,5 +61,10 @@ models:
       - "0.8"
       - "--min-p"
       - "0"
-    memoryRequest: 4Gi
-    memoryLimit: 32Gi
+    # Measured 2026-10-12: steady state is 7.5 GiB (RssAnon 6.83) once the first request
+    # completes and the host copy of the weights is released. The 32Gi limit was touched
+    # exactly (memory.peak == memory.max) during model load, while the GGUF is staged in
+    # anonymous host memory on the way to VRAM - that is the OOM, not a leak (idle sampling
+    # is flat). So: request tracks serving, limit tracks the cold-start peak.
+    memoryRequest: 8Gi
+    memoryLimit: 40Gi

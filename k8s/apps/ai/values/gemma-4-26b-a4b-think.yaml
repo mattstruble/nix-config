@@ -1,0 +1,57 @@
+models:
+  # Gemma 4 26B-A4B, THINKING endpoint. Same weights as gemma-4-26b-a4b; the only
+  # difference is that reasoning is left on. Reasoning is an endpoint property
+  # here, not a request property: it is binary at the sampler and no per-request
+  # knob reaches it, so voice/classification traffic (needs speakable latency and
+  # fixed-budget JSON) and deliberating agents cannot share one server. See
+  # ~/llm-wiki/decisions/2026-09-14-thinking-is-an-endpoint-property.md.
+  #
+  # `--reasoning` is deliberately ABSENT rather than written as `on`: the off
+  # variant passes `--reasoning off`, and omitting the flag takes the engine's
+  # own default instead of asserting a value this build may not accept.
+  #
+  # gpu "0": GPU 1 belongs to the resident orchestrator (flash-next-strata).
+  # All on-demand models share GPU 0 - there is exactly one swappable slot.
+  gemma-4-26b-a4b-think:
+    enable: false
+    image: ghcr.io/ggml-org/llama.cpp:server-cuda12-b11151
+    gpu: "0"
+    port: 8559
+    modelName: "gemma-4-26b-a4b-think"
+    nixBinary: false
+    args:
+      - "-m"
+      - "/models/gemma-4-26B-A4B-it-UD-Q4_K_XL.gguf"
+      - "-md"
+      - "/models/mtp-gemma-4-26B-A4B-it-Q8_0.gguf"
+      - "--spec-type"
+      - "draft-mtp"
+      - "--spec-draft-n-max"
+      - "2"
+      - "--spec-draft-p-min"
+      - "0.75"
+      - "-ngl"
+      - "99"
+      - "-c"
+      - "131072"
+      - "-np"
+      - "1"
+      - "-ub"
+      - "2048"
+      - "--cache-type-k"
+      - "q8_0"
+      - "--cache-type-v"
+      - "q8_0"
+      - "--flash-attn"
+      - "on"
+      - "--jinja"
+      - "--temp"
+      - "0.6"
+      - "--top-k"
+      - "20"
+      - "--top-p"
+      - "0.8"
+      - "--min-p"
+      - "0"
+    memoryRequest: 4Gi
+    memoryLimit: 32Gi

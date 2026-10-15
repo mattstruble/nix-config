@@ -1,7 +1,12 @@
 { ... }:
 {
   flake.modules.nixos.k3s =
-    { config, lib, pkgs, ... }:
+    {
+      config,
+      lib,
+      pkgs,
+      ...
+    }:
     let
       cfg = config.services.k3s;
       # k8s/ lives at the repo root; this module is in nix/services/.
@@ -37,6 +42,14 @@
       strataBundleValues = pkgs.writeText "strata-bundle-values.yaml" ''
         strataBundle: ${cfg.aiChart.strataBundle}
       '';
+      # Same rule for the swap head-end bundle (llama-swap + swapk8s): the store
+      # path travels through the render, so the generation that produced it - and
+      # the one before it, which is what a rollback needs - both retain it. Empty
+      # means this host builds no head-end, and the chart renders none.
+      headEndValues = pkgs.writeText "head-end-values.yaml" ''
+        headEnd:
+          bundle: ${cfg.aiChart.headEndBundle}
+      '';
       # Render the ai chart (helm from nixpkgs) into one manifest file; the
       # post-activation hook below applies it, so `just deploy mjolnir` ships
       # host config + cluster manifests in one generation. ponytail: one chart
@@ -47,20 +60,24 @@
       # unpacked chart + 9 merged -f values files + .Files.Get. See
       # docs/h1j.1-autodeploycharts.md. Use autoDeployCharts for future
       # remote-repo charts only.
-      aiChartRendered = pkgs.runCommand "ai-chart-rendered" {
-        src = k8sDir;
-        nativeBuildInputs = [ pkgs.kubernetes-helm ];
-      } ''
-        mkdir -p $out
-        # one -f per values file (a bare glob expands to positional chart args)
-        F=(-f $src/apps/ai/values.yaml)
-        for f in $src/apps/ai/values/*.yaml; do F+=(-f "$f"); done
-        # The strata bundle is BUILT here, not pinned in a values file: this
-        # -f is what links config.system.build.strata into the pod. See
-        # strataBundleValues below for why that link is the whole design.
-        F+=(-f ${strataBundleValues})
-        helm template ai $src/apps/ai "''${F[@]}" > $out/rendered.yaml
-      '';
+      aiChartRendered =
+        pkgs.runCommand "ai-chart-rendered"
+          {
+            src = k8sDir;
+            nativeBuildInputs = [ pkgs.kubernetes-helm ];
+          }
+          ''
+            mkdir -p $out
+            # one -f per values file (a bare glob expands to positional chart args)
+            F=(-f $src/apps/ai/values.yaml)
+            for f in $src/apps/ai/values/*.yaml; do F+=(-f "$f"); done
+            # The strata bundle is BUILT here, not pinned in a values file: this
+            # -f is what links config.system.build.strata into the pod. See
+            # strataBundleValues below for why that link is the whole design.
+            F+=(-f ${strataBundleValues})
+            F+=(-f ${headEndValues})
+            helm template ai $src/apps/ai "''${F[@]}" > $out/rendered.yaml
+          '';
 
       # curl for the oneshot below (the metrics-key registration talks to the
       # gateway's /metrics + /key/generate over HTTP). Wrapped in a
@@ -121,19 +138,43 @@
         # root + SYS_ADMIN for the CDI GPU driver); loki/alloy stay in
         # monitoring/ (PSS baseline is enough — alloy's hostPath /var/log/pods
         # is allowed at baseline).
-        dcgm = { release = "dcgm-exporter"; chart = "${dcgmChartSrc}/deployment"; values = "${k8sDir}/apps/monitoring/values/dcgm-exporter.yaml"; namespace = "gpu"; };
-        loki = { release = "loki"; chart = lokiChart; values = "${k8sDir}/apps/monitoring/values/loki.yaml"; namespace = "monitoring"; };
-        alloy = { release = "alloy"; chart = alloyChart; values = "${k8sDir}/apps/monitoring/values/alloy.yaml"; namespace = "monitoring"; };
+        dcgm = {
+          release = "dcgm-exporter";
+          chart = "${dcgmChartSrc}/deployment";
+          values = "${k8sDir}/apps/monitoring/values/dcgm-exporter.yaml";
+          namespace = "gpu";
+        };
+        loki = {
+          release = "loki";
+          chart = lokiChart;
+          values = "${k8sDir}/apps/monitoring/values/loki.yaml";
+          namespace = "monitoring";
+        };
+        alloy = {
+          release = "alloy";
+          chart = alloyChart;
+          values = "${k8sDir}/apps/monitoring/values/alloy.yaml";
+          namespace = "monitoring";
+        };
       };
-      monitoringChartRendered = lib.mapAttrs (name: { release, chart, values, namespace }:
-        pkgs.runCommand "${name}-chart-rendered" {
-          nativeBuildInputs = [ pkgs.kubernetes-helm ];
-        } ''
-          mkdir -p $out
-          helm template ${release} ${chart} \
-            -f ${values} \
-            --namespace ${namespace} > $out/rendered.yaml
-        ''
+      monitoringChartRendered = lib.mapAttrs (
+        name:
+        {
+          release,
+          chart,
+          values,
+          namespace,
+        }:
+        pkgs.runCommand "${name}-chart-rendered"
+          {
+            nativeBuildInputs = [ pkgs.kubernetes-helm ];
+          }
+          ''
+            mkdir -p $out
+            helm template ${release} ${chart} \
+              -f ${values} \
+              --namespace ${namespace} > $out/rendered.yaml
+          ''
       ) monitoringCharts;
     in
     {
@@ -149,6 +190,20 @@
             keeps it out of the garbage collector's reach. Left empty, any
             enabled engine: strata model fails to render rather than mounting an
             empty path.
+          '';
+        };
+        headEndBundle = lib.mkOption {
+          type = lib.types.str;
+          default = "";
+          example = "/nix/store/xxxx-swap-head-end-0.1.0";
+          description = ''
+            Store path of the swap head-end bundle (llama-swap plus the swapk8s
+            shim) that on-demand model pods are driven by. Set it to
+            config.system.build.swapHeadEnd on a host that builds one; the bundle
+            then reaches the pod through the render instead of through a path
+            transcribed into a values file, which is the same rule the strata
+            bundle follows and for the same reason. Left empty, no head-end is
+            rendered and every model keeps the static lifecycle it has today.
           '';
         };
       };
@@ -216,7 +271,10 @@
           # nvidia-container-toolkit only sets nixos-nvidia-cdi=enabled, which
           # the chart doesn't know about — without this label DCGM schedules 0
           # replicas). Set here so it's stable and under our control.
-          nodeLabel = [ "storage=mjolnir" "nvidia.com/gpu.present=true" ];
+          nodeLabel = [
+            "storage=mjolnir"
+            "nvidia.com/gpu.present=true"
+          ];
 
           # containerd nvidia runtime: pods set runtimeClassName: nvidia +
           # env NVIDIA_VISIBLE_DEVICES=<gpu> to get a SPECIFIC GPU (the runtime
@@ -252,7 +310,10 @@
           aiChartRendered = aiChartRendered;
           # kps chart (fetched .tgz) — rendered at activation, not build time.
           kpsChart = kpsChart;
-        } // lib.mapAttrs' (name: chart: lib.nameValuePair "${name}ChartRendered" chart) monitoringChartRendered;
+        }
+        // lib.mapAttrs' (
+          name: chart: lib.nameValuePair "${name}ChartRendered" chart
+        ) monitoringChartRendered;
 
         # Apply the rendered loki/alloy/ai/dcgm charts, and render + apply kps,
         # as a systemd oneshot AFTER k3s is up. Runs as root, `k3s kubectl` picks
@@ -303,7 +364,9 @@
             # the next apply pass would prune a live Secret.
             set -o pipefail
             # Exported: envsubst below reads them from the environment.
-            export TELEGRAM_BOT_TOKEN="$(cat ${config.sops.secrets."services/monitoring/telegram-bot-token".path})"
+            export TELEGRAM_BOT_TOKEN="$(cat ${
+              config.sops.secrets."services/monitoring/telegram-bot-token".path
+            })"
             export TELEGRAM_CHAT_ID="$(cat ${config.sops.secrets."services/monitoring/telegram-chat-id".path})"
             [ -n "$TELEGRAM_BOT_TOKEN" ] || { echo "error: services/monitoring/telegram-bot-token sops secret is empty" >&2; exit 1; }
             [ -n "$TELEGRAM_CHAT_ID" ] || { echo "error: services/monitoring/telegram-chat-id sops secret is empty" >&2; exit 1; }

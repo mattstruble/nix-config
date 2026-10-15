@@ -1,0 +1,109 @@
+{{- if and .Values.headEnd.enable (not (empty .Values.headEnd.bundle)) }}
+{{- $h := .Values.headEnd }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: swap-head-end
+  labels:
+    app.kubernetes.io/part-of: ai
+    app.kubernetes.io/component: model-swapper
+spec:
+  # One head-end, always. Two would race on the same Deployments, and llama-swap
+  # holds the queue and the swap state in process - there is nothing to share.
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: swap-head-end
+  template:
+    metadata:
+      labels:
+        app: swap-head-end
+        app.kubernetes.io/part-of: ai
+        app.kubernetes.io/component: model-swapper
+    spec:
+      serviceAccountName: swap-head-end
+      # The shim is the API client here, so unlike the model pods this one does
+      # mount a token - scoped by the Role above, namespace-local.
+      automountServiceAccountToken: true
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        runAsUser: 1000
+        runAsGroup: 1000
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      initContainers:
+        # Fail the rollout on a roster the binary will not accept, rather than
+        # starting a head-end that serves a stale config: llama-swap keeps the
+        # previously loaded config running when a reload fails, which is the
+        # right behaviour at runtime and a silent lie at rollout time.
+        - name: validate-config
+          image: python:3.12-alpine
+          command: ["sh", "-c", "{{ $h.bundle }}/bin/llama-swap --validate --config /etc/llama-swap/config.yaml"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+          volumeMounts:
+            - { name: nix-store, mountPath: /nix/store, readOnly: true }
+            - { name: config, mountPath: /etc/llama-swap, readOnly: true }
+        # Reap before serving: this runs only when the head-end pod starts, which
+        # is the one moment nothing it manages is legitimately serving - a
+        # running model at that point is an orphan holding a GPU, because the
+        # process that was proxying it is gone. The fleet restarts asleep, so a
+        # SIGKILLed head-end cannot leave a model holding VRAM and nobody can
+        # outlive the swapper. A config reload never runs this (the container
+        # runs --watch-config), so a roster edit still costs zero model reloads.
+        - name: reap
+          image: python:3.12-alpine
+          command: ["sh", "-c", "{{ $h.bundle }}/bin/swapk8s reap"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+          volumeMounts:
+            - { name: nix-store, mountPath: /nix/store, readOnly: true }
+      containers:
+        - name: llama-swap
+          image: python:3.12-alpine
+          # The bundle is a nix store path mounted read-only from nix-store-pvc -
+          # the same build-linked pattern as the strata pod, so the head-end runs
+          # the llama-swap this generation built, not a tag someone else moved.
+          command: ["sh", "-c", "exec {{ $h.bundle }}/bin/llama-swap --config /etc/llama-swap/config.yaml --watch-config"]
+          ports:
+            - containerPort: {{ $h.port }}
+              name: http
+          # No store: section in the config, so llama-swap opens no sqlite file
+          # (configStorePath returns "" when cfg.Store is nil) and the read-only
+          # root filesystem costs nothing.
+          startupProbe:
+            httpGet: { path: /health, port: {{ $h.port }} }
+            periodSeconds: 2
+            failureThreshold: 30
+          readinessProbe:
+            httpGet: { path: /health, port: {{ $h.port }} }
+            periodSeconds: 10
+          resources:
+            {{- toYaml $h.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+          volumeMounts:
+            - { name: nix-store, mountPath: /nix/store, readOnly: true }
+            - { name: config, mountPath: /etc/llama-swap, readOnly: true }
+            - { name: specs, mountPath: /etc/swapk8s/specs, readOnly: true }
+      volumes:
+        - name: nix-store
+          persistentVolumeClaim:
+            claimName: nix-store-pvc
+        - name: config
+          configMap:
+            name: llama-swap-config
+        - name: specs
+          configMap:
+            name: swapk8s-specs
+---
+{{- end }}

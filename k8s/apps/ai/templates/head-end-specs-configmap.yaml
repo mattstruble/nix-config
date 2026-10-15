@@ -1,0 +1,35 @@
+{{- if and .Values.headEnd.enable (not (empty .Values.headEnd.bundle)) }}
+{{- $any := false }}
+{{- range $name, $m := .Values.models }}
+  {{- if and $m.enable (eq ($m.lifecycle | default "static") "on-demand") }}{{ $any = true }}{{ end }}
+{{- end }}
+{{- if $any }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: swapk8s-specs
+  labels:
+    app.kubernetes.io/part-of: ai
+    app.kubernetes.io/component: model-swapper
+data:
+  # The pod spec of every summonable model, as JSON, rendered by the very same
+  # template that renders a static model's Deployment (_modelDeployment.tpl) -
+  # so a model cannot render one way while static and another way when summoned.
+  #
+  # Why a ConfigMap instead of the Deployment itself: `kubectl apply` runs on
+  # every activation, and a Deployment in the manifest carries .spec.replicas.
+  # Re-applying it would scale whatever the swapper has summoned back to zero -
+  # an outage that looks like a deploy. Parking the spec here means the chart owns
+  # the pod definition and cannot write the one field the swapper owns.
+  {{- range $name, $m := .Values.models }}
+  {{- if and $m.enable (eq ($m.lifecycle | default "static") "on-demand") }}
+  {{- if eq ($m.engine | default "llama") "strata" }}
+  {{- fail (printf "model %q is engine: strata and lifecycle: on-demand; the spec ConfigMap renders the llama.cpp pod template (_modelDeployment.tpl), not strata-deployment.yaml, so a strata model would be summoned with the wrong pod. Support means routing the spec through the same engine switch the static path uses - not marking it on-demand and hoping." $name) }}
+  {{- end }}
+  {{ $name }}.json: |
+    {{- include "ai.modelDeployment" (dict "name" $name "m" $m) | fromYaml | toJson | nindent 4 }}
+  {{- end }}
+  {{- end }}
+---
+{{- end }}
+{{- end }}

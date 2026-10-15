@@ -1,11 +1,16 @@
 models:
   gemma-4-26b-a4b:
-    # disabled 2026-10-07: GPU 1 is taken by flash-next-strata-iq4xs (Strata
-    # engine). Re-enable by flipping this back to true (and giving Strata a
-    # different GPU) if gemma is needed again.
-    enable: false
+    # Cut over 2026-10-12: first model on the swapper (the zero-blast-radius
+    # choice - it was already disabled, so nothing changes for any client until
+    # someone requests it). No static Deployment: the pod spec travels to the
+    # head-end's spec ConfigMap and the model wakes on request. GPU 1 still
+    # belongs to the resident orchestrator.
+    enable: true
+    lifecycle: on-demand
+    # measured 2026-10-07-era loads: ~150s from pod start to serving
+    coldStartSeconds: 180
     image: ghcr.io/ggml-org/llama.cpp:server-cuda12-b11151
-    gpu: "1"
+    gpu: "0"   # on-demand card: GPU 1 belongs to the resident orchestrator
     port: 8555
     modelName: "gemma-4-26b-a4b"
     nixBinary: false

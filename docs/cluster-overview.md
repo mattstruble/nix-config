@@ -93,10 +93,21 @@ Rollouts are `Recreate` (the model owns its card) and there is no livenessProbe
 120 s termination grace, so a rollout during one does interrupt it.
 
 ### Dormant chart models (enable: false)
-qwen3-8-flash-next (+256k), qwen3-8-27b (+turboq), qwen3-6-35b-iq4xs,
-gemma-4-26b-a4b-longctx. The four `nixBinary: true` ones need the nix-built
-forks (`_llama-fork.nix`, `_llama-turboq.nix` — kept after the docker-layer
-deletion because their store paths are hardcoded in the chart values).
+gemma-4-26b-a4b (non-thinking), gemma-4-26b-a4b-think (same weights, reasoning
+left on — thinking is an endpoint property, so voice and deliberating agents
+cannot share a server), qwen3-6-35b-iq4xs. All are image-based; none needs a
+nix-built binary. All declare `gpu: "0"` — GPU 1 belongs to the resident
+orchestrator, so there is exactly one swappable slot. The 35B's pinned image
+(`41ebf873c2e0`) is not in containerd, so its first wake needs a pull.
+
+Retired 2026-10-12 also: gemma-4-26b-a4b-longctx (262k, non-thinking) — redundant
+with the 262k orchestrator, and long-context recall was never its strength.
+Retired earlier: qwen3-8-flash-next (+256k) and qwen3-8-27b (+turboq) — the
+four `nixBinary: true` entries that pointed at the nix-built llama.cpp forks.
+Their pinned store paths had already been garbage-collected, so a wake would
+have crashed; deleting them also freed `_llama-fork.nix` and
+`_llama-turboq.nix`, which nothing else referenced. The Strata bundle is now the
+only nix-built thing a pod mounts.
 
 ### Endpoints (current)
 
