@@ -13,7 +13,22 @@ models:
   # gpu "0": GPU 1 belongs to the resident orchestrator (flash-next-strata).
   # All on-demand models share GPU 0 - there is exactly one swappable slot.
   gemma-4-26b-a4b-think:
-    enable: false
+    # THE fleet's gemma since 2026-10-12: the thinking variant, on-demand. The
+    # off-variant (gemma-4-26b-a4b) is disabled, not deleted - the day
+    # non-thinking gemma traffic returns, both are on-demand-shaped and the
+    # exclusive group swaps them like any two models in the slot.
+    #
+    # On-demand: no static Deployment, the pod spec travels to the head-end's
+    # spec ConfigMap, the model wakes on request and sleeps on ttl.
+    # coldStartSeconds measured on THIS variant 2026-10-12, caches dropped
+    # before the wake: 80s pod-start-to-Ready, 144s request-to-first-token
+    # (the think variant spends its first tokens on reasoning, so
+    # request-to-first-CONTENT-token runs long; the readiness budget covers
+    # the Ready wait, which is the 80s number). Same weights as the off
+    # variant, so its 126-137s wakes agree.
+    enable: true
+    lifecycle: on-demand
+    coldStartSeconds: 240
     image: ghcr.io/ggml-org/llama.cpp:server-cuda12-b11151
     gpu: "0"
     port: 8559

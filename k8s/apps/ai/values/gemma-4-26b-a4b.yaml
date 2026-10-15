@@ -1,14 +1,13 @@
 models:
   gemma-4-26b-a4b:
-    # Cut over 2026-10-12: first model on the swapper (the zero-blast-radius
-    # choice - it was already disabled, so nothing changes for any client until
-    # someone requests it). No static Deployment: the pod spec travels to the
-    # head-end's spec ConfigMap and the model wakes on request. GPU 1 still
-    # belongs to the resident orchestrator.
-    enable: true
-    lifecycle: on-demand
-    # measured 2026-10-07-era loads: ~150s from pod start to serving
-    coldStartSeconds: 180
+    # Disabled 2026-10-12: the fleet's gemma is the THINKING variant
+    # (gemma-4-26b-a4b-think, same weights, reasoning left on). Reasoning is an
+    # endpoint property here, not a request property (see
+    # docs/ + the 2026-09-14 decision), so the off-variant is a separate entry,
+    # kept inert - not deleted - for the day non-thinking gemma traffic returns.
+    # Re-enable by flipping this back to true (and disabling the think variant,
+    # or letting the exclusive group swap them - both are on-demand-shaped).
+    enable: false
     image: ghcr.io/ggml-org/llama.cpp:server-cuda12-b11151
     gpu: "0"   # on-demand card: GPU 1 belongs to the resident orchestrator
     port: 8555
