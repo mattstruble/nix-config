@@ -63,11 +63,12 @@ moved. Built natively for sm_75 by `nix/hosts/mjolnir/_strata.nix`.
 | Experts | from the pack, 55 GiB resident (`--resident-budget-gib`; this is what `LOW_RAM=on` resolves to) |
 | Decode / prefill | 32–57 t/s, ~1030 t/s prefill (2026-10-07 bench) |
 
-**On-demand since 2026-10-12:** gemma-4-26b-a4b (voice / HA / n8n) and
-swift-qwen3-8-27b share the swappable slot — one model awake at a time, the
-waker evicts the other automatically. Both render no static Deployment; their
-pod specs travel to the head-end and the models wake on request. Gemma's
-config and pack were already on the PVC; nothing was migrated.
+**On-demand since 2026-10-12:** gemma-4-26b-a4b-think (the fleet's gemma —
+the thinking variant; the non-thinking off-variant is disabled, not deleted)
+and swift-qwen3-8-27b share the swappable slot — one model awake at a time,
+the waker evicts the other automatically. Both render no static Deployment;
+their pod specs travel to the head-end and the models wake on request.
+Gemma's config and pack were already on the PVC; nothing was migrated.
 
 ### The on-demand fleet — wake times and model names (measured 2026-10-12)
 
@@ -80,18 +81,32 @@ remarks into the reasoning field, and answers when the model is up.
 
 | Model — what clients name | Deployment / roster key | Wake, cache-warm | Wake, cache-cold | Idle sleep |
 |---|---|---|---|---|
-| `swift-qwen3.8-27b` | `swift-qwen3-8-27b` | 100–111 s | ~23 min | ttl 900 s |
-| `gemma-4-26b-a4b` | `gemma-4-26b-a4b` | 126–137 s (137 s through a full eviction) | not yet measured | ttl 900 s |
+| `swift-qwen3.8-27b` | `swift-qwen3-8-27b` | 100–111 s | 100 s (60 s pod-to-Ready) | ttl 900 s |
+| `gemma-4-26b-a4b-think` | `gemma-4-26b-a4b-think` | 126–137 s (137 s through a full eviction) | 144 s (80 s pod-to-Ready) | ttl 900 s |
 | `qwen3.8-flash-next` | `flash-next-strata-iq4xs` — static, resident | 83 s (a deploy/restart wake, not swapper-driven) | — | never |
 
-Wake time is **page-cache warmth, not a constant**: the cold number is what a
-client waits after a reboot or a cache eviction under memory pressure, and
-`coldStartSeconds` (the readiness budget for both the shim and llama-swap's
-global `healthCheckTimeout`) is set from it. A warm request through the
-head-end costs ~0.1 s to first token — the swapper on the path is free. Both
-cards can be loaded at once with ~37–39 GiB host RAM still free; waking either
-on-demand model evicts the other (one host-wide exclusive group), and a
-head-end restart puts the whole fleet to sleep.
+Cold wakes were measured with the page cache dropped before the request
+(`echo 3 > /proc/sys/vm/drop_caches`). The result kills a piece of lore: the
+wakes land in the same band warm (~100–144 s), so the load is compute-bound,
+not disk-bound — the "23 minutes of weight loading" the swift entry used to
+carry never survived a measurement, and could not have: the pod's own
+startupProbe budget is 30×10 s = 300 s, so a 23-minute load would have
+failed the probe before anything else gave up. `coldStartSeconds` therefore
+sits at 240 s — comfortably above the measured load, and within the probe
+budget, which is the real ceiling: a budget larger than the probe's means the
+pod fails and restarts before the shim ever gives up on it. A warm request
+through the head-end costs ~0.1 s to first token — the swapper on the path is
+free. Both cards can be loaded at once with ~37–39 GiB host RAM still free;
+waking either on-demand model evicts the other (one host-wide exclusive
+group), and a head-end restart puts the whole fleet to sleep.
+
+The fleet's gemma is the **thinking variant** (`gemma-4-26b-a4b-think`, same
+weights as the disabled off-variant, reasoning left on): reasoning is an
+endpoint property here, not a request property — it is binary at the sampler
+and no per-request knob reaches it. A thinking model spends its first tokens
+on reasoning, so a small `max_tokens` can end the stream before any content:
+the 144 s cold wake above reached its first *content* token at the end of the
+load; budget content accordingly.
 
 ### The `engine: strata` recipe
 

@@ -4,12 +4,17 @@ models:
   # can be re-run. MTP head is embedded (no -md). reasoning_effort xhigh (vendor default).
   swift-qwen3-8-27b:
     # Cut over 2026-10-12: no static Deployment; the swapper wakes it on
-    # request. 23 minutes of weight loading off the models PVC is the honest
-    # number - the shim's readiness budget and llama-swap's healthCheckTimeout
-    # both derive from it, so a client that will not wait that long should not
-    # ask for this model.
+    # request. MEASURED 2026-10-12 with the page cache dropped before the wake:
+    # 60s pod-start-to-Ready, 100s request-to-first-token - and cache-warm
+    # wakes land in the same band (100-111s), so the load is compute-bound,
+    # not disk-bound. The "23 minutes of weight loading" this entry used to
+    # carry was planning-era lore that never survived a measurement: the pod's
+    # own startupProbe budget is 30 x 10s = 300s, so a 23-minute load could
+    # never have passed it. coldStartSeconds must stay within that probe
+    # budget - a larger one means the pod fails and restarts before the shim
+    # ever gives up on it.
     lifecycle: on-demand
-    coldStartSeconds: 1500
+    coldStartSeconds: 240
     enable: true
     image: ghcr.io/ggml-org/llama.cpp:server-cuda12-b11151
     gpu: "0"
