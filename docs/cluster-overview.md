@@ -19,15 +19,19 @@ the sections below the throughput tables are the historical docker-era record.
 
 ## Serving configuration (current — k3s, since 2026-09-17)
 
-One k3s cluster (`nix/services/k3s.nix`), one Deployment per model from the
-helm chart in `k8s/apps/ai/` (one values file per model; `just k8s-deploy`
-renders + applies). All clients (pi, opencode, HA, n8n) hit the LiteLLM gateway
-at `:8000` and name the model in the request — model ID = real running name
-(`--alias` = gateway `model_name`, no masking). Models PV = `/var/lib/llama-models`
-(local PV, PSS-restricted); `nixBinary: true` models also mount `/nix/store:ro`
-and run the nix-built fork binary (store path hardcoded in the values file).
+One k3s cluster (`nix/services/k3s.nix`), one values file per model from the
+helm chart in `k8s/apps/ai/` (`just k8s-render` previews, `just deploy mjolnir`
+ships host + cluster in one generation). Two lifecycles: **static** models
+render a Deployment that is always up (the resident fleet), **on-demand**
+models (`lifecycle: on-demand`) render no Deployment at all — the swap head-end
+creates one on request, waits for readiness, proxies, and scales it back to
+zero on idle (see the on-demand fleet section below). All clients (pi,
+opencode, HA, n8n) hit the LiteLLM gateway at `:8000` and name the model in the
+request — model ID = real running name (`--alias` = gateway `model_name`, no
+masking). Models PV = `/var/lib/llama-models` (local PV, PSS-restricted);
+`nixBinary: true` models also mount `/nix/store:ro`.
 
-### GPU 0 — swift-qwen3.8-27b (coding / agentic)
+### GPU 0 — swift-qwen3.8-27b (coding / agentic, on-demand since 2026-10-12)
 
 Swift-Qwen3.8-27B (gated Swift Open v1.0 license; GGUF hand-pulled, not
 flake-reproducible). b10920 upstream image (digest pinned), `--reasoning` baked
@@ -59,9 +63,35 @@ moved. Built natively for sm_75 by `nix/hosts/mjolnir/_strata.nix`.
 | Experts | from the pack, 55 GiB resident (`--resident-budget-gib`; this is what `LOW_RAM=on` resolves to) |
 | Decode / prefill | 32–57 t/s, ~1030 t/s prefill (2026-10-07 bench) |
 
-**Disabled:** gemma-4-26b-a4b (voice / HA / n8n). Gemma and Flash-Next do not
-share a card; nothing was migrated off gemma, its callers are quiet. Its values
-entry is `enable: false`, its config and pack are still on the PVC.
+**On-demand since 2026-10-12:** gemma-4-26b-a4b (voice / HA / n8n) and
+swift-qwen3-8-27b share the swappable slot — one model awake at a time, the
+waker evicts the other automatically. Both render no static Deployment; their
+pod specs travel to the head-end and the models wake on request. Gemma's
+config and pack were already on the PVC; nothing was migrated.
+
+### The on-demand fleet — wake times and model names (measured 2026-10-12)
+
+The swapper is llama-swap v264 plus this repo's `swapk8s` shim
+(`nix/hosts/mjolnir/_swapk8s.nix`, one store path linked through the render
+the same way the strata bundle is). Clients still name the model at `:8000`
+exactly as before — the names below are unchanged — but the gateway routes
+on-demand models to the head-end, which holds the request, streams loading
+remarks into the reasoning field, and answers when the model is up.
+
+| Model — what clients name | Deployment / roster key | Wake, cache-warm | Wake, cache-cold | Idle sleep |
+|---|---|---|---|---|
+| `swift-qwen3.8-27b` | `swift-qwen3-8-27b` | 100–111 s | ~23 min | ttl 900 s |
+| `gemma-4-26b-a4b` | `gemma-4-26b-a4b` | 126–137 s (137 s through a full eviction) | not yet measured | ttl 900 s |
+| `qwen3.8-flash-next` | `flash-next-strata-iq4xs` — static, resident | 83 s (a deploy/restart wake, not swapper-driven) | — | never |
+
+Wake time is **page-cache warmth, not a constant**: the cold number is what a
+client waits after a reboot or a cache eviction under memory pressure, and
+`coldStartSeconds` (the readiness budget for both the shim and llama-swap's
+global `healthCheckTimeout`) is set from it. A warm request through the
+head-end costs ~0.1 s to first token — the swapper on the path is free. Both
+cards can be loaded at once with ~37–39 GiB host RAM still free; waking either
+on-demand model evicts the other (one host-wide exclusive group), and a
+head-end restart puts the whole fleet to sleep.
 
 ### The `engine: strata` recipe
 
