@@ -15,7 +15,7 @@ func TestNormalizeSpecKeepsReplicasOutOfTheUpdate(t *testing.T) {
 	  "apiVersion":"apps/v1","kind":"Deployment",
 	  "metadata":{"name":"swift-qwen3-8-27b-g0","namespace":"default",
 	    "resourceVersion":"1234","uid":"dead","creationTimestamp":"2026-01-01T00:00:00Z",
-	    "labels":{"app":"ai"}},
+	    "labels":{"app":"ai","ai.mestruble.dev/gpu-pool":"0,1","ai.mestruble.dev/gpu-mode":"any"}},
 	  "spec":{"replicas":7,"template":{"spec":{"containers":[{"name":"llama-server",
 	    "env":[{"name":"NVIDIA_VISIBLE_DEVICES","value":"0,1"}]}]}}},
 	  "status":{"readyReplicas":1}
@@ -45,6 +45,14 @@ func TestNormalizeSpecKeepsReplicasOutOfTheUpdate(t *testing.T) {
 	}
 	if labels["app"] != "ai" {
 		t.Error("chart labels were dropped")
+	}
+	// the transport labels must be consumed, not applied: "0,1" is an invalid
+	// label value (commas are rejected), so carrying them is a 422
+	if _, ok := labels[gpuPoolLabel]; ok {
+		t.Errorf("pool label reached the API: %v", labels[gpuPoolLabel])
+	}
+	if _, ok := labels[gpuModeLabel]; ok {
+		t.Errorf("mode label reached the API: %v", labels[gpuModeLabel])
 	}
 	// placement: the pool in the spec must be narrowed to the chosen card, in
 	// BOTH bodies - a pod created with "0,1" for a one-card model takes both

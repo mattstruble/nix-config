@@ -261,6 +261,13 @@ func normalizeSpec(ns, name, gpu string, spec []byte) (create []byte, patch []by
 	}
 	labels[managedLabel] = managedBy
 	labels[modelLabel] = name
+	// The pool/mode labels are a transport channel from the chart to this
+	// binary's placement logic, not object metadata: wake() reads them from the
+	// spec file before deciding a card, and they must not reach the API - a
+	// pool like "0,1" is an invalid label VALUE (kubernetes rejects commas), so
+	// applying them is a 422, not a preference. Consumed here, stripped here.
+	delete(labels, gpuPoolLabel)
+	delete(labels, gpuModeLabel)
 	meta["labels"] = labels
 	meta["namespace"] = ns
 	// Server-set fields cannot be replayed, and status must never be written by
