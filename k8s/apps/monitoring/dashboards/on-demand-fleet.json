@@ -1,0 +1,514 @@
+{
+  "uid": "mjolnir-on-demand-fleet",
+  "title": "mjolnir on-demand fleet",
+  "description": "The swapper's lifecycle: which models are awake, wake/sleep/failure counts, the journal from llama-swap's own log lines (the shim's placement lines are captured as per-model process logs inside the head-end, not shipped to Loki), card occupancy, and the host RAM headroom the load ceiling depends on. Models sleep on ttl, wake on request, land on free cards; awake=1 in the state timeline, flat gaps are sleep. Companion to mjolnir-llm-fleet (throughput while awake). kube_*_labels metrics are disabled in this kube-state-metrics, so the model identity is peeled off pod names (label_replace) and the $model variable comes from the model Deployments, which persist asleep.",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "graphTooltip": 1,
+  "templating": {
+    "list": [
+      {
+        "name": "model",
+        "type": "query",
+        "label": "Model",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "query": {
+          "query": "label_values(kube_deployment_status_replicas_available{namespace=\"default\",deployment!~\"litellm|postgres|swap-head-end\"}, deployment)",
+          "refId": "StandardVariableQuery"
+        },
+        "refresh": 2,
+        "sort": 1,
+        "includeAll": true,
+        "allValue": ".*",
+        "current": {
+          "text": "All",
+          "value": "$__all"
+        }
+      },
+      {
+        "name": "gpu",
+        "type": "query",
+        "label": "GPU",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "query": {
+          "query": "label_values(DCGM_FI_DEV_GPU_UTIL, gpu)",
+          "refId": "StandardVariableQuery"
+        },
+        "refresh": 2,
+        "sort": 1,
+        "includeAll": true,
+        "allValue": ".*",
+        "current": {
+          "text": "All",
+          "value": "$__all"
+        }
+      }
+    ]
+  },
+  "panels": [
+    {
+      "type": "row",
+      "title": "Fleet state",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
+      "id": 100,
+      "panels": [
+        {
+          "type": "stat",
+          "title": "Models awake now",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "gridPos": {
+            "h": 5,
+            "w": 6,
+            "x": 0,
+            "y": 1
+          },
+          "id": 2,
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "sum(max by (model) (label_replace(kube_pod_status_ready{condition=\"true\",namespace=\"default\",pod!~\"litellm.*|postgres.*|swap-head-end.*\"} == 1, \"model\", \"$1\", \"pod\", \"(.*)-[0-9a-f]+-[0-9a-z]+\")))",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "legendFormat": "{{model}}"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "color": {
+                "mode": "thresholds"
+              },
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "red",
+                    "value": null
+                  },
+                  {
+                    "color": "green",
+                    "value": 1
+                  },
+                  {
+                    "color": "yellow",
+                    "value": 3
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "colorMode": "value",
+            "graphMode": "none",
+            "textMode": "auto"
+          }
+        },
+        {
+          "type": "stat",
+          "title": "TTL sleeps ($__range)",
+          "datasource": {
+            "type": "loki",
+            "uid": "loki"
+          },
+          "gridPos": {
+            "h": 5,
+            "w": 6,
+            "x": 6,
+            "y": 1
+          },
+          "id": 3,
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "sum(count_over_time({namespace=\"default\",pod=~\"swap-head-end.+\"} |= \"Unloading model, TTL\"[$__range]))",
+              "datasource": {
+                "type": "loki",
+                "uid": "loki"
+              },
+              "legendFormat": "sleeps"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short"
+            },
+            "overrides": []
+          },
+          "options": {
+            "colorMode": "value",
+            "graphMode": "none"
+          }
+        },
+        {
+          "type": "stat",
+          "title": "Model wakes, incl. start failures ($__range)",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "gridPos": {
+            "h": 5,
+            "w": 6,
+            "x": 12,
+            "y": 1
+          },
+          "id": 4,
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "count by (model) (max_over_time((label_replace(kube_pod_start_time{namespace=\"default\",pod!~\"litellm.*|postgres.*|swap-head-end.*\"}, \"model\", \"$1\", \"pod\", \"(.*)-[0-9a-f]+-[0-9a-z]+\"))[6h:]))",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "legendFormat": "{{model}}"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short"
+            },
+            "overrides": []
+          },
+          "options": {
+            "colorMode": "value",
+            "graphMode": "none"
+          }
+        },
+        {
+          "type": "stat",
+          "title": "Start failures ($__range)",
+          "datasource": {
+            "type": "loki",
+            "uid": "loki"
+          },
+          "gridPos": {
+            "h": 5,
+            "w": 6,
+            "x": 18,
+            "y": 1
+          },
+          "id": 5,
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "sum(count_over_time({namespace=\"default\",pod=~\"swap-head-end.+\"} |= \"exited prematurely\"[$__range]))",
+              "datasource": {
+                "type": "loki",
+                "uid": "loki"
+              },
+              "legendFormat": "gave-ups"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "color": {
+                "mode": "thresholds"
+              },
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  },
+                  {
+                    "color": "orange",
+                    "value": 1
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "colorMode": "value",
+            "graphMode": "none"
+          }
+        },
+        {
+          "type": "state-timeline",
+          "title": "Model awake (1) / asleep (0)",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "gridPos": {
+            "h": 9,
+            "w": 24,
+            "x": 0,
+            "y": 6
+          },
+          "id": 1,
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "max by (model) (label_replace(kube_pod_status_ready{condition=\"true\",namespace=\"default\",pod!~\"litellm.*|postgres.*|swap-head-end.*\"} == 1, \"model\", \"$1\", \"pod\", \"(.*)-[0-9a-f]+-[0-9a-z]+\"))",
+              "legendFormat": "{{model}}",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "color": {
+                "mode": "thresholds"
+              },
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "dark-red",
+                    "value": null
+                  },
+                  {
+                    "color": "green",
+                    "value": 1
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "mergeValues": true
+          }
+        }
+      ]
+    },
+    {
+      "type": "row",
+      "title": "Lifecycle journal (head-end log)",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 15
+      },
+      "id": 101,
+      "panels": [
+        {
+          "type": "logs",
+          "title": "Lifecycle journal \u2014 llama-swap's own lines (health checks, TTL unloads, start failures)",
+          "datasource": {
+            "type": "loki",
+            "uid": "loki"
+          },
+          "gridPos": {
+            "h": 10,
+            "w": 24,
+            "x": 0,
+            "y": 16
+          },
+          "id": 6,
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "{namespace=\"default\",pod=~\"swap-head-end.+\"} |~ \"Unloading model|exited prematurely|Health check passed|reaped |adopted \"",
+              "queryType": "range",
+              "datasource": {
+                "type": "loki",
+                "uid": "loki"
+              }
+            }
+          ],
+          "options": {
+            "sortOrder": "Descending",
+            "showTime": true,
+            "wrapLogMessage": true,
+            "prettifyLogMessage": false,
+            "enableLogDetails": false
+          }
+        }
+      ]
+    },
+    {
+      "type": "row",
+      "title": "Cards and the load ceiling",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 26
+      },
+      "id": 102,
+      "panels": [
+        {
+          "type": "timeseries",
+          "title": "GPU VRAM (who is holding the cards)",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 0,
+            "y": 27
+          },
+          "id": 7,
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "DCGM_FI_DEV_FB_USED{gpu=~\"$gpu\"}",
+              "legendFormat": "gpu {{gpu}}",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "decgigabytes",
+              "custom": {
+                "fillOpacity": 10
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom"
+            },
+            "tooltip": {
+              "mode": "multi"
+            }
+          }
+        },
+        {
+          "type": "timeseries",
+          "title": "GPU utilization",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 12,
+            "y": 27
+          },
+          "id": 8,
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "DCGM_FI_DEV_GPU_UTIL{gpu=~\"$gpu\"}",
+              "legendFormat": "gpu {{gpu}}",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "percent",
+              "custom": {
+                "fillOpacity": 10
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom"
+            },
+            "tooltip": {
+              "mode": "multi"
+            }
+          }
+        },
+        {
+          "type": "timeseries",
+          "title": "Host RAM available (the load ceiling: measured floor 38 GiB under two loads)",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 24,
+            "x": 0,
+            "y": 35
+          },
+          "id": 9,
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "node_memory_MemAvailable_bytes",
+              "legendFormat": "available",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "bytes",
+              "custom": {
+                "fillOpacity": 15
+              },
+              "min": 0
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom"
+            },
+            "tooltip": {
+              "mode": "multi"
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "annotations": {
+    "list": []
+  },
+  "editable": true,
+  "style": null,
+  "fiscalYearStartMonth": 0,
+  "liveNow": false,
+  "links": []
+}

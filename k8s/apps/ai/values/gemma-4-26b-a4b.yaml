@@ -1,11 +1,28 @@
 models:
   gemma-4-26b-a4b:
-    # disabled 2026-10-07: GPU 1 is taken by flash-next-strata-iq4xs (Strata
-    # engine). Re-enable by flipping this back to true (and giving Strata a
-    # different GPU) if gemma is needed again.
-    enable: false
+    # On-demand 2026-10-12, alongside the thinking variant: BOTH gemma
+    # endpoints stand up on request. They are the same weights and share the
+    # one swappable slot, so the exclusive group swaps them - waking either
+    # evicts the other, and each wake is a full load (~80s pod-to-Ready,
+    # measured with caches dropped). Reasoning is an endpoint property here,
+    # not a request property (see the 2026-09-14 decision): this is the
+    # NON-thinking endpoint (`--reasoning off`), for voice/classification
+    # traffic that needs speakable latency and fixed-budget JSON; deliberating
+    # agents belong on gemma-4-26b-a4b-think.
+    #
+    # coldStartSeconds: same weights, same load as the think variant - 80s
+    # pod-to-Ready measured, 240 keeps it within the pod's own startupProbe
+    # budget (30 x 10s), which is the real ceiling - see the swift entry for
+    # why a budget larger than the probe's is incoherent.
+    enable: true
+    lifecycle: on-demand
+    coldStartSeconds: 240
     image: ghcr.io/ggml-org/llama.cpp:server-cuda12-b11151
-    gpu: "1"
+    # the CARD POOL, not a pin: placement is the shim's - it lands this model on
+    # any free card in the pool at wake time, waits for one if all are busy, and
+    # fails with a reason if its wait budget expires. A single-card pool ("0")
+    # is still honoured, so a model CAN be pinned by declaring one card.
+    gpu: "0,1"
     port: 8555
     modelName: "gemma-4-26b-a4b"
     nixBinary: false

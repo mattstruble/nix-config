@@ -1,0 +1,20 @@
+{{- if and .Values.headEnd.enable (not (empty .Values.headEnd.bundle)) }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: swap-head-end
+  labels:
+    app.kubernetes.io/part-of: ai
+    app.kubernetes.io/component: model-swapper
+spec:
+  # LiteLLM points one model's api_base here; llama-swap routes by the `model`
+  # field and wakes the right backend. The per-model Services stay for static
+  # models, which is what makes the cutover per-model and reversible.
+  selector:
+    app: swap-head-end
+  ports:
+    - name: http
+      port: {{ .Values.headEnd.port }}
+      targetPort: {{ .Values.headEnd.port }}
+---
+{{- end }}

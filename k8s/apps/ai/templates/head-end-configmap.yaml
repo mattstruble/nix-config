@@ -1,0 +1,138 @@
+{{- if and .Values.headEnd.enable (not (empty .Values.headEnd.bundle)) }}
+{{- $h := .Values.headEnd }}
+{{- $summonable := dict }}
+{{- $maxCold := $h.coldStartSeconds }}
+{{- range $name, $m := .Values.models }}
+  {{- if and $m.enable (eq ($m.lifecycle | default "static") "on-demand") }}
+    {{- $_ := set $summonable $name $m }}
+    {{- $cs := $m.coldStartSeconds | default $h.coldStartSeconds }}
+    {{- if gt $cs $maxCold }}{{ $maxCold = $cs }}{{ end }}
+  {{- end }}
+{{- end }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: llama-swap-config
+  labels:
+    app.kubernetes.io/part-of: ai
+    app.kubernetes.io/component: model-swapper
+data:
+  # llama-swap's roster, generated from the same values that render the model
+  # pods. A model joins it by declaring `lifecycle: on-demand`; nothing is added
+  # by hand, so the roster cannot claim a model the chart cannot render.
+  #
+  # The shape follows llama-swap's own config format, which the first cut of
+  # this file got wrong and --validate caught before anything ran: `models:` is
+  # a MAP keyed by model ID (not a list of entries), exclusivity lives in a
+  # separate top-level `groups:` map, and `healthCheckTimeout` is global — so
+  # the readiness budget is the MAXIMUM cold start in the roster, not a
+  # per-model value. A model that cannot wait out the slowest model's wake
+  # should not share its budget; on this fleet that is 25 minutes of swift
+  # weight loading, and any client that will not wait that long should not ask.
+  config.yaml: |
+    # ${PORT} appears in both cmd and proxy: llama-swap refuses a config where
+    # proxy allocates a port that cmd never binds (validation error, and the
+    # first spike's reload failed exactly this way).
+    listen: "0.0.0.0:{{ $h.port }}"
+    # The global readiness budget must cover a full card-wait AND a full load:
+    # the shim waits for a free card (up to cardWaitSeconds) before it starts
+    # loading, and the health check is the outer bound on both. The old value
+    # (max cold start alone) would have the router give up mid-wait.
+    healthCheckTimeout: {{ add ($h.cardWaitSeconds | default 300) $maxCold }}
+    # Owner decision 2026-10-12: stream loading state. While a model wakes,
+    # clients see the reasoning field fill with loading remarks instead of a
+    # silent held connection. The trade was recorded when it was made: once the
+    # loading stream opens, HTTP 200 is already committed, so a model that
+    # fails to come up is reported in-band inside a 200 stream - the client
+    # must read the error frame, not the status code.
+    sendLoadingState: true
+    groups:
+      # PLACEMENT IS THE SHIM'S, so the group structure no longer expresses
+      # cards at all. One `anywhere` group, swap: false: members never evict
+      # each other, because coexistence is the shim's to arbitrate - it lands
+      # each wake on a free card and WAITS when every card is busy. The
+      # per-card groups this replaced were the interim while models were
+      # pinned in values; with pools in values and placement in the shim they
+      # are gone, and their one job (never two models on one card) moved to
+      # the shim's busy-card scan under the placement flock.
+      #
+      # A model that needs EVERY card in its pool (gpuMode: all - the
+      # 2-GPU-spanning strata variant) gets its own group, swap: true +
+      # exclusive: true: loading one unloads every other group, which is
+      # exactly "the fleet must be asleep for this model to run". The reverse
+      # direction - a single-card wake onto a card a spanning model holds - is
+      # the shim's wait-for-free-card, not the group router's (it has no
+      # resource awareness; that gap is why placement lives in the shim).
+      {{- $any := list }}
+      {{- $spans := dict }}
+      {{- range $name, $m := $summonable }}
+        {{- if eq ($m.gpuMode | default "any") "all" }}
+          {{- $k := printf "span-%s" (replace "," "-" ($m.gpu | toString)) }}
+          {{- $list := index $spans $k | default list }}
+          {{- $_ := set $spans $k (append $list $name) }}
+        {{- else }}
+          {{- $any = append $any $name }}
+        {{- end }}
+      {{- end }}
+      {{- if $any }}
+      anywhere:
+        swap: false
+        exclusive: false
+        members:
+          {{- range $any }}
+          - {{ . }}
+          {{- end }}
+      {{- end }}
+      {{- range $gname, $members := $spans }}
+      {{ $gname }}:
+        swap: true
+        exclusive: true
+        members:
+          {{- range $members }}
+          - {{ . }}
+          {{- end }}
+      {{- end }}
+    models:
+      {{- range $name, $m := $summonable }}
+      {{ $name }}:
+        # Idle time before the model goes back to sleep. Falls back to
+        # headEnd.ttlSeconds; 0 would mean llama-swap's GlobalTTL default, which
+        # is off - and the fleet's whole point is that idle models do not hold
+        # GPUs. (This line was dropped once, in the list-form to map-form
+        # rewrite, and nothing slept for an hour before anyone noticed: the
+        # symptom of a missing ttl is a model that never unloads.)
+        ttl: {{ $m.ttlSeconds | default $h.ttlSeconds }}
+        # A wake is a request that waits, so the shim's readiness budget is
+        # that model's own measured cold start - not one global constant that
+        # has to be the maximum of every model on the box (that maximum is
+        # healthCheckTimeout's job, above).
+        cmd: >-
+          {{ $h.bundle }}/bin/swapk8s serve
+          --model {{ $name }}
+          --port {{ $m.port }}
+          --listen 127.0.0.1:${PORT}
+          --health-path {{ $h.healthPath }}
+          --spec-dir /etc/swapk8s/specs
+          --startup-timeout {{ $m.coldStartSeconds | default $h.coldStartSeconds }}s
+          --card-wait {{ $h.cardWaitSeconds | default 300 }}s
+        # ${PID} is llama-swap substituting the serve process's pid into the
+        # stop command. cmdStop owns the whole stop, process included: llama-swap
+        # runs this and returns without touching the process tree, so if this
+        # did not kill the serve process it would linger in its
+        # not-ready-forever loop, the process handle would never close, and the
+        # exclusive group would never free - which is the second bug this
+        # cluster found the hard way.
+        cmdStop: >-
+          {{ $h.bundle }}/bin/swapk8s stop
+          --model {{ $name }}
+          --pid ${PID}
+        # proxy is the bare host, no path: llama-swap APPENDS the incoming
+        # request path to this value (internal/process uses Go's
+        # NewSingleHostReverseProxy, which prepends the proxy path), so /v1 here
+        # would become /v1/v1/chat/completions at the backend - the first wake
+        # 404'd exactly that way. The incoming /v1/... from clients carries the
+        # prefix on its own.
+        proxy: http://127.0.0.1:${PORT}
+      {{- end }}
+---
+{{- end }}

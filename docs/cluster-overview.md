@@ -19,15 +19,21 @@ the sections below the throughput tables are the historical docker-era record.
 
 ## Serving configuration (current — k3s, since 2026-09-17)
 
-One k3s cluster (`nix/services/k3s.nix`), one Deployment per model from the
-helm chart in `k8s/apps/ai/` (one values file per model; `just k8s-deploy`
-renders + applies). All clients (pi, opencode, HA, n8n) hit the LiteLLM gateway
-at `:8000` and name the model in the request — model ID = real running name
-(`--alias` = gateway `model_name`, no masking). Models PV = `/var/lib/llama-models`
-(local PV, PSS-restricted); `nixBinary: true` models also mount `/nix/store:ro`
-and run the nix-built fork binary (store path hardcoded in the values file).
+One k3s cluster (`nix/services/k3s.nix`), one values file per model from the
+helm chart in `k8s/apps/ai/` (`just k8s-render` previews, `just deploy mjolnir`
+ships host + cluster in one generation). Two lifecycles: **static** models render a
+Deployment that is always up (none today), **on-demand** models
+(`lifecycle: on-demand`) render no Deployment at all — the swap head-end
+creates one on request, waits for readiness, proxies, and scales it back to
+zero on idle (see the on-demand fleet section below). Since 2026-10-12 the
+whole fleet, flash-next included, is on-demand: idle hands back both cards
+(~87 GiB host RAM free, measured) and every model wakes on request. All clients (pi,
+opencode, HA, n8n) hit the LiteLLM gateway at `:8000` and name the model in the
+request — model ID = real running name (`--alias` = gateway `model_name`, no
+masking). Models PV = `/var/lib/llama-models` (local PV, PSS-restricted);
+`nixBinary: true` models also mount `/nix/store:ro`.
 
-### GPU 0 — swift-qwen3.8-27b (coding / agentic)
+### GPU 0 — swift-qwen3.8-27b (coding / agentic, on-demand since 2026-10-12)
 
 Swift-Qwen3.8-27B (gated Swift Open v1.0 license; GGUF hand-pulled, not
 flake-reproducible). b10920 upstream image (digest pinned), `--reasoning` baked
@@ -43,7 +49,7 @@ into the vendored template at `xhigh` — not per-request.
 | Sampling | temp 0.6, top-k 20, top-p 0.8, repeat-penalty 1.0 (Qwen coding preset) |
 | Chat template | vendored `qwen3-chat-template.jinja` (chart configmap) |
 
-### GPU 1 — flash-next-strata-iq4xs (general / tools)
+### GPU 1 — flash-next-strata-iq4xs (general / tools, on-demand since 2026-10-12)
 
 Qwen3.8-Flash-Next on the **Strata engine** (Niko1221/Strata, MIT) — a Python
 server driving a compiled C++ engine, not llama.cpp. Gateway name
@@ -59,9 +65,103 @@ moved. Built natively for sm_75 by `nix/hosts/mjolnir/_strata.nix`.
 | Experts | from the pack, 55 GiB resident (`--resident-budget-gib`; this is what `LOW_RAM=on` resolves to) |
 | Decode / prefill | 32–57 t/s, ~1030 t/s prefill (2026-10-07 bench) |
 
-**Disabled:** gemma-4-26b-a4b (voice / HA / n8n). Gemma and Flash-Next do not
-share a card; nothing was migrated off gemma, its callers are quiet. Its values
-entry is `enable: false`, its config and pack are still on the PVC.
+**On-demand since 2026-10-12:** both gemma endpoints (the thinking variant and
+the non-thinking one — same weights, reasoning on/off is the only difference)
+and swift-qwen3-8-27b share the swappable slot — one model awake at a time, the
+waker evicts the other automatically. All render no static Deployment; their
+pod specs travel to the head-end and the models wake on request — flash-next
+included since 2026-10-12, with a 1800 s ttl: it stays resident through the
+work day and sleeps overnight, handing GPU 1 back as a second swappable slot.
+Gemma's config and pack were already on the PVC; nothing was migrated.
+
+### The on-demand fleet — wake times and model names (measured 2026-10-12)
+
+The swapper is llama-swap v264 plus this repo's `swapk8s` shim
+(`nix/hosts/mjolnir/_swapk8s.nix`, one store path linked through the render
+the same way the strata bundle is). Clients still name the model at `:8000`
+exactly as before — the names below are unchanged — but the gateway routes
+on-demand models to the head-end, which holds the request, streams loading
+remarks into the reasoning field, and answers when the model is up.
+
+| Model — what clients name | Deployment / roster key | Wake, cache-warm | Wake, cache-cold | Idle sleep |
+|---|---|---|---|---|
+| `swift-qwen3.8-27b` | `swift-qwen3-8-27b` | 100–111 s | 100 s (60 s pod-to-Ready) | ttl 900 s |
+| `gemma-4-26b-a4b` (non-thinking) | `gemma-4-26b-a4b` | 126 s | — same weights as the think variant: 144 s | ttl 900 s |
+| `Qwen3.6-35B-A3B` | `qwen3-6-35b-iq4xs` | 96.7 s (first on-demand wake, placed on gpu 0) | — same loader shape as gemma | ttl 900 s |
+| `gemma-4-26b-a4b-think` | `gemma-4-26b-a4b-think` | 126–137 s (137 s through a full eviction) | 144 s (80 s pod-to-Ready) | ttl 900 s |
+| `qwen3.8-flash-next` | `flash-next-strata-iq4xs` | 86 s (first on-demand wake; the restart-wake it replaced measured 83 s) | — | **ttl 1800 s** — the coding agent never pays a wake during the work day; it sleeps overnight and hands the card back |
+
+Cold wakes were measured with the page cache dropped before the request
+(`echo 3 > /proc/sys/vm/drop_caches`). The result kills a piece of lore: the
+wakes land in the same band warm (~100–144 s), so the load is compute-bound,
+not disk-bound — the "23 minutes of weight loading" the swift entry used to
+carry never survived a measurement, and could not have: the pod's own
+startupProbe budget is 30×10 s = 300 s, so a 23-minute load would have
+failed the probe before anything else gave up. `coldStartSeconds` therefore
+sits at 240 s — comfortably above the measured load, and within the probe
+budget, which is the real ceiling: a budget larger than the probe's means the
+pod fails and restarts before the shim ever gives up on it. A warm request
+through the head-end costs ~0.1 s to first token — the swapper on the path is
+free. Both cards can be loaded at once with ~37–39 GiB host RAM still free;
+the swapper runs one group per card (`exclusive: false`), so one model per
+card awake at a time and two models in tandem across the cards — measured
+with two wakes fired 15 s apart: both served, both Ready simultaneously, host
+RAM never below 38.5 GiB. Within a card, waking a model evicts the card-mate.
+A head-end restart puts the whole fleet to sleep.
+
+**Dynamic placement (2026-10-12, night, verified live): models are not pinned
+to cards.**
+A model's `gpu:` value in its values entry is its card **pool** ("0,1"), and
+the shim lands every wake on a free card from the pool: it scans model pods
+for held cards, takes a free one under a placement lock (flock — the race it
+closes is two wakes seeing the same free card), applies the spec with the
+chosen card in `NVIDIA_VISIBLE_DEVICES`, and holds the lock until the pod
+exists so the next wake's scan sees the claim. When every card is busy the
+wake **waits** (`headEnd.cardWaitSeconds`, 300 s) rather than crashlooping a
+pod onto a busy card — the failure mode that produced the first cutover's
+crashloop — and fails with a reason if the wait runs out. A one-card pool is
+still a pin, so a model can be restricted deliberately. A model that needs
+**every** card (`gpuMode: all`, e.g. the future 2-GPU strata variant) gets
+its own `exclusive: true` group: waking it unloads the fleet, and a
+single-card wake onto a card it holds is the shim's wait, which is why
+placement lives in the shim rather than the group router (the router is
+static topology, not resource awareness). The group structure collapsed
+with placement: one `anywhere` group, `swap: false` — coexistence is the
+shim's to arbitrate now.
+
+Measured live: two wakes ten seconds apart landed on opposite cards (the pod
+env values prove the shim decided — the values files carry pools, not pins),
+both Ready simultaneously, answers at t+94.6 s and t+138.7 s. A wake into a
+fully busy fleet created **no pod at all** — it held the request for the
+whole 300 s card-wait with the loading stream open, then gave up with the
+start failure in-band. The pool/mode labels the chart renders on the spec
+are a transport channel the shim consumes and strips — a pool like "0,1" is
+an invalid *label value* (kubernetes rejects commas), which the first live
+apply caught as a 422.
+
+**The 2-GPU spanning variant (2026-10-12): built, benchmarked, honestly gated
+off.** A real setup pass minted its config (`gpu [0,1]`, `layer_split auto`,
+`--remote-expert-opt`, 262144 context with the KV cache streamed to RAM), the
+span machinery was verified live — an exclusive `span-0-1` group that unloads
+the fleet on wake, one pod claiming both cards — and the benchmark gate closed
+it: the multi-GPU load path is a single-threaded CPU phase whose host RSS
+climbs past 60 GB toward the setup's own ~118 GB worst-case estimate and dies
+before serving, restarting into the same cycle. On a 94 GiB host it does not
+fit; the entry is `enable: false` with the full working setup recorded in
+values — on a 128 GiB host, re-enable it as-is.
+
+The gemma endpoints — **both on-demand since 2026-10-12** — are the same
+weights sharing the one swappable slot, so the exclusive group swaps them
+like any two models: waking either evicts the other, and a measured
+variant-to-variant swap (think requested while non-think was loaded) took
+142.6 s end to end. Pick by name: the **thinking** variant for deliberating
+agents (reasoning is an endpoint property, not a request property — it is
+binary at the sampler and no per-request knob reaches it), the non-thinking
+variant for voice/classification traffic that needs speakable latency and
+fixed-budget JSON. A thinking model spends its first tokens on reasoning, so
+a small `max_tokens` can end the stream before any content: the 144 s cold
+wake above reached its first *content* token at the end of the load; budget
+content accordingly.
 
 ### The `engine: strata` recipe
 
@@ -93,10 +193,21 @@ Rollouts are `Recreate` (the model owns its card) and there is no livenessProbe
 120 s termination grace, so a rollout during one does interrupt it.
 
 ### Dormant chart models (enable: false)
-qwen3-8-flash-next (+256k), qwen3-8-27b (+turboq), qwen3-6-35b-iq4xs,
-gemma-4-26b-a4b-longctx. The four `nixBinary: true` ones need the nix-built
-forks (`_llama-fork.nix`, `_llama-turboq.nix` — kept after the docker-layer
-deletion because their store paths are hardcoded in the chart values).
+gemma-4-26b-a4b (non-thinking), gemma-4-26b-a4b-think (same weights, reasoning
+left on — thinking is an endpoint property, so voice and deliberating agents
+cannot share a server), qwen3-6-35b-iq4xs. All are image-based; none needs a
+nix-built binary. All declare `gpu: "0"` — GPU 1 belongs to the resident
+orchestrator, so there is exactly one swappable slot. The 35B's pinned image
+(`41ebf873c2e0`) is not in containerd, so its first wake needs a pull.
+
+Retired 2026-10-12 also: gemma-4-26b-a4b-longctx (262k, non-thinking) — redundant
+with the 262k orchestrator, and long-context recall was never its strength.
+Retired earlier: qwen3-8-flash-next (+256k) and qwen3-8-27b (+turboq) — the
+four `nixBinary: true` entries that pointed at the nix-built llama.cpp forks.
+Their pinned store paths had already been garbage-collected, so a wake would
+have crashed; deleting them also freed `_llama-fork.nix` and
+`_llama-turboq.nix`, which nothing else referenced. The Strata bundle is now the
+only nix-built thing a pod mounts.
 
 ### Endpoints (current)
 

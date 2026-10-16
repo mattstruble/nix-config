@@ -40,7 +40,16 @@ Two things to know before changing anything here:
 {{- $_ := set $cfg "exe" (printf "%s/bin/strata" $bundle) }}
 {{- $_ := set $cfg "cwd" $bundle }}
 {{- $_ := set $cfg "port" (int $m.port) }}
-{{- $_ := set $cfg "gpu" (int $m.gpuIndex) }}
+{{- /* gpu: the config carries it per topology - (int gpuIndex) for a
+     single-card entry (the container-local index, injected here so the values
+     entry cannot disagree with the pod), or the card LIST from the recorded
+     multi-card setup output for a gpus: entry (layer-split), where injecting a
+     single int would silently collapse [0,1] to 0 and the engine would run
+     one card of a two-card model. The serve-time GPUS env carries the list to
+     --gpus regardless; this is the recorded default. */}}
+{{- if not $m.gpus }}
+{{- $_ := set $cfg "gpu" (int ($m.gpuIndex | default "0")) }}
+{{- end }}
 {{- $_ := set $cfg "api_key" "" }}
 apiVersion: v1
 kind: ConfigMap
