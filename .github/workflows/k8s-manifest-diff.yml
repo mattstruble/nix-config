@@ -60,39 +60,51 @@ jobs:
 
       - name: Render PR and base, build comment
         run: |
-          # Eval a bundle path, falling back to a labelled placeholder. The chart
-          # fails a render that has no bundle rather than emit an empty mountPath,
-          # so the preview needs a value; a placeholder keeps a broken eval from
-          # blocking manifest review, and strata-bundle-linked is the job that
-          # asserts the real link.
-          bundle() {
-            local out
-            if out=$(nix eval --raw "$1" 2>&1); then
+          # Eval a bundle path the way `just k8s-render` does. Only stdout may reach
+          # the value: nix writes noise to stderr ("Using saved setting for...",
+          # "warning: Git tree is dirty" once the base restore dirties the tree), and
+          # a multi-line value lands inside a YAML block scalar and breaks the render.
+          # A failed or unrecognisable result degrades to a labelled placeholder - a
+          # broken eval should not block manifest review, and strata-bundle-linked is
+          # the job that asserts the real link.
+          get_bundle() {
+            local opt=$1 placeholder=$2 out
+            out=$(nix eval --raw "$opt" 2>/dev/null) || out=""
+            if [[ "$out" == /nix/store/* && "$out" != *$'\n'* ]]; then
               printf '%s' "$out"
             else
-              echo "::warning::nix eval $1 failed (${out}); preview uses a placeholder"
-              printf '%s' "$2"
+              echo "::warning::nix eval $opt gave no store path; the preview uses a placeholder" >&2
+              printf '%s' "$placeholder"
             fi
           }
+          STRATA_BUNDLE=$(get_bundle .#nixosConfigurations.mjolnir.config.services.k3s.aiChart.strataBundle /nix/store/00000000000000000000000000000000-strata-preview)
+          HEADEND_BUNDLE=$(get_bundle .#nixosConfigurations.mjolnir.config.services.k3s.aiChart.headEndBundle /nix/store/00000000000000000000000000000000-head-end-preview)
           render() {
-            # same values-file glob as `just k8s-render` and the nix render
-            # derivation (modules/services/k3s.nix); the chart dir is detected
-            # so the base (pre-rename) renders too
-            CHART=k8s/apps/ai; [ -d "$CHART" ] || CHART=k8s/llama-fleet
-            F=(-f "$CHART/values.yaml")
+            # Render the chart under $1 (default: this checkout). Same values-file
+            # glob as `just k8s-render` and the nix render derivation
+            # (modules/services/k3s.nix); the chart dir is detected so a pre-rename
+            # base renders too.
+            local root=${1:-$PWD}
+            local CHART="$root/k8s/apps/ai"; [ -d "$CHART" ] || CHART="$root/k8s/llama-fleet"
+            local F=(-f "$CHART/values.yaml")
+            local f
             for f in "$CHART"/values/*.yaml; do F+=(-f "$f"); done
             # the nix render injects the bundles it built; without them the preview
             # shows empty mount paths and disagrees with production
-            F+=(--set "strataBundle=$(bundle .#nixosConfigurations.mjolnir.config.services.k3s.aiChart.strataBundle /nix/store/00000000000000000000000000000000-strata-preview)")
-            F+=(--set "headEnd.bundle=$(bundle .#nixosConfigurations.mjolnir.config.services.k3s.aiChart.headEndBundle /nix/store/00000000000000000000000000000000-head-end-preview)")
+            F+=(--set "strataBundle=$STRATA_BUNDLE" --set "headEnd.bundle=$HEADEND_BUNDLE")
             helm template "$(basename "$CHART")" "$CHART" "${F[@]}"
           }
           render > /tmp/pr.yaml
-          if git cat-file -e "${{ github.event.pull_request.base.sha }}:k8s" 2>/dev/null; then
-            git restore --source="${{ github.event.pull_request.base.sha }}" -- k8s/
-            render > /tmp/base.yaml
+          # Render the base from its own worktree. `git restore --source=base -- k8s/`
+          # is not a base checkout: it rewrites the files the base has and leaves the
+          # PR's new files where they are, so the "base" render mixes base values with
+          # this PR's new templates and disagrees with what the base actually shipped.
+          BASE="${{ github.event.pull_request.base.sha }}"
+          if git cat-file -e "$BASE:k8s" 2>/dev/null; then
+            git worktree add --detach --quiet /tmp/base-wt "$BASE"
+            render /tmp/base-wt > /tmp/base.yaml
           else
-            : > /tmp/base.yaml  # base has no k8s/ — everything is new
+            : > /tmp/base.yaml  # base has no k8s/ - everything is new
           fi
           {
             echo "## Rendered manifest diff"
