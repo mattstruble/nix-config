@@ -63,12 +63,12 @@ moved. Built natively for sm_75 by `nix/hosts/mjolnir/_strata.nix`.
 | Experts | from the pack, 55 GiB resident (`--resident-budget-gib`; this is what `LOW_RAM=on` resolves to) |
 | Decode / prefill | 32–57 t/s, ~1030 t/s prefill (2026-10-07 bench) |
 
-**On-demand since 2026-10-12:** gemma-4-26b-a4b-think (the fleet's gemma —
-the thinking variant; the non-thinking off-variant is disabled, not deleted)
-and swift-qwen3-8-27b share the swappable slot — one model awake at a time,
-the waker evicts the other automatically. Both render no static Deployment;
-their pod specs travel to the head-end and the models wake on request.
-Gemma's config and pack were already on the PVC; nothing was migrated.
+**On-demand since 2026-10-12:** both gemma endpoints (the thinking variant and
+the non-thinking one — same weights, reasoning on/off is the only difference)
+and swift-qwen3-8-27b share the swappable slot — one model awake at a time, the
+waker evicts the other automatically. All render no static Deployment; their
+pod specs travel to the head-end and the models wake on request. Gemma's
+config and pack were already on the PVC; nothing was migrated.
 
 ### The on-demand fleet — wake times and model names (measured 2026-10-12)
 
@@ -82,6 +82,7 @@ remarks into the reasoning field, and answers when the model is up.
 | Model — what clients name | Deployment / roster key | Wake, cache-warm | Wake, cache-cold | Idle sleep |
 |---|---|---|---|---|
 | `swift-qwen3.8-27b` | `swift-qwen3-8-27b` | 100–111 s | 100 s (60 s pod-to-Ready) | ttl 900 s |
+| `gemma-4-26b-a4b` (non-thinking) | `gemma-4-26b-a4b` | 126 s | — same weights as the think variant: 144 s | ttl 900 s |
 | `gemma-4-26b-a4b-think` | `gemma-4-26b-a4b-think` | 126–137 s (137 s through a full eviction) | 144 s (80 s pod-to-Ready) | ttl 900 s |
 | `qwen3.8-flash-next` | `flash-next-strata-iq4xs` — static, resident | 83 s (a deploy/restart wake, not swapper-driven) | — | never |
 
@@ -100,13 +101,18 @@ free. Both cards can be loaded at once with ~37–39 GiB host RAM still free;
 waking either on-demand model evicts the other (one host-wide exclusive
 group), and a head-end restart puts the whole fleet to sleep.
 
-The fleet's gemma is the **thinking variant** (`gemma-4-26b-a4b-think`, same
-weights as the disabled off-variant, reasoning left on): reasoning is an
-endpoint property here, not a request property — it is binary at the sampler
-and no per-request knob reaches it. A thinking model spends its first tokens
-on reasoning, so a small `max_tokens` can end the stream before any content:
-the 144 s cold wake above reached its first *content* token at the end of the
-load; budget content accordingly.
+The gemma endpoints — **both on-demand since 2026-10-12** — are the same
+weights sharing the one swappable slot, so the exclusive group swaps them
+like any two models: waking either evicts the other, and a measured
+variant-to-variant swap (think requested while non-think was loaded) took
+142.6 s end to end. Pick by name: the **thinking** variant for deliberating
+agents (reasoning is an endpoint property, not a request property — it is
+binary at the sampler and no per-request knob reaches it), the non-thinking
+variant for voice/classification traffic that needs speakable latency and
+fixed-budget JSON. A thinking model spends its first tokens on reasoning, so
+a small `max_tokens` can end the stream before any content: the 144 s cold
+wake above reached its first *content* token at the end of the load; budget
+content accordingly.
 
 ### The `engine: strata` recipe
 

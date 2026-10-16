@@ -1,13 +1,22 @@
 models:
   gemma-4-26b-a4b:
-    # Disabled 2026-10-12: the fleet's gemma is the THINKING variant
-    # (gemma-4-26b-a4b-think, same weights, reasoning left on). Reasoning is an
-    # endpoint property here, not a request property (see
-    # docs/ + the 2026-09-14 decision), so the off-variant is a separate entry,
-    # kept inert - not deleted - for the day non-thinking gemma traffic returns.
-    # Re-enable by flipping this back to true (and disabling the think variant,
-    # or letting the exclusive group swap them - both are on-demand-shaped).
-    enable: false
+    # On-demand 2026-10-12, alongside the thinking variant: BOTH gemma
+    # endpoints stand up on request. They are the same weights and share the
+    # one swappable slot, so the exclusive group swaps them - waking either
+    # evicts the other, and each wake is a full load (~80s pod-to-Ready,
+    # measured with caches dropped). Reasoning is an endpoint property here,
+    # not a request property (see the 2026-09-14 decision): this is the
+    # NON-thinking endpoint (`--reasoning off`), for voice/classification
+    # traffic that needs speakable latency and fixed-budget JSON; deliberating
+    # agents belong on gemma-4-26b-a4b-think.
+    #
+    # coldStartSeconds: same weights, same load as the think variant - 80s
+    # pod-to-Ready measured, 240 keeps it within the pod's own startupProbe
+    # budget (30 x 10s), which is the real ceiling - see the swift entry for
+    # why a budget larger than the probe's is incoherent.
+    enable: true
+    lifecycle: on-demand
+    coldStartSeconds: 240
     image: ghcr.io/ggml-org/llama.cpp:server-cuda12-b11151
     gpu: "0"   # on-demand card: GPU 1 belongs to the resident orchestrator
     port: 8555
