@@ -108,7 +108,8 @@ with two wakes fired 15 s apart: both served, both Ready simultaneously, host
 RAM never below 38.5 GiB. Within a card, waking a model evicts the card-mate.
 A head-end restart puts the whole fleet to sleep.
 
-**Dynamic placement (2026-10-12, night): models are not pinned to cards.**
+**Dynamic placement (2026-10-12, night, verified live): models are not pinned
+to cards.**
 A model's `gpu:` value in its values entry is its card **pool** ("0,1"), and
 the shim lands every wake on a free card from the pool: it scans model pods
 for held cards, takes a free one under a placement lock (flock — the race it
@@ -126,6 +127,16 @@ placement lives in the shim rather than the group router (the router is
 static topology, not resource awareness). The group structure collapsed
 with placement: one `anywhere` group, `swap: false` — coexistence is the
 shim's to arbitrate now.
+
+Measured live: two wakes ten seconds apart landed on opposite cards (the pod
+env values prove the shim decided — the values files carry pools, not pins),
+both Ready simultaneously, answers at t+94.6 s and t+138.7 s. A wake into a
+fully busy fleet created **no pod at all** — it held the request for the
+whole 300 s card-wait with the loading stream open, then gave up with the
+start failure in-band. The pool/mode labels the chart renders on the spec
+are a transport channel the shim consumes and strips — a pool like "0,1" is
+an invalid *label value* (kubernetes rejects commas), which the first live
+apply caught as a 422.
 
 The gemma endpoints — **both on-demand since 2026-10-12** — are the same
 weights sharing the one swappable slot, so the exclusive group swaps them
