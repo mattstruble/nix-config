@@ -17,7 +17,11 @@ models:
     coldStartSeconds: 240
     enable: true
     image: ghcr.io/ggml-org/llama.cpp:server-cuda12-b11151
-    gpu: "0"
+    # the CARD POOL, not a pin: placement is the shim's - it lands this model on
+    # any free card in the pool at wake time, waits for one if all are busy, and
+    # fails with a reason if its wait budget expires. A single-card pool ("0")
+    # is still honoured, so a model CAN be pinned by declaring one card.
+    gpu: "0,1"
     port: 8556
     modelName: "swift-qwen3.8-27b"
     nixBinary: false

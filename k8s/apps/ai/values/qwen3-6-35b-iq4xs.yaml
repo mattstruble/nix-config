@@ -5,7 +5,7 @@ models:
   qwen3-6-35b-iq4xs:
     enable: false
     image: ghcr.io/ggml-org/llama.cpp@sha256:41ebf873c2e085dcc3186dc4717ce8112bf8011aabd98038b6bb2b1fe66c86b9
-    gpu: "0"   # on-demand card: GPU 1 belongs to the resident orchestrator
+    gpu: "0,1"
     port: 8555
     modelName: "Qwen3.6-35B-A3B"
     nixBinary: false

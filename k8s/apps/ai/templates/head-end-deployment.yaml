@@ -92,10 +92,18 @@ spec:
             readOnlyRootFilesystem: true
             capabilities: { drop: ["ALL"] }
           volumeMounts:
+            - { name: tmp, mountPath: /tmp }
             - { name: nix-store, mountPath: /nix/store, readOnly: true }
             - { name: config, mountPath: /etc/llama-swap, readOnly: true }
             - { name: specs, mountPath: /etc/swapk8s/specs, readOnly: true }
       volumes:
+        # The shim's placement flock lives here (/tmp/swapk8s-cards.lock):
+        # every serve process in the pod serialises card selection on it, and
+        # an emptyDir is the one writable path a restricted pod gets. Without
+        # it placement cannot lock and every wake would fail on the lock file.
+        - name: tmp
+          emptyDir:
+            sizeLimit: 64Mi
         - name: nix-store
           persistentVolumeClaim:
             claimName: nix-store-pvc

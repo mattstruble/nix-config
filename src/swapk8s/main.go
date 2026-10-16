@@ -54,6 +54,27 @@ const (
 	// modelLabel carries the llama-swap model ID, which is what the roster
 	// speaks. Deployment names are derived from it, not the other way round.
 	modelLabel = "ai.mestruble.dev/model"
+	// The label every model pod carries (rendered by ai.modelLabels in the
+	// chart): the busy-card scan selects on it so only model pods count as
+	// holding cards.
+	modelComponentLabel = "app.kubernetes.io/component"
+	// The GPU pool and mode travel as labels on the spec the chart rendered:
+	// gpu-pool is the list of cards a model may use ("0", "1", "0,1"), gpu-mode
+	// is how to read it - "any" (land on one free card from the pool) or "all"
+	// (a spanning model that needs every card in the pool). The chart renders
+	// them from the values entry; placement is the shim's, so the contract
+	// between them has to be this explicit.
+	gpuPoolLabel = "ai.mestruble.dev/gpu-pool"
+	gpuModeLabel = "ai.mestruble.dev/gpu-mode"
+	// The env var the spec uses to pin a card, rendered from the values entry.
+	// In the spec ConfigMap it carries the POOL; at placement time the shim
+	// narrows it to the card it chose.
+	gpuEnv = "NVIDIA_VISIBLE_DEVICES"
+	// Where every shim in the head-end pod serialises placement. /tmp is the
+	// one writable path the head-end pod mounts for the shims (an emptyDir);
+	// every serve process in the pod sees the same file, and flock is the only
+	// coordination that survives a holder's death.
+	cardLockPath = "/tmp/swapk8s-cards.lock"
 )
 
 // ---- Kubernetes client -----------------------------------------------------
@@ -208,8 +229,13 @@ func (c *client) scale(ns, name string, replicas int) (bool, error) {
 }
 
 // normalizeSpec turns the chart-rendered spec into the two request bodies this
-// binary needs. It is pure so the guards are testable without an API server.
-func normalizeSpec(ns, name string, spec []byte) (create []byte, patch []byte, err error) {
+// binary needs. gpu is the resolved card(s) for NVIDIA_VISIBLE_DEVICES - for an
+// "any"-mode model exactly one card, for an "all"-mode (spanning) model the
+// pool verbatim. The spec as rendered carries the POOL, and a pool must never
+// reach the API unresolved: an "any" model created with "0,1" would take both
+// cards while claiming one. It is pure so the guards are testable without an
+// API server.
+func normalizeSpec(ns, name, gpu string, spec []byte) (create []byte, patch []byte, err error) {
 	var body map[string]any
 	if err := json.Unmarshal(spec, &body); err != nil {
 		return nil, nil, fmt.Errorf("spec for %s is not valid JSON: %w", name, err)
@@ -248,6 +274,43 @@ func normalizeSpec(ns, name string, spec []byte) (create []byte, patch []byte, e
 	// instead of as a Deployment in the manifest.
 	delete(specMap, "replicas")
 
+	// Placement: the spec arrives with the POOL in NVIDIA_VISIBLE_DEVICES; the
+	// chosen card(s) replace it. The mode is the caller's contract: wake passes
+	// exactly one card for an any-mode model and the pool verbatim for an
+	// all-mode (spanning) one. Only an empty resolution is refused here - it
+	// means placement failed and a pool must never reach the API unresolved.
+	if gpu == "" {
+		return nil, nil, fmt.Errorf("spec for %s: no card resolved for %s (the chart rendered the pool; placement failed to narrow it)", name, gpuEnv)
+	}
+	{
+		tmpl, ok := specMap["template"].(map[string]any)
+		if !ok {
+			return nil, nil, fmt.Errorf("spec for %s has no .spec.template", name)
+		}
+		pspec, _ := tmpl["spec"].(map[string]any)
+		if pspec == nil {
+			return nil, nil, fmt.Errorf("spec for %s has no .spec.template.spec", name)
+		}
+		containers, _ := pspec["containers"].([]any)
+		if len(containers) == 0 {
+			return nil, nil, fmt.Errorf("spec for %s has no containers", name)
+		}
+		c0, _ := containers[0].(map[string]any)
+		env, _ := c0["env"].([]any)
+		found := false
+		for _, e := range env {
+			em, ok := e.(map[string]any)
+			if !ok || em["name"] != gpuEnv {
+				continue
+			}
+			em["value"] = gpu
+			found = true
+		}
+		if !found {
+			return nil, nil, fmt.Errorf("spec for %s has no %s env (the chart must render it from the model's gpu pool)", name, gpuEnv)
+		}
+	}
+
 	// The update body must not carry a replica count: that is the write conflict
 	// the ConfigMap indirection exists to prevent.
 	patchBody, err := json.Marshal(map[string]any{
@@ -268,8 +331,8 @@ func normalizeSpec(ns, name string, spec []byte) (create []byte, patch []byte, e
 
 // applyDeployment creates the Deployment from the chart-rendered spec, or
 // updates the existing one. spec is the JSON the chart emitted.
-func (c *client) applyDeployment(ns, name string, spec []byte, existing *deployment) error {
-	createBody, patchBody, err := normalizeSpec(ns, name, spec)
+func (c *client) applyDeployment(ns, name, gpu string, spec []byte, existing *deployment) error {
+	createBody, patchBody, err := normalizeSpec(ns, name, gpu, spec)
 	if err != nil {
 		return err
 	}
@@ -291,8 +354,17 @@ func (c *client) applyDeployment(ns, name string, spec []byte, existing *deploym
 type podList struct {
 	Items []struct {
 		Metadata struct {
-			Name string `json:"name"`
+			Name              string `json:"name"`
+			DeletionTimestamp any    `json:"deletionTimestamp"`
 		} `json:"metadata"`
+		Spec struct {
+			Containers []struct {
+				Env []struct {
+					Name  string `json:"name"`
+					Value string `json:"value"`
+				} `json:"env"`
+			} `json:"containers"`
+		} `json:"spec"`
 		Status struct {
 			Phase      string `json:"phase"`
 			PodIP      string `json:"podIP"`
@@ -362,6 +434,89 @@ func (c *client) readyPod(ns string, sel map[string]string) (string, string, err
 	return "", reason, nil
 }
 
+// busyCards returns the cards held by model pods in the namespace. A card is
+// busy from the moment a pod claiming it exists - not from readiness - because
+// a loading pod already owns its card, and treating it otherwise is how a
+// second wake lands on a busy card and crashloops. Terminating pods are
+// excluded: their card is going back on its own.
+func (c *client) busyCards(ctx context.Context, ns string) (map[string]bool, error) {
+	q := url.Values{}
+	q.Set("labelSelector", modelComponentLabel+"=model")
+	raw, err := c.do(http.MethodGet, fmt.Sprintf("/api/v1/namespaces/%s/pods?%s", ns, q.Encode()), "", nil)
+	if err != nil {
+		return nil, err
+	}
+	return cardsFromPods(raw)
+}
+
+// cardsFromPods is the pure half of busyCards so the busy-card rules are
+// testable without a cluster: terminating pods release, spanning pods claim
+// every card in their pool, empty values claim nothing.
+func cardsFromPods(raw []byte) (map[string]bool, error) {
+	pl := &podList{}
+	if err := json.Unmarshal(raw, pl); err != nil {
+		return nil, err
+	}
+	busy := map[string]bool{}
+	for _, p := range pl.Items {
+		if p.Metadata.DeletionTimestamp != nil {
+			continue
+		}
+		for _, c := range p.Spec.Containers {
+			for _, e := range c.Env {
+				if e.Name == gpuEnv {
+					for _, card := range strings.Split(e.Value, ",") {
+						if card != "" {
+							busy[card] = true
+						}
+					}
+				}
+			}
+		}
+	}
+	return busy, nil
+}
+
+// cardLock serialises placement across every shim in the head-end pod. The
+// race it closes is real: two wakes deciding at the same moment see the same
+// free card, and the losing pod lands on a busy card - the exact crashloop the
+// first cutover produced. The lock must be held until the chosen pod EXISTS in
+// the API (a scaled Deployment takes seconds to produce a visible pod), not
+// just until the scale call returns; only then is the claim visible to the
+// next shim's busy-card scan. flock, not a lock file: the kernel releases it
+// if the holder dies, so a crashed shim cannot wedge the fleet's placement.
+func cardLock(path string) (*os.File, error) {
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o644)
+	if err != nil {
+		return nil, err
+	}
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
+		f.Close()
+		return nil, err
+	}
+	return f, nil
+}
+
+func cardUnlock(f *os.File) {
+	if f == nil {
+		return
+	}
+	syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+	f.Close()
+}
+
+// podsForDeployment reports whether the Deployment has at least one pod (any
+// state, including terminating: the claim only has to be visible). Used both
+// for adoption (a pod means a card is already claimed for this model) and for
+// the lock-hold window after scaling.
+func (c *client) podsForDeployment(ns string, sel map[string]string) (bool, error) {
+	pl, err := c.pods(ns, sel)
+	if err != nil {
+		return false, err
+	}
+	return len(pl.Items) > 0, nil
+}
+
 func (c *client) listManaged(ns string) ([]string, error) {
 	raw, err := c.do(http.MethodGet,
 		fmt.Sprintf("/apis/apps/v1/namespaces/%s/deployments?labelSelector=%s%%3D%s",
@@ -396,8 +551,8 @@ type options struct {
 	// (internal/process/process_command.go: sendStopSignal runs CmdStop and
 	// returns without touching the tree), so stop without a pid can only
 	// scale - useful by hand, not enough for the swapper.
-	cmdPid                             int
-	poll, startupTimeout, stopDeadline time.Duration
+	cmdPid                                       int
+	poll, startupTimeout, stopDeadline, cardWait time.Duration
 }
 
 func main() {
@@ -416,6 +571,7 @@ func main() {
 	fs.StringVar(&o.specDir, "spec-dir", "/etc/swapk8s/specs", "directory of <model>.json pod specs from the chart")
 	fs.DurationVar(&o.poll, "poll", time.Second, "cluster poll interval")
 	fs.DurationVar(&o.startupTimeout, "startup-timeout", 10*time.Minute, "give up waiting for readiness after this")
+	fs.DurationVar(&o.cardWait, "card-wait", 5*time.Minute, "give up waiting for a free GPU after this")
 	fs.DurationVar(&o.stopDeadline, "stop-deadline", 5*time.Minute, "hard bound on stop; it must never block the router")
 	fs.IntVar(&o.cmdPid, "pid", 0, "pid of the serve process to stop (llama-swap substitutes ${PID})")
 	fs.StringVar(&o.apiServer, "api-server", "", "kube API base (default: in-cluster)")
@@ -464,41 +620,155 @@ func wake(ctx context.Context, kc *client, o *options) (*deployment, error) {
 		return nil, err
 	}
 
-	// The spec is applied only here, on the way up. Patching a Deployment while
-	// it is serving would roll the pod out from under a router that believes it
-	// has a healthy backend, so a chart change takes effect on the next wake.
-	// That is a deliberate staleness: it is bounded by one idle timeout, and it
-	// is the same window the model's own image already has.
-	if spec, err := os.ReadFile(o.specDir + "/" + name + ".json"); err == nil {
-		if err := kc.applyDeployment(o.namespace, name, spec, cur); err != nil {
-			return nil, fmt.Errorf("apply spec: %w", err)
-		}
-		log.Printf("applied chart spec for %s", name)
-		if cur == nil {
-			// applyDeployment created it at replicas=1.
-			cur, err = kc.getDeployment(o.namespace, name)
-			if err != nil || cur == nil {
-				return nil, fmt.Errorf("deployment %s did not appear after create: %v", name, err)
+	// ADOPTION: a Deployment that already has a pod - running, loading, or
+	// crashlooping - has already claimed its card, and its applied spec already
+	// carries the resolved card (the spec ConfigMap's copy still has the pool;
+	// patching with it would UN-resolve placement for a live pod). So a pod
+	// means: do not touch the spec, do not re-place, just make sure it is at
+	// one and wait. This is also the head-end-restart path: a roster model
+	// orphaned at replicas=1 by a dead head-end is adopted, not evicted.
+	if cur != nil {
+		if has, err := kc.podsForDeployment(o.namespace, cur.Selector); err == nil && has {
+			changed, err := kc.scale(o.namespace, name, 1)
+			if err != nil {
+				return nil, fmt.Errorf("scale up: %w", err)
+			}
+			if changed {
+				log.Printf("adopted %s: pod already claimed its card, left spec untouched", name)
+			} else {
+				log.Printf("adopted %s: already running", name)
 			}
 			return cur, waitReady(ctx, kc, o, cur.Selector)
 		}
-		cur, err = kc.getDeployment(o.namespace, name)
-		if err != nil {
-			return nil, err
-		}
-	} else if !os.IsNotExist(err) {
-		return nil, fmt.Errorf("read spec: %w", err)
-	}
-	if cur == nil {
-		return nil, fmt.Errorf("no deployment %s/%s and no spec at %s/%s.json", o.namespace, name, o.specDir, name)
 	}
 
-	changed, err := kc.scale(o.namespace, name, 1)
+	// FRESH PLACEMENT. The spec arrives with the card POOL; the shim narrows it
+	// to a card no existing model pod holds, or waits for one, or fails with a
+	// reason a client can act on. The chart's spec is applied only here, on the
+	// way up: patching a Deployment while it serves would roll the pod out from
+	// under a router that believes it has a healthy backend, so a chart change
+	// takes effect on the next wake after sleep. That staleness is bounded by
+	// one idle timeout, same as the model's own image.
+	spec, err := os.ReadFile(o.specDir + "/" + name + ".json")
 	if err != nil {
-		return nil, fmt.Errorf("scale up: %w", err)
+		if os.IsNotExist(err) && cur == nil {
+			return nil, fmt.Errorf("no deployment %s/%s and no spec at %s/%s.json", o.namespace, name, o.specDir, name)
+		}
+		if !os.IsNotExist(err) {
+			return nil, fmt.Errorf("read spec: %w", err)
+		}
+		// No spec but a Deployment exists (scaled to zero by a previous life):
+		// scale without re-applying. The applied spec still carries the last
+		// resolved card, which stays claimed by this model until it sleeps.
+		changed, err := kc.scale(o.namespace, name, 1)
+		if err != nil {
+			return nil, fmt.Errorf("scale up: %w", err)
+		}
+		if changed {
+			log.Printf("scaled %s/%s to 1 on its existing spec", o.namespace, name)
+		}
+		return cur, waitReady(ctx, kc, o, cur.Selector)
 	}
-	if changed {
-		log.Printf("scaled %s/%s to 1", o.namespace, name)
+
+	// Pool and mode travel as labels on the chart-rendered spec.
+	var specMeta struct {
+		Metadata struct {
+			Labels map[string]string `json:"labels"`
+		} `json:"metadata"`
+	}
+	if err := json.Unmarshal(spec, &specMeta); err != nil {
+		return nil, fmt.Errorf("spec for %s is not valid JSON: %w", name, err)
+	}
+	pool := strings.TrimSpace(specMeta.Metadata.Labels[gpuPoolLabel])
+	mode := strings.TrimSpace(specMeta.Metadata.Labels[gpuModeLabel])
+	if pool == "" {
+		return nil, fmt.Errorf("spec for %s carries no %s label; the chart must render the card pool it declares in values", name, gpuPoolLabel)
+	}
+	if mode == "" {
+		mode = "any"
+	}
+	cards := strings.Split(pool, ",")
+
+	// The choose-and-claim cycle, under the flock, until a card is free or the
+	// card-wait budget is spent. Waiting - rather than failing fast - is the
+	// point of the design: the fleet is adaptive, every model has a ttl, so a
+	// busy card is a temporary condition and the request should outlive it.
+	// llama-swap holds the request (its queue) while the shim waits here, and
+	// the client sees the loading stream.
+	deadline := time.Now().Add(o.cardWait)
+	var chosen string
+	for {
+		lock, err := cardLock(cardLockPath)
+		if err != nil {
+			return nil, fmt.Errorf("card lock: %w", err)
+		}
+		busy, err := kc.busyCards(ctx, o.namespace)
+		if err != nil {
+			cardUnlock(lock)
+			return nil, fmt.Errorf("scan model pods: %w", err)
+		}
+		if mode == "all" {
+			free := true
+			for _, card := range cards {
+				if busy[card] {
+					free = false
+				}
+			}
+			if free {
+				chosen = pool // a spanning model uses the whole pool, verbatim
+			}
+		} else {
+			for _, card := range cards {
+				if !busy[card] {
+					chosen = card
+					break
+				}
+			}
+		}
+		if chosen != "" {
+			if err := kc.applyDeployment(o.namespace, name, chosen, spec, cur); err != nil {
+				cardUnlock(lock)
+				return nil, fmt.Errorf("apply spec (gpu %s): %w", chosen, err)
+			}
+			if _, err := kc.scale(o.namespace, name, 1); err != nil {
+				cardUnlock(lock)
+				return nil, fmt.Errorf("scale up: %w", err)
+			}
+			log.Printf("placed %s on gpu %s (pool %q, mode %s)", name, chosen, pool, mode)
+			// Hold the lock until the pod is visible: a scaled Deployment takes
+			// seconds to produce a pod, and until it exists the next shim's
+			// busy-card scan would see the card as free. The claim is the pod.
+			for i := 0; i < 120; i++ {
+				if d, derr := kc.getDeployment(o.namespace, name); derr == nil && d != nil {
+					if has, perr := kc.podsForDeployment(o.namespace, d.Selector); perr == nil && has {
+						break
+					}
+				}
+				select {
+				case <-ctx.Done():
+					cardUnlock(lock)
+					return nil, ctx.Err()
+				case <-time.After(500 * time.Millisecond):
+				}
+			}
+			cardUnlock(lock)
+			break
+		}
+		cardUnlock(lock)
+		if time.Now().After(deadline) {
+			return nil, fmt.Errorf("no free card in pool %q (all held) after %s: every card in the pool is serving another model; retry when one sleeps", pool, o.cardWait)
+		}
+		log.Printf("all cards in pool %q busy; waiting for one to free (budget %s)", pool, o.cardWait)
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(o.poll):
+		}
+	}
+
+	cur, err = kc.getDeployment(o.namespace, name)
+	if err != nil || cur == nil {
+		return nil, fmt.Errorf("deployment %s did not appear after placement: %v", name, err)
 	}
 	return cur, waitReady(ctx, kc, o, cur.Selector)
 }

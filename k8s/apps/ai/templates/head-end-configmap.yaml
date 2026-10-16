@@ -34,7 +34,11 @@ data:
     # proxy allocates a port that cmd never binds (validation error, and the
     # first spike's reload failed exactly this way).
     listen: "0.0.0.0:{{ $h.port }}"
-    healthCheckTimeout: {{ $maxCold }}
+    # The global readiness budget must cover a full card-wait AND a full load:
+    # the shim waits for a free card (up to cardWaitSeconds) before it starts
+    # loading, and the health check is the outer bound on both. The old value
+    # (max cold start alone) would have the router give up mid-wait.
+    healthCheckTimeout: {{ add ($h.cardWaitSeconds | default 300) $maxCold }}
     # Owner decision 2026-10-12: stream loading state. While a model wakes,
     # clients see the reasoning field fill with loading remarks instead of a
     # silent held connection. The trade was recorded when it was made: once the
@@ -43,37 +47,46 @@ data:
     # must read the error frame, not the status code.
     sendLoadingState: true
     groups:
-      # ONE GROUP PER CARD, exclusive: false. A group is llama-swap's swap
-      # boundary: members of the same group evict each other, so one group per
-      # card means one model per card at a time; exclusive: false lets
-      # DIFFERENT groups run together, so the slot count is exactly the card
-      # count - two models in tandem, one per card. Cross-card safety is the
-      # group split itself: same-card models are serialised within their
-      # group, different-card models coexist (measured: both cards loaded
-      # leaves 37-39 GiB host RAM free).
+      # PLACEMENT IS THE SHIM'S, so the group structure no longer expresses
+      # cards at all. One `anywhere` group, swap: false: members never evict
+      # each other, because coexistence is the shim's to arbitrate - it lands
+      # each wake on a free card and WAITS when every card is busy. The
+      # per-card groups this replaced were the interim while models were
+      # pinned in values; with pools in values and placement in the shim they
+      # are gone, and their one job (never two models on one card) moved to
+      # the shim's busy-card scan under the placement flock.
       #
-      # exclusive: false is the deliberate reversal of the first cut's one
-      # host-wide exclusive group, which serialised every cold start for RAM
-      # safety while nothing was measured. The one unmeasured case is two loads
-      # at once - which per-card groups now make possible, on purpose, to
-      # measure rather than forbid. If it ever OOMs the node, the fix is
-      # exclusive: true on one group, not unsplitting the groups.
-      #
-      # INTERIM: groups are generated from each model's `gpu:` value, so the
-      # roster is still card-pinned. The destination is dynamic placement -
-      # the shim picks a free card at wake - at which point these collapse
-      # into one non-swapping group and models stop declaring a card. Do not
-      # build anything on these group names.
-      {{- $groups := dict }}
+      # A model that needs EVERY card in its pool (gpuMode: all - the
+      # 2-GPU-spanning strata variant) gets its own group, swap: true +
+      # exclusive: true: loading one unloads every other group, which is
+      # exactly "the fleet must be asleep for this model to run". The reverse
+      # direction - a single-card wake onto a card a spanning model holds - is
+      # the shim's wait-for-free-card, not the group router's (it has no
+      # resource awareness; that gap is why placement lives in the shim).
+      {{- $any := list }}
+      {{- $spans := dict }}
       {{- range $name, $m := $summonable }}
-        {{- $k := printf "gpu-%s" ($m.gpu | toString) }}
-        {{- $list := index $groups $k | default list }}
-        {{- $_ := set $groups $k (append $list $name) }}
+        {{- if eq ($m.gpuMode | default "any") "all" }}
+          {{- $k := printf "span-%s" (replace "," "-" ($m.gpu | toString)) }}
+          {{- $list := index $spans $k | default list }}
+          {{- $_ := set $spans $k (append $list $name) }}
+        {{- else }}
+          {{- $any = append $any $name }}
+        {{- end }}
       {{- end }}
-      {{- range $gname, $members := $groups }}
+      {{- if $any }}
+      anywhere:
+        swap: false
+        exclusive: false
+        members:
+          {{- range $any }}
+          - {{ . }}
+          {{- end }}
+      {{- end }}
+      {{- range $gname, $members := $spans }}
       {{ $gname }}:
         swap: true
-        exclusive: false
+        exclusive: true
         members:
           {{- range $members }}
           - {{ . }}
@@ -101,6 +114,7 @@ data:
           --health-path {{ $h.healthPath }}
           --spec-dir /etc/swapk8s/specs
           --startup-timeout {{ $m.coldStartSeconds | default $h.coldStartSeconds }}s
+          --card-wait {{ $h.cardWaitSeconds | default 300 }}s
         # ${PID} is llama-swap substituting the serve process's pid into the
         # stop command. cmdStop owns the whole stop, process included: llama-swap
         # runs this and returns without touching the process tree, so if this

@@ -44,7 +44,13 @@ models:
     # today (crictl inspecti docker.io/library/alpine:3.20), so pinning it is a
     # no-op pull-wise. Regenerate with that command when bumping.
     image: alpine@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc  # alpine:3.20
-    gpu: "1"
+    # the CARD POOL, not a pin (same contract as the other models): the shim
+    # lands this model on any free card at wake. It was card-pinned for its
+    # whole resident life; since it became a summoned model the pin is just a
+    # preference it no longer needs. gpuIndex stays "0" - the engine's card
+    # index is container-local (the CDI pin exposes exactly one card, always
+    # index 0 inside the container), so placement changes nothing for it.
+    gpu: "0,1"
     # container-local engine index: the CDI pin exposes only this card, so the
     # single visible card is index 0 inside the container (host index is 1).
     gpuIndex: "0"

@@ -4,7 +4,15 @@
 #
 #   image:      digest-pinned. Image models use the image's /app/llama-server;
 #               fork models set nixBinary: true + command: [/nix/store/<hash>/bin/llama-server]
-#   gpu:        "0" or "1" (CDI-mode nvidia runtime honours NVIDIA_VISIBLE_DEVICES)
+#   gpu:        the CARD POOL, e.g. "0", "1", "0,1" (CDI-mode nvidia runtime
+#               honours NVIDIA_VISIBLE_DEVICES). Placement is the shim's: it
+#               lands an on-demand model on any FREE card in the pool, waits
+#               for one (headEnd.cardWaitSeconds) when all are busy, and fails
+#               with a reason when the wait runs out. One card = a pin.
+#   gpuMode:    "any" (default) = land on one free card from the pool;
+#               "all" = a spanning model that needs EVERY card in the pool
+#               (e.g. the 2-GPU strata variant) - its own exclusive group,
+#               evicting the fleet on wake.
 #   port:       the port llama-server listens on (in-pod + Service)
 #   nixBinary:  true = mount /nix/store (fork binary); false = image entrypoint
 #   chatTemplate: true = mount the vendored Qwen jinja (reads reasoning_effort per-request)
@@ -53,6 +61,12 @@ headEnd:
   # before the model is loaded and answers 503 until the load finishes, which is
   # exactly the readiness signal the shim needs.
   healthPath: /health
+  # How long a wake waits for a free card before failing with an error the
+  # client can act on. Every card busy is a temporary condition (all models
+  # sleep on ttl), so a request should outlive it - but not forever: the wait
+  # plus the load must fit healthCheckTimeout, which the template derives from
+  # this plus the roster's max cold start.
+  cardWaitSeconds: 300
   # Defaults a model can override per entry.
   ttlSeconds: 900
   coldStartSeconds: 300

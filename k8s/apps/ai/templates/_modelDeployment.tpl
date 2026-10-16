@@ -30,6 +30,13 @@ metadata:
   name: {{ $.name }}
   labels:
     {{- include "ai.modelLabels" $.name | nindent 4 }}
+    # placement contract: the pool this model may land on and how to read it.
+    # The shim (src/swapk8s) selects on these when it narrows the spec's
+    # NVIDIA_VISIBLE_DEVICES pool to a free card at wake time.
+    {{- with $.m.gpu }}
+    ai.mestruble.dev/gpu-pool: {{ . | quote }}
+    {{- end }}
+    ai.mestruble.dev/gpu-mode: {{ $.m.gpuMode | default "any" | quote }}
 spec:
   # Recreate: each model owns its whole GPU (20+ GiB of 24 GiB), so a
   # RollingUpdate would run old + new pods concurrently and OOM the load.
