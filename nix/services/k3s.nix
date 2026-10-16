@@ -741,6 +741,7 @@
                     --from-file=cluster-overview.json=${k8sDir}/apps/monitoring/dashboards/cluster-overview.json \
                     --from-file=llm-fleet.json=${k8sDir}/apps/monitoring/dashboards/llm-fleet.json \
                     --from-file=llm-overview.json=${k8sDir}/apps/monitoring/dashboards/llm-overview.json \
+                    --from-file=on-demand-fleet.json=${k8sDir}/apps/monitoring/dashboards/on-demand-fleet.json \
                     --dry-run=client -o yaml | label_all monitoring "true" > "$T/monitoring-dashboards.json" \
                 && cat "$T/monitoring-static.json" "$T/monitoring-kubelet-token.json" \
                     "$T/monitoring-secrets.json" "$T/monitoring-llm-api-key.json" \
