@@ -20,6 +20,19 @@ models:
     enable: true
     engine: strata
     nixBinary: true
+    # On-demand 2026-10-12 (owner decision): the resident orchestrator became a
+    # summoned model. IDLE RECLAIM + SLOT MAXIMISATION were the goals: at night
+    # the whole fleet sleeps and both cards hand back ~60 GiB of host RAM (the
+    # resident expert pack alone is 55 GiB), and GPU 1 is a second swappable
+    # slot for tandem workloads. The coding agent keeps a LONG ttl so it never
+    # pays the wake during a work day: 1800s survives breaks and meetings, and
+    # it only sleeps overnight or when a both-cards model needs the slot.
+    # coldStartSeconds: the measured restart wake is 83s (engine + pack load);
+    # 240 sits comfortably above it and within the pod's own startupProbe
+    # budget (45 x 10s = 450s) - which is the real ceiling, see the swift entry.
+    lifecycle: on-demand
+    ttlSeconds: 1800
+    coldStartSeconds: 240
     # No `binary:` here on purpose. The bundle path is injected by the nix render
     # (services.k3s.aiChart.strataBundle -> .Values.strataBundle), so the pod
     # mounts whatever this system's build produced. A literal path here would

@@ -53,10 +53,6 @@ headEnd:
   # before the model is loaded and answers 503 until the load finishes, which is
   # exactly the readiness signal the shim needs.
   healthPath: /health
-  # llama-swap exclusivity boundary. One host-wide group serialises cold starts,
-  # which is what stops two load-time peaks from overlapping - see the comment in
-  # head-end-configmap.yaml before changing it.
-  group: host
   # Defaults a model can override per entry.
   ttlSeconds: 900
   coldStartSeconds: 300

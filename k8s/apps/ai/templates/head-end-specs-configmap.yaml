@@ -23,11 +23,12 @@ data:
   # the pod definition and cannot write the one field the swapper owns.
   {{- range $name, $m := .Values.models }}
   {{- if and $m.enable (eq ($m.lifecycle | default "static") "on-demand") }}
-  {{- if eq ($m.engine | default "llama") "strata" }}
-  {{- fail (printf "model %q is engine: strata and lifecycle: on-demand; the spec ConfigMap renders the llama.cpp pod template (_modelDeployment.tpl), not strata-deployment.yaml, so a strata model would be summoned with the wrong pod. Support means routing the spec through the same engine switch the static path uses - not marking it on-demand and hoping." $name) }}
-  {{- end }}
   {{ $name }}.json: |
+    {{- if eq ($m.engine | default "llama") "strata" }}
+    {{- include "ai.strataDeployment" (dict "name" $name "m" $m "root" $) | fromYaml | toJson | nindent 4 }}
+    {{- else }}
     {{- include "ai.modelDeployment" (dict "name" $name "m" $m) | fromYaml | toJson | nindent 4 }}
+    {{- end }}
   {{- end }}
   {{- end }}
 ---

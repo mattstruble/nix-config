@@ -43,24 +43,42 @@ data:
     # must read the error frame, not the status code.
     sendLoadingState: true
     groups:
-      # One group for the whole host, not one per GPU. A group is llama-swap's
-      # exclusivity boundary: members swap each other, and the scheduler will
-      # not bring one up while another is still loading. That is the RAM
-      # constraint expressed in the only primitive the swapper has. Measured on
-      # this box: a model's peak host memory is its LOAD-time staging, not its
-      # serving footprint (swift-27b peaks at its 32 GiB ceiling and settles at
-      # 7.5 GiB), and two load-time peaks do not fit in 94 GiB next to the
-      # resident model. Serialising cold starts is therefore correctness, not
-      # tidiness. It is also free today: the resident model is not in this
-      # roster, so there is exactly one swappable slot either way. Revisit per
-      # card when a second card becomes swappable.
-      {{ $h.group }}:
+      # ONE GROUP PER CARD, exclusive: false. A group is llama-swap's swap
+      # boundary: members of the same group evict each other, so one group per
+      # card means one model per card at a time; exclusive: false lets
+      # DIFFERENT groups run together, so the slot count is exactly the card
+      # count - two models in tandem, one per card. Cross-card safety is the
+      # group split itself: same-card models are serialised within their
+      # group, different-card models coexist (measured: both cards loaded
+      # leaves 37-39 GiB host RAM free).
+      #
+      # exclusive: false is the deliberate reversal of the first cut's one
+      # host-wide exclusive group, which serialised every cold start for RAM
+      # safety while nothing was measured. The one unmeasured case is two loads
+      # at once - which per-card groups now make possible, on purpose, to
+      # measure rather than forbid. If it ever OOMs the node, the fix is
+      # exclusive: true on one group, not unsplitting the groups.
+      #
+      # INTERIM: groups are generated from each model's `gpu:` value, so the
+      # roster is still card-pinned. The destination is dynamic placement -
+      # the shim picks a free card at wake - at which point these collapse
+      # into one non-swapping group and models stop declaring a card. Do not
+      # build anything on these group names.
+      {{- $groups := dict }}
+      {{- range $name, $m := $summonable }}
+        {{- $k := printf "gpu-%s" ($m.gpu | toString) }}
+        {{- $list := index $groups $k | default list }}
+        {{- $_ := set $groups $k (append $list $name) }}
+      {{- end }}
+      {{- range $gname, $members := $groups }}
+      {{ $gname }}:
         swap: true
-        exclusive: true
+        exclusive: false
         members:
-          {{- range $name, $m := $summonable }}
-          - {{ $name }}
+          {{- range $members }}
+          - {{ . }}
           {{- end }}
+      {{- end }}
     models:
       {{- range $name, $m := $summonable }}
       {{ $name }}:

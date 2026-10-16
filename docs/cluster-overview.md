@@ -21,11 +21,13 @@ the sections below the throughput tables are the historical docker-era record.
 
 One k3s cluster (`nix/services/k3s.nix`), one values file per model from the
 helm chart in `k8s/apps/ai/` (`just k8s-render` previews, `just deploy mjolnir`
-ships host + cluster in one generation). Two lifecycles: **static** models
-render a Deployment that is always up (the resident fleet), **on-demand**
-models (`lifecycle: on-demand`) render no Deployment at all — the swap head-end
+ships host + cluster in one generation). Two lifecycles: **static** models render a
+Deployment that is always up (none today), **on-demand** models
+(`lifecycle: on-demand`) render no Deployment at all — the swap head-end
 creates one on request, waits for readiness, proxies, and scales it back to
-zero on idle (see the on-demand fleet section below). All clients (pi,
+zero on idle (see the on-demand fleet section below). Since 2026-10-12 the
+whole fleet, flash-next included, is on-demand: idle hands back both cards
+(~87 GiB host RAM free, measured) and every model wakes on request. All clients (pi,
 opencode, HA, n8n) hit the LiteLLM gateway at `:8000` and name the model in the
 request — model ID = real running name (`--alias` = gateway `model_name`, no
 masking). Models PV = `/var/lib/llama-models` (local PV, PSS-restricted);
@@ -47,7 +49,7 @@ into the vendored template at `xhigh` — not per-request.
 | Sampling | temp 0.6, top-k 20, top-p 0.8, repeat-penalty 1.0 (Qwen coding preset) |
 | Chat template | vendored `qwen3-chat-template.jinja` (chart configmap) |
 
-### GPU 1 — flash-next-strata-iq4xs (general / tools)
+### GPU 1 — flash-next-strata-iq4xs (general / tools, on-demand since 2026-10-12)
 
 Qwen3.8-Flash-Next on the **Strata engine** (Niko1221/Strata, MIT) — a Python
 server driving a compiled C++ engine, not llama.cpp. Gateway name
@@ -67,8 +69,10 @@ moved. Built natively for sm_75 by `nix/hosts/mjolnir/_strata.nix`.
 the non-thinking one — same weights, reasoning on/off is the only difference)
 and swift-qwen3-8-27b share the swappable slot — one model awake at a time, the
 waker evicts the other automatically. All render no static Deployment; their
-pod specs travel to the head-end and the models wake on request. Gemma's
-config and pack were already on the PVC; nothing was migrated.
+pod specs travel to the head-end and the models wake on request — flash-next
+included since 2026-10-12, with a 1800 s ttl: it stays resident through the
+work day and sleeps overnight, handing GPU 1 back as a second swappable slot.
+Gemma's config and pack were already on the PVC; nothing was migrated.
 
 ### The on-demand fleet — wake times and model names (measured 2026-10-12)
 
@@ -84,7 +88,7 @@ remarks into the reasoning field, and answers when the model is up.
 | `swift-qwen3.8-27b` | `swift-qwen3-8-27b` | 100–111 s | 100 s (60 s pod-to-Ready) | ttl 900 s |
 | `gemma-4-26b-a4b` (non-thinking) | `gemma-4-26b-a4b` | 126 s | — same weights as the think variant: 144 s | ttl 900 s |
 | `gemma-4-26b-a4b-think` | `gemma-4-26b-a4b-think` | 126–137 s (137 s through a full eviction) | 144 s (80 s pod-to-Ready) | ttl 900 s |
-| `qwen3.8-flash-next` | `flash-next-strata-iq4xs` — static, resident | 83 s (a deploy/restart wake, not swapper-driven) | — | never |
+| `qwen3.8-flash-next` | `flash-next-strata-iq4xs` | 86 s (first on-demand wake; the restart-wake it replaced measured 83 s) | — | **ttl 1800 s** — the coding agent never pays a wake during the work day; it sleeps overnight and hands the card back |
 
 Cold wakes were measured with the page cache dropped before the request
 (`echo 3 > /proc/sys/vm/drop_caches`). The result kills a piece of lore: the
@@ -98,8 +102,13 @@ budget, which is the real ceiling: a budget larger than the probe's means the
 pod fails and restarts before the shim ever gives up on it. A warm request
 through the head-end costs ~0.1 s to first token — the swapper on the path is
 free. Both cards can be loaded at once with ~37–39 GiB host RAM still free;
-waking either on-demand model evicts the other (one host-wide exclusive
-group), and a head-end restart puts the whole fleet to sleep.
+the swapper runs one group per card (`exclusive: false`), so one model per
+card awake at a time and two models in tandem across the cards — measured
+with two wakes fired 15 s apart: both served, both Ready simultaneously, host
+RAM never below 38.5 GiB. Within a card, waking a model evicts the card-mate.
+A head-end restart puts the whole fleet to sleep. Groups are still generated
+from each model's `gpu:` value — dynamic placement (the shim picks a free
+card at wake, models stop declaring one) is the recorded next step.
 
 The gemma endpoints — **both on-demand since 2026-10-12** — are the same
 weights sharing the one swappable slot, so the exclusive group swaps them
