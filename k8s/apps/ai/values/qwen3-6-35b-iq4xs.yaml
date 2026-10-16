@@ -3,7 +3,20 @@ models:
   # fattn path broken in this build), q8_0 K + f16 V KV, -np 2 (128k per user),
   # no MTP (draft path O(n) at length). Uses the vendored template.
   qwen3-6-35b-iq4xs:
-    enable: false
+    # On-demand 2026-10-12 (the last dormant slot made live): speed-primary
+    # dispatch/chat model for HA/n8n, waking on request like the rest of the
+    # fleet. Its GGUF (17G) was already on the models PVC; nothing to fetch.
+    # coldStartSeconds: same shape as gemma (a 17G GGUF through the same
+    # loader): 80-138s measured on that one, 240 here keeps it inside the
+    # pod's own startupProbe budget (30x10s) - the real ceiling, see swift.
+    # memoryRequest/Limit follow the measured load profile (fta): a 17G model
+    # stages weights through ~32Gi of anonymous host memory at load and
+    # serves at ~7.5Gi, so request tracks serving and limit tracks the peak.
+    enable: true
+    lifecycle: on-demand
+    coldStartSeconds: 240
+    memoryRequest: 8Gi
+    memoryLimit: 40Gi
     image: ghcr.io/ggml-org/llama.cpp@sha256:41ebf873c2e085dcc3186dc4717ce8112bf8011aabd98038b6bb2b1fe66c86b9
     gpu: "0,1"
     port: 8555
@@ -42,5 +55,3 @@ models:
       - "0.95"
       - "--min-p"
       - "0"
-    memoryRequest: 4Gi
-    memoryLimit: 32Gi

@@ -118,8 +118,20 @@ spec:
             # host's GPU 1 passed as --gpu 1 fails: "GPU 1 cannot be used: not
             # found on this PC"). gpuIndex defaults to 0 (single-card entries);
             # a 2-GPU entry would see both cards as 0,1 and set it explicitly.
+            # GPUS (plural) is the multi-card form: the entrypoint forwards it
+            # as --gpus at serve time (docker-entrypoint.sh: "--gpus $GPUS" for
+            # cards that share one model - the layer-split variant). Set it to
+            # the container-local card list ("0,1" when the pool is both cards)
+            # and leave gpuIndex unset: setup.py refuses a model given both a
+            # single --gpu and --gpus. The layer split itself comes from the
+            # config JSON (the recorded setup pass), not from the environment.
+            {{- if $.m.gpus }}
+            - name: GPUS
+              value: {{ $.m.gpus | quote }}
+            {{- else }}
             - name: GPU
               value: {{ $.m.gpuIndex | default "0" | quote }}
+            {{- end }}
             - name: STRATA_DATA
               value: /data
             - name: PORT
