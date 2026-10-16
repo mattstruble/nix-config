@@ -87,6 +87,7 @@ remarks into the reasoning field, and answers when the model is up.
 |---|---|---|---|---|
 | `swift-qwen3.8-27b` | `swift-qwen3-8-27b` | 100–111 s | 100 s (60 s pod-to-Ready) | ttl 900 s |
 | `gemma-4-26b-a4b` (non-thinking) | `gemma-4-26b-a4b` | 126 s | — same weights as the think variant: 144 s | ttl 900 s |
+| `Qwen3.6-35B-A3B` | `qwen3-6-35b-iq4xs` | 96.7 s (first on-demand wake, placed on gpu 0) | — same loader shape as gemma | ttl 900 s |
 | `gemma-4-26b-a4b-think` | `gemma-4-26b-a4b-think` | 126–137 s (137 s through a full eviction) | 144 s (80 s pod-to-Ready) | ttl 900 s |
 | `qwen3.8-flash-next` | `flash-next-strata-iq4xs` | 86 s (first on-demand wake; the restart-wake it replaced measured 83 s) | — | **ttl 1800 s** — the coding agent never pays a wake during the work day; it sleeps overnight and hands the card back |
 
@@ -137,6 +138,17 @@ start failure in-band. The pool/mode labels the chart renders on the spec
 are a transport channel the shim consumes and strips — a pool like "0,1" is
 an invalid *label value* (kubernetes rejects commas), which the first live
 apply caught as a 422.
+
+**The 2-GPU spanning variant (2026-10-12): built, benchmarked, honestly gated
+off.** A real setup pass minted its config (`gpu [0,1]`, `layer_split auto`,
+`--remote-expert-opt`, 262144 context with the KV cache streamed to RAM), the
+span machinery was verified live — an exclusive `span-0-1` group that unloads
+the fleet on wake, one pod claiming both cards — and the benchmark gate closed
+it: the multi-GPU load path is a single-threaded CPU phase whose host RSS
+climbs past 60 GB toward the setup's own ~118 GB worst-case estimate and dies
+before serving, restarting into the same cycle. On a 94 GiB host it does not
+fit; the entry is `enable: false` with the full working setup recorded in
+values — on a 128 GiB host, re-enable it as-is.
 
 The gemma endpoints — **both on-demand since 2026-10-12** — are the same
 weights sharing the one swappable slot, so the exclusive group swaps them
