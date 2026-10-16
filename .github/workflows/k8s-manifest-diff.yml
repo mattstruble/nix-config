@@ -28,7 +28,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: cachix/install-nix-action@V30
+      - uses: cachix/install-nix-action@v30
 
       - name: Bundle must be linked by the build, not pinned in values
         run: |
@@ -55,8 +55,25 @@ jobs:
         with:
           version: v4.3.0
 
+      # the bundles below are nix build outputs; the eval needs a nix
+      - uses: cachix/install-nix-action@v30
+
       - name: Render PR and base, build comment
         run: |
+          # Eval a bundle path, falling back to a labelled placeholder. The chart
+          # fails a render that has no bundle rather than emit an empty mountPath,
+          # so the preview needs a value; a placeholder keeps a broken eval from
+          # blocking manifest review, and strata-bundle-linked is the job that
+          # asserts the real link.
+          bundle() {
+            local out
+            if out=$(nix eval --raw "$1" 2>&1); then
+              printf '%s' "$out"
+            else
+              echo "::warning::nix eval $1 failed (${out}); preview uses a placeholder"
+              printf '%s' "$2"
+            fi
+          }
           render() {
             # same values-file glob as `just k8s-render` and the nix render
             # derivation (modules/services/k3s.nix); the chart dir is detected
@@ -64,10 +81,10 @@ jobs:
             CHART=k8s/apps/ai; [ -d "$CHART" ] || CHART=k8s/llama-fleet
             F=(-f "$CHART/values.yaml")
             for f in "$CHART"/values/*.yaml; do F+=(-f "$f"); done
-            # the nix render injects the bundle it built; without it the preview
-            # shows an empty mount path and disagrees with production
-            BUNDLE=$(nix eval --raw .#nixosConfigurations.mjolnir.config.services.k3s.aiChart.strataBundle 2>/dev/null || true)
-            [ -n "$BUNDLE" ] && F+=(--set "strataBundle=$BUNDLE")
+            # the nix render injects the bundles it built; without them the preview
+            # shows empty mount paths and disagrees with production
+            F+=(--set "strataBundle=$(bundle .#nixosConfigurations.mjolnir.config.services.k3s.aiChart.strataBundle /nix/store/00000000000000000000000000000000-strata-preview)")
+            F+=(--set "headEnd.bundle=$(bundle .#nixosConfigurations.mjolnir.config.services.k3s.aiChart.headEndBundle /nix/store/00000000000000000000000000000000-head-end-preview)")
             helm template "$(basename "$CHART")" "$CHART" "${F[@]}"
           }
           render > /tmp/pr.yaml
