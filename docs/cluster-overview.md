@@ -106,9 +106,26 @@ the swapper runs one group per card (`exclusive: false`), so one model per
 card awake at a time and two models in tandem across the cards — measured
 with two wakes fired 15 s apart: both served, both Ready simultaneously, host
 RAM never below 38.5 GiB. Within a card, waking a model evicts the card-mate.
-A head-end restart puts the whole fleet to sleep. Groups are still generated
-from each model's `gpu:` value — dynamic placement (the shim picks a free
-card at wake, models stop declaring one) is the recorded next step.
+A head-end restart puts the whole fleet to sleep.
+
+**Dynamic placement (2026-10-12, night): models are not pinned to cards.**
+A model's `gpu:` value in its values entry is its card **pool** ("0,1"), and
+the shim lands every wake on a free card from the pool: it scans model pods
+for held cards, takes a free one under a placement lock (flock — the race it
+closes is two wakes seeing the same free card), applies the spec with the
+chosen card in `NVIDIA_VISIBLE_DEVICES`, and holds the lock until the pod
+exists so the next wake's scan sees the claim. When every card is busy the
+wake **waits** (`headEnd.cardWaitSeconds`, 300 s) rather than crashlooping a
+pod onto a busy card — the failure mode that produced the first cutover's
+crashloop — and fails with a reason if the wait runs out. A one-card pool is
+still a pin, so a model can be restricted deliberately. A model that needs
+**every** card (`gpuMode: all`, e.g. the future 2-GPU strata variant) gets
+its own `exclusive: true` group: waking it unloads the fleet, and a
+single-card wake onto a card it holds is the shim's wait, which is why
+placement lives in the shim rather than the group router (the router is
+static topology, not resource awareness). The group structure collapsed
+with placement: one `anywhere` group, `swap: false` — coexistence is the
+shim's to arbitrate now.
 
 The gemma endpoints — **both on-demand since 2026-10-12** — are the same
 weights sharing the one swappable slot, so the exclusive group swaps them
