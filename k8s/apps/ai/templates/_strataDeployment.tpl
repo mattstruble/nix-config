@@ -1,0 +1,231 @@
+{{/*
+One STRATA model's Deployment, rendered from its values entry.
+
+Extracted from strata-deployment.yaml for the same reason the llama.cpp body
+was extracted into _modelDeployment.tpl: the identical body must render two
+ways - inline for a static-lifecycle model, and as JSON in the head-end's spec
+ConfigMap for an on-demand one - and those two must not be able to drift. A
+strata model that renders one way while static and another way when summoned
+is a bug you find by waking the model.
+
+Everything here must keep the RENDERED OBJECT unchanged; these pods hold a
+GPU. Verified by rendering before and after and diffing the parsed documents
+(scripts/normalize-manifest.rb).
+
+Context: dict "name" <model key> "m" <model values> "root" <template root> -
+"root" is required: ai.strataBundle reads .root.Values.strataBundle (the
+nix-injected bundle path).
+*/}}
+{{- define "ai.strataDeployment" -}}
+{{- /* must match templates/strata-config-configmap.yaml - the entrypoint derives
+     the same tag from FAMILY/MODEL. */}}
+{{- $prefix := (eq ($.m.family | default "qwen") "qwen") | ternary "" (printf "%s-" $.m.family) }}
+{{- $tag := printf "%s%s" $prefix (lower $.m.model) }}
+{{- $bundle := include "ai.strataBundle" (dict "root" $.root "m" $.m "name" $.name) }}
+# Strata engine (Niko1221/Strata): a Python server (serve/server.py) that drives
+# a compiled C++ engine. Unlike llama-server it is configured by a config JSON
+# on the models PVC (for family=qwen: $STRATA_DATA/config/strata-<model>.json,
+# e.g. strata-ud-iq4_xs.json — engine settings live there), plus the small ENV
+# surface below (FAMILY/MODEL pick the config; GPU/PORT/API_KEY are forwarded
+# as CLI flags). The engine + server + python env are a nix bundle (nixBinary pattern,
+# like the llama.cpp fork): the bundle is mounted via the nix-store PVC and the
+# entrypoint cds to it (STRATA_BUNDLE). The model + pack + MTP + config live on
+# the models PVC at /data (STRATA_DATA), pre-populated so the entrypoint skips
+# the ~90GB download and goes straight to serving. /health is answered before
+# the API-key gate, so the probes work without a key. stdout is redirected to
+# /var/log/llama.log so the log-exporter sidecar can tail it (same as the llama
+# models).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $.name }}
+  labels:
+    {{- include "ai.modelLabels" $.name | nindent 4 }}
+    # placement contract: the pool this model may land on and how to read it.
+    # The shim (src/swapk8s) selects on these when it narrows the spec's
+    # NVIDIA_VISIBLE_DEVICES pool to a free card at wake time.
+    {{- with $.m.gpu }}
+    ai.mestruble.dev/gpu-pool: {{ . | quote }}
+    {{- end }}
+    ai.mestruble.dev/gpu-mode: {{ $.m.gpuMode | default "any" | quote }}
+spec:
+  # Recreate: the model owns its whole GPU, so a RollingUpdate would run old +
+  # new pods concurrently and OOM the load.
+  strategy:
+    type: Recreate
+  replicas: 1
+  selector:
+    matchLabels:
+      app: {{ $.name }}
+  template:
+    metadata:
+      labels:
+        {{- include "ai.modelLabels" $.name | nindent 8 }}
+    spec:
+      runtimeClassName: nvidia
+      # let in-flight generations finish on shutdown/rollout (default 30s
+      # SIGKILLs mid-token)
+      terminationGracePeriodSeconds: 120
+      securityContext:
+        runAsUser: 1000
+        runAsGroup: 1000
+        runAsNonRoot: true
+      automountServiceAccountToken: false
+      containers:
+        - name: strata-server
+          {{- include "ai.harden" . | nindent 10 }}
+          image: {{ $.m.image }}
+          imagePullPolicy: {{ $.m.imagePullPolicy | default "IfNotPresent" }}
+          {{- include "ai.preStopDrain" . | nindent 10 }}
+          # the nix bundle entrypoint exports STRATA_EXECV=1, so setup.py
+          # os.execv's into serve/server.py: the SERVER is PID 1 and SIGTERM
+          # reaches its drain handler (in-flight generations finish on
+          # shutdown/rollout). Note: a 262k-token prefill (~255s at ~1030 t/s)
+          # can still exceed the 120s grace period - long prefills die on
+          # rollout (documented trade-off; drain is fast otherwise).
+          # Redirect stdout+stderr to /var/log/llama.log for the log-exporter
+          # sidecar (exec keeps the server as PID 1; no tee, which would break
+          # graceful shutdown).
+          command:
+            - sh
+            - -c
+            - 'exec "$STRATA_BUNDLE/bin/strata-pod-entrypoint" >> /var/log/llama.log 2>&1'
+          env:
+            # Upstream's entrypoint execs setup.py, which then stays PID 1 with no
+            # SIGTERM handler: every rollout SIGKILLs the engine mid-generation
+            # after burning the whole terminationGracePeriodSeconds. STRATA_EXECV=1
+            # makes setup.py execv into serve/server.py, so PID 1 is the server and
+            # SIGTERM drains (in-flight generations complete). Set here rather than
+            # in the bundle so it sits next to the grace period it depends on.
+            - name: STRATA_EXECV
+              value: "1"
+            # what the entrypoint reads (FAMILY/MODEL select the config JSON,
+            # GPU/PORT/API_KEY are forwarded as CLI flags). Engine settings
+            # (context length, KV cache dtype, spec/resident budget, host bind)
+            # are NOT env: they live in the config JSON at
+            # $STRATA_DATA/config/strata-<tag>.json, which is mounted from the
+            # {{ $.name }}-strata-config ConfigMap (rendered from .strataConfig in
+            # the values file) - change them there, not on the PVC. For family=qwen
+            # the entrypoint reads strata-<model>.json with NO qwen- prefix,
+            # e.g. /data/config/strata-ud-iq4_xs.json.
+            - name: FAMILY
+              value: {{ $.m.family | default "qwen" | quote }}
+            - name: MODEL
+              value: {{ $.m.model | quote }}
+            # the ENGINE's gpu index is container-local, NOT the host index:
+            # NVIDIA_VISIBLE_DEVICES exposes only the pinned card(s), so the
+            # single visible card is always index 0 inside the container (the
+            # host's GPU 1 passed as --gpu 1 fails: "GPU 1 cannot be used: not
+            # found on this PC"). gpuIndex defaults to 0 (single-card entries);
+            # a 2-GPU entry would see both cards as 0,1 and set it explicitly.
+            # GPUS (plural) is the multi-card form: the entrypoint forwards it
+            # as --gpus at serve time (docker-entrypoint.sh: "--gpus $GPUS" for
+            # cards that share one model - the layer-split variant). Set it to
+            # the container-local card list ("0,1" when the pool is both cards)
+            # and leave gpuIndex unset: setup.py refuses a model given both a
+            # single --gpu and --gpus. The layer split itself comes from the
+            # config JSON (the recorded setup pass), not from the environment.
+            {{- if $.m.gpus }}
+            - name: GPUS
+              value: {{ $.m.gpus | quote }}
+            {{- else }}
+            - name: GPU
+              value: {{ $.m.gpuIndex | default "0" | quote }}
+            {{- end }}
+            - name: STRATA_DATA
+              value: /data
+            - name: PORT
+              value: {{ $.m.port | quote }}
+            # the same shared pod key the llama models use (litellm-keys/pod-api-key);
+            # the gateway authenticates with it (its OPENAI_API_KEY is the same value).
+            - name: API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: litellm-keys
+                  key: pod-api-key
+            - name: NVIDIA_VISIBLE_DEVICES
+              value: {{ $.m.gpu | quote }}
+            # the nix bundle's store path (the entrypoint cds to it). Set by the
+            # values file's `binary` field (the pinned /nix/store path).
+            - name: STRATA_BUNDLE
+              value: {{ $bundle | quote }}
+          ports:
+            - containerPort: {{ $.m.port }}
+          # /health is not auth-gated, and main() binds the socket only AFTER the
+          # engine has loaded, so nothing answers until the model is up - that is
+          # what makes /health a correct ready signal here (it returns 200 with
+          # "loaded": false rather than a non-200, so the bind is doing the work).
+          # startupProbe covers the multi-minute engine + model load (45 x 10s =
+          # 7.5 min; 30 x 10s was tight for the worst case, a cold first load after
+          # a host reboot reading the 94GB GGUF); readinessProbe gates gateway
+          # traffic. No livenessProbe: it would kill pods mid-generation.
+          startupProbe:
+            httpGet:
+              path: /health
+              port: {{ $.m.port }}
+            periodSeconds: 10
+            failureThreshold: 45
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: {{ $.m.port }}
+            periodSeconds: 10
+          volumeMounts:
+            # the models PVC, read-only: model GGUFs + pack + MTP + config.
+            - name: models
+              mountPath: /data
+              readOnly: true
+            # git's copy, over the one the setup pass left on the PVC. subPath
+            # because /data itself is the read-only models PVC; note kubelet
+            # does NOT refresh a subPath mount on ConfigMap change, so editing
+            # the config needs a pod restart, not just an apply.
+            - name: strata-config
+              mountPath: /data/config/strata-{{ $tag }}.json
+              subPath: strata-{{ $tag }}.json
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+            # upstream's entrypoint needs a writable /opt/strata (it cds there and
+            # setup.py writes the config it starts from); the bundle itself is
+            # read-only, so the wrapper symlinks the bundle in here. Writable by
+            # uid 1000 without fsGroup - same emptyDir behaviour the log and tmp
+            # mounts already rely on.
+            - name: strata-work
+              mountPath: /opt/strata
+            - name: log
+              mountPath: /var/log
+            - name: exporter-script
+              mountPath: /exporter.py
+              subPath: exporter.py
+              readOnly: true
+            - name: shm
+              mountPath: /dev/shm
+            {{- if $.m.nixBinary }}
+            - name: nix-store
+              mountPath: /nix/store
+              readOnly: true
+            {{- end }}
+          resources:
+            requests:
+              memory: {{ $.m.memoryRequest }}
+            limits:
+              memory: {{ $.m.memoryLimit }}
+        {{- include "ai.logExporterSidecar" $.name | nindent 8 }}
+      volumes:
+        {{- include "ai.modelCommonVolumes" . | nindent 8 }}
+        - name: strata-config
+          configMap:
+            name: {{ $.name }}-strata-config
+        - name: strata-work
+          emptyDir:
+            sizeLimit: 64Mi
+        - name: shm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 32Gi
+        {{- if $.m.nixBinary }}
+        - name: nix-store
+          persistentVolumeClaim:
+            claimName: nix-store-pvc
+        {{- end }}
+{{- end -}}

@@ -100,8 +100,7 @@
       # ── k3s (LLM fleet as k8s pods) ────────────────────────────────────
       # Server + nvidia runtime + local PVs: nix/services/k3s.nix (keyed
       # off this flag). Model pods + LiteLLM gateway: k8s/apps/ai chart
-      # (`just k8s-deploy`). Fork binaries are nix-built (_llama-fork.nix,
-      # _llama-turboq.nix) and mounted into the pods.
+      # (`just k8s-deploy`).
       services.k3s.enable = true;
 
       # Required by the k3s nvidia runtime (k3s.nix), which is CDI-mode: it
@@ -116,7 +115,7 @@
 
       # Strata engine bundle (engine + server + python env) for the Qwen3.8-Flash-Next
       # pod. Built natively (sm_75) and mounted into the pod via the nix-store PVC
-      # (the nixBinary pattern, like the llama.cpp fork). The model/pack/MTP live on
+      # (the nixBinary pattern - now the only pod that uses it). The model/pack/MTP live on
       # the models PVC, not here. callPackage auto-provides cudaPackages/python3/deps.
       system.build.strata = pkgs.callPackage ./_strata.nix { };
       # The bundle reaches the pod through the build, not through a value typed
@@ -133,6 +132,14 @@
       # generation is not a reference to paths merely mentioned in its scripts,
       # which is why the literal needed all that scaffolding and this does not.
       services.k3s.aiChart.strataBundle = toString config.system.build.strata;
+
+      # Swap head-end bundle: llama-swap at a pinned commit plus this repo's
+      # swapk8s shim. Pure Go, so unlike strata it needs no CUDA toolchain - but
+      # it is still an x86_64-linux derivation, so it builds natively here.
+      # Wired into the render the same way, for the same reason: the store path is
+      # a build input of the manifest, not a string in a values file.
+      system.build.swapHeadEnd = pkgs.callPackage ./_swapk8s.nix { };
+      services.k3s.aiChart.headEndBundle = toString config.system.build.swapHeadEnd;
 
       environment.systemPackages = with pkgs; [
         pciutils

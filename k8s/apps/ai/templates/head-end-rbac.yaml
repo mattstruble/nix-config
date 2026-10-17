@@ -1,0 +1,49 @@
+{{- if and .Values.headEnd.enable (not (empty .Values.headEnd.bundle)) }}
+{{- $ns := .Release.Namespace }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: swap-head-end
+  labels:
+    app.kubernetes.io/part-of: ai
+    app.kubernetes.io/component: model-swapper
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: swap-head-end
+  labels:
+    app.kubernetes.io/part-of: ai
+    app.kubernetes.io/component: model-swapper
+rules:
+  # The narrowest set that satisfies the contract: create the Deployment the
+  # first time a model is summoned, read it back, change the replica count, and
+  # watch pods to know when the backend is Ready. No delete (the swapper scales,
+  # it does not remove), no cluster scope, no pods/exec, no secrets.
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list", "create", "patch"]
+  - apiGroups: ["apps"]
+    resources: ["deployments/scale"]
+    verbs: ["patch"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: swap-head-end
+  labels:
+    app.kubernetes.io/part-of: ai
+    app.kubernetes.io/component: model-swapper
+subjects:
+  - kind: ServiceAccount
+    name: swap-head-end
+    namespace: {{ $ns }}
+roleRef:
+  kind: Role
+  name: swap-head-end
+  apiGroup: rbac.authorization.k8s.io
+---
+{{- end }}

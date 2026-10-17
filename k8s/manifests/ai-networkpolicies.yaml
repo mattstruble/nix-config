@@ -58,6 +58,15 @@ spec:
         - podSelector:
             matchLabels:
               app: litellm
+    # swap head-end -> the backend it summoned. The shim proxies to the pod IP
+    # directly, so without this a summoned model answers the head-end's own
+    # readiness probe forever. Inert until a policy-capable CNI lands (Flannel
+    # ignores NetworkPolicy), but the head-end is designed around this path, so
+    # the rule belongs with it.
+    - from:
+        - podSelector:
+            matchLabels:
+              app: swap-head-end
     # prometheus -> /metrics scrape (same pod labels as the dcgm policy:
     # stamped by the prometheus-operator, not the helm chart)
     - from:

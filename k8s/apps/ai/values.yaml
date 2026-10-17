@@ -4,11 +4,31 @@
 #
 #   image:      digest-pinned. Image models use the image's /app/llama-server;
 #               fork models set nixBinary: true + command: [/nix/store/<hash>/bin/llama-server]
-#   gpu:        "0" or "1" (CDI-mode nvidia runtime honours NVIDIA_VISIBLE_DEVICES)
+#   gpu:        the CARD POOL, e.g. "0", "1", "0,1" (CDI-mode nvidia runtime
+#               honours NVIDIA_VISIBLE_DEVICES). Placement is the shim's: it
+#               lands an on-demand model on any FREE card in the pool, waits
+#               for one (headEnd.cardWaitSeconds) when all are busy, and fails
+#               with a reason when the wait runs out. One card = a pin.
+#   gpuMode:    "any" (default) = land on one free card from the pool;
+#               "all" = a spanning model that needs EVERY card in the pool
+#               (e.g. the 2-GPU strata variant) - its own exclusive group,
+#               evicting the fleet on wake.
 #   port:       the port llama-server listens on (in-pod + Service)
 #   nixBinary:  true = mount /nix/store (fork binary); false = image entrypoint
 #   chatTemplate: true = mount the vendored Qwen jinja (reads reasoning_effort per-request)
 #   extraVolumes / extraMounts: extra volumes (e.g. flash-next's /slots-save)
+#
+#   lifecycle:  static (default) = the manifest owns the Deployment, the pod runs
+#               whenever the config says to. on-demand = the swapper owns it: no
+#               Deployment in the manifest (the spec travels to the head-end's
+#               spec ConfigMap instead), and the model wakes on a request and
+#               sleeps on ttl. Requires headEnd.enable.
+#   coldStartSeconds: how long the shim waits for the woken pod to be Ready.
+#               Set it per model from a measurement, not from a shared constant:
+#               the fleet spans a 40s load and a 23-minute one, and the shared
+#               value always ends up being the maximum.
+#   ttlSeconds: idle time before a summoned model goes back to sleep; falls back
+#               to headEnd.ttlSeconds.
 #
 # NOTE on fork binary paths: the store hash is pinned to the current build
 # (qwen4exp @0384f5c, turboq @8f2b243). If the fork is rebuilt, update the
@@ -22,6 +42,40 @@ models: {}  # populated by values/*.yaml (one file per model; maps merge across 
 # outside nix:
 #   --set strataBundle=$(nix eval --raw .#nixosConfigurations.mjolnir.config.services.k3s.aiChart.strataBundle)
 strataBundle: ""
+
+# The swap head-end: llama-swap (model router, wake queue, idle TTL) plus this
+# repo's swapk8s shim, which gives it lifecycle control over Deployments whose
+# pod spec the chart owns. Off by default: with it disabled every model keeps the
+# static lifecycle it has today, and the chart renders exactly what it rendered
+# before this block existed.
+#
+# Like strataBundle, the bundle path is injected by the nix render from
+# services.k3s.aiChart.headEndBundle - the binary a pod runs is a build input of
+# the manifest, never a path transcribed into a values file.
+headEnd:
+  enable: true
+  bundle: ""
+  # llama-swap's own port. Clients reach it through LiteLLM, not directly.
+  port: 8080
+  # The shim's readiness probe path on the backend. llama.cpp serves /health
+  # before the model is loaded and answers 503 until the load finishes, which is
+  # exactly the readiness signal the shim needs.
+  healthPath: /health
+  # How long a wake waits for a free card before failing with an error the
+  # client can act on. Every card busy is a temporary condition (all models
+  # sleep on ttl), so a request should outlive it - but not forever: the wait
+  # plus the load must fit healthCheckTimeout, which the template derives from
+  # this plus the roster's max cold start.
+  cardWaitSeconds: 300
+  # Defaults a model can override per entry.
+  ttlSeconds: 900
+  coldStartSeconds: 300
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      memory: 256Mi
 
 # LiteLLM gateway: one OpenAI-compatible endpoint, routes by the `model` field
 # to the right pod Service. hostPort exposes it on the host (the single endpoint
