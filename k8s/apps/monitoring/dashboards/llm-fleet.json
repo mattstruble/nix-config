@@ -2,7 +2,7 @@
   "annotations": {
     "list": []
   },
-  "description": "llama.cpp model pods (llamacpp:*), DCGM GPU, LiteLLM gateway, Loki logs. Metric names: k8s/apps/monitoring/llama-metrics.md.",
+  "description": "Both engines (llama.cpp, strata) through engine-neutral adapter names (ai_model_live_*, ai_model_adapter_*, the llm_req record), DCGM GPU, LiteLLM gateway, Loki logs. LIVE panels are sampled rates - never valid range stats; per-request max/mean/p50 live on the record-class row. Metric names: k8s/manifests/ai-model-metrics.yaml.",
   "editable": true,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 1,
@@ -24,7 +24,7 @@
       "panels": [
         {
           "type": "timeseries",
-          "title": "Decode tokens/s",
+          "title": "Decode rate (live)",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
@@ -95,17 +95,17 @@
                 "uid": "prometheus"
               },
               "editorMode": "code",
-              "exemplar": true,
-              "expr": "(sum by (model) (llamacpp_live_decode_tps{model=~\"$model\"})) > 0",
-              "legendFormat": "{{job}}",
+              "expr": "max by (model, pod) (ai_model_live_tokens_per_second{model=~\"$model\", phase=\"decode\"} > 0)",
+              "legendFormat": "{{model}}/{{pod}}",
               "range": true,
               "refId": "A"
             }
-          ]
+          ],
+          "description": "LIVE class: the engine's own decode rate, non-zero only while a generation runs; refreshed by the adapter's 2s scrape. Sampled rates are never valid range statistics - at long steps a short burst appears only if a step instant lands inside it. Legend stats (mean/max) are over the SAMPLES, not over requests."
         },
         {
           "type": "timeseries",
-          "title": "Prompt tokens/s (prefill)",
+          "title": "Prefill rate (live)",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
@@ -176,13 +176,13 @@
                 "uid": "prometheus"
               },
               "editorMode": "code",
-              "exemplar": true,
-              "expr": "(sum by (model) (llamacpp_live_prefill_tps{model=~\"$model\"})) > 0",
-              "legendFormat": "{{job}}",
+              "expr": "max by (model, pod) (ai_model_live_tokens_per_second{model=~\"$model\", phase=\"prefill\"} > 0)",
+              "legendFormat": "{{model}}/{{pod}}",
               "range": true,
               "refId": "A"
             }
-          ]
+          ],
+          "description": "LIVE class: the engine's own prefill rate, non-zero only while a prompt is being read; refreshed by the adapter's 2s scrape. May be titled live. Sampled rates are never valid range statistics - per-request max/mean/p50 live on the per-request row below, computed from the llm_req record."
         },
         {
           "type": "timeseries",
@@ -706,6 +706,212 @@
             }
           ],
           "description": "llama.cpp only - Strata exposes strata:engine_max_context, which is the configured context rather than an observed maximum, so there is nothing honest to alias here. An empty tile means the engine does not report this, not that the model is idle."
+        },
+        {
+          "id": 153,
+          "type": "timeseries",
+          "title": "Engine phase (live)",
+          "description": "LIVE class: engine-neutral gauges from the adapter sidecar (2s scrape). Never empty: phase and progress do not depend on a rate being computable.",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "gridPos": {
+            "h": 7,
+            "w": 12,
+            "x": 0,
+            "y": 22
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "axisPlacement": "auto",
+                "drawStyle": "line",
+                "fillOpacity": 10,
+                "gradientMode": "none",
+                "lineWidth": 1,
+                "pointSize": 5,
+                "scaleDistribution": {
+                  "type": "linear"
+                },
+                "showPoints": "auto",
+                "spanNulls": false,
+                "stacking": {
+                  "group": "A",
+                  "mode": "none"
+                }
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  }
+                ]
+              },
+              "unit": "none"
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "calcs": [
+                "mean",
+                "lastNotNull",
+                "max"
+              ],
+              "displayMode": "table",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "editorMode": "code",
+              "expr": "max by (model, pod) (ai_model_live_phase{model=~\"$model\", phase=\"prefill\"})",
+              "legendFormat": "{{model}}/{{pod}} prefill",
+              "range": true,
+              "refId": "A"
+            },
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "editorMode": "code",
+              "expr": "max by (model, pod) (ai_model_live_phase{model=~\"$model\", phase=\"decode\"})",
+              "legendFormat": "{{model}}/{{pod}} decode",
+              "range": true,
+              "refId": "B"
+            },
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "editorMode": "code",
+              "expr": "max by (model, pod) (ai_model_live_phase{model=~\"$model\", phase=\"idle\"})",
+              "legendFormat": "{{model}}/{{pod}} idle",
+              "range": true,
+              "refId": "C"
+            }
+          ]
+        },
+        {
+          "id": 154,
+          "type": "timeseries",
+          "title": "Running request progress (live)",
+          "description": "LIVE class: prompt tokens read so far / to read, and tokens generated, of the request running now. Resets between requests; not a counter - never sum or rate it.",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "gridPos": {
+            "h": 7,
+            "w": 12,
+            "x": 12,
+            "y": 22
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "axisPlacement": "auto",
+                "drawStyle": "line",
+                "fillOpacity": 10,
+                "gradientMode": "none",
+                "lineWidth": 1,
+                "pointSize": 5,
+                "scaleDistribution": {
+                  "type": "linear"
+                },
+                "showPoints": "auto",
+                "spanNulls": false,
+                "stacking": {
+                  "group": "A",
+                  "mode": "none"
+                }
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  }
+                ]
+              },
+              "unit": "short"
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "calcs": [
+                "mean",
+                "lastNotNull",
+                "max"
+              ],
+              "displayMode": "table",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "editorMode": "code",
+              "expr": "max by (model, pod) (ai_model_live_prompt_read_tokens{model=~\"$model\"})",
+              "legendFormat": "{{model}}/{{pod}} prompt read",
+              "range": true,
+              "refId": "A"
+            },
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "editorMode": "code",
+              "expr": "max by (model, pod) (ai_model_live_prompt_total_tokens{model=~\"$model\"})",
+              "legendFormat": "{{model}}/{{pod}} prompt total",
+              "range": true,
+              "refId": "B"
+            },
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "editorMode": "code",
+              "expr": "max by (model, pod) (ai_model_live_generated_tokens{model=~\"$model\"})",
+              "legendFormat": "{{model}}/{{pod}} generated",
+              "range": true,
+              "refId": "C"
+            }
+          ]
         }
       ]
     },
@@ -1612,6 +1818,580 @@
           ]
         }
       ]
+    },
+    {
+      "collapsed": false,
+      "type": "row",
+      "id": 155,
+      "title": "Per-request performance (record class - correct at any range)",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 16
+      },
+      "panels": [
+        {
+          "id": 156,
+          "type": "timeseries",
+          "title": "Prefill rate per request (max/mean/p50)",
+          "description": "RECORD class: one llm_req record per finished phase, written by the adapter when the request completes. The only class a max/mean/p50 may be computed from, and correct at any range: a record has no idle samples. Depth/reuse per-request history is strata-only today (its /metrics keeps 500 finished requests); llama.cpp records exist but only while its task is in /slots. Cold-start prefills (warmup:true) are real outliers - a freshly woken model re-reads its KV from storage.",
+          "datasource": {
+            "type": "loki",
+            "uid": "loki"
+          },
+          "gridPos": {
+            "h": 7,
+            "w": 12,
+            "x": 0,
+            "y": 17
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "axisPlacement": "auto",
+                "drawStyle": "line",
+                "fillOpacity": 10,
+                "gradientMode": "none",
+                "lineWidth": 1,
+                "pointSize": 5,
+                "scaleDistribution": {
+                  "type": "linear"
+                },
+                "showPoints": "auto",
+                "spanNulls": false,
+                "stacking": {
+                  "group": "A",
+                  "mode": "none"
+                }
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  }
+                ]
+              },
+              "unit": "tps"
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "calcs": [
+                "mean",
+                "lastNotNull",
+                "max"
+              ],
+              "displayMode": "table",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "loki",
+                "uid": "loki"
+              },
+              "editorMode": "code",
+              "expr": "max by (model) (max_over_time({namespace=\"default\", container=\"log-exporter\"} | json | event=\"llm_req\" | kind=\"prefill\" | model=~\"$model\" | unwrap tps [$__range]))",
+              "legendFormat": "max {{model}}",
+              "instant": true,
+              "queryType": "instant",
+              "range": false,
+              "refId": "A"
+            },
+            {
+              "datasource": {
+                "type": "loki",
+                "uid": "loki"
+              },
+              "editorMode": "code",
+              "expr": "avg by (model) (avg_over_time({namespace=\"default\", container=\"log-exporter\"} | json | event=\"llm_req\" | kind=\"prefill\" | model=~\"$model\" | unwrap tps [$__range]))",
+              "legendFormat": "mean {{model}}",
+              "instant": true,
+              "queryType": "instant",
+              "range": false,
+              "refId": "B"
+            },
+            {
+              "datasource": {
+                "type": "loki",
+                "uid": "loki"
+              },
+              "editorMode": "code",
+              "expr": "max by (model) (quantile_over_time(0.5, {namespace=\"default\", container=\"log-exporter\"} | json | event=\"llm_req\" | kind=\"prefill\" | model=~\"$model\" | unwrap tps [$__range]))",
+              "legendFormat": "p50 {{model}}",
+              "instant": true,
+              "queryType": "instant",
+              "range": false,
+              "refId": "C"
+            }
+          ]
+        },
+        {
+          "id": 157,
+          "type": "timeseries",
+          "title": "Prefill work per request (tokens read)",
+          "description": "RECORD class: prompt tokens actually read per prefill (uncached work; cache hits cost a fraction of a read). The gap to the request's full depth is what the prefix cache saved.",
+          "datasource": {
+            "type": "loki",
+            "uid": "loki"
+          },
+          "gridPos": {
+            "h": 7,
+            "w": 12,
+            "x": 12,
+            "y": 17
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "axisPlacement": "auto",
+                "drawStyle": "line",
+                "fillOpacity": 10,
+                "gradientMode": "none",
+                "lineWidth": 1,
+                "pointSize": 5,
+                "scaleDistribution": {
+                  "type": "linear"
+                },
+                "showPoints": "auto",
+                "spanNulls": false,
+                "stacking": {
+                  "group": "A",
+                  "mode": "none"
+                }
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  }
+                ]
+              },
+              "unit": "short"
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "calcs": [
+                "mean",
+                "lastNotNull",
+                "max"
+              ],
+              "displayMode": "table",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "loki",
+                "uid": "loki"
+              },
+              "editorMode": "code",
+              "expr": "max by (model) (max_over_time({namespace=\"default\", container=\"log-exporter\"} | json | event=\"llm_req\" | kind=\"prefill\" | model=~\"$model\" | unwrap tokens [$__range]))",
+              "legendFormat": "max {{model}}",
+              "instant": true,
+              "queryType": "instant",
+              "range": false,
+              "refId": "A"
+            },
+            {
+              "datasource": {
+                "type": "loki",
+                "uid": "loki"
+              },
+              "editorMode": "code",
+              "expr": "avg by (model) (avg_over_time({namespace=\"default\", container=\"log-exporter\"} | json | event=\"llm_req\" | kind=\"prefill\" | model=~\"$model\" | unwrap tokens [$__range]))",
+              "legendFormat": "mean {{model}}",
+              "instant": true,
+              "queryType": "instant",
+              "range": false,
+              "refId": "B"
+            }
+          ]
+        },
+        {
+          "id": 158,
+          "type": "timeseries",
+          "title": "Decode rate per request",
+          "description": "RECORD class: one llm_req record per finished phase, written by the adapter when the request completes. The only class a max/mean/p50 may be computed from, and correct at any range: a record has no idle samples. Depth/reuse per-request history is strata-only today (its /metrics keeps 500 finished requests); llama.cpp records exist but only while its task is in /slots.",
+          "datasource": {
+            "type": "loki",
+            "uid": "loki"
+          },
+          "gridPos": {
+            "h": 7,
+            "w": 12,
+            "x": 0,
+            "y": 24
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "axisPlacement": "auto",
+                "drawStyle": "line",
+                "fillOpacity": 10,
+                "gradientMode": "none",
+                "lineWidth": 1,
+                "pointSize": 5,
+                "scaleDistribution": {
+                  "type": "linear"
+                },
+                "showPoints": "auto",
+                "spanNulls": false,
+                "stacking": {
+                  "group": "A",
+                  "mode": "none"
+                }
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  }
+                ]
+              },
+              "unit": "tps"
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "calcs": [
+                "mean",
+                "max",
+                "lastNotNull"
+              ],
+              "displayMode": "table",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "loki",
+                "uid": "loki"
+              },
+              "editorMode": "code",
+              "expr": "max by (model) (max_over_time({namespace=\"default\", container=\"log-exporter\"} | json | event=\"llm_req\" | kind=\"decode\" | model=~\"$model\" | unwrap tps [$__interval]))",
+              "legendFormat": "{{model}}",
+              "instant": true,
+              "queryType": "instant",
+              "range": false,
+              "refId": "A"
+            }
+          ]
+        },
+        {
+          "id": 159,
+          "type": "timeseries",
+          "title": "Context depth and cache reuse per request (mean)",
+          "description": "RECORD class: mean prompt depth per request and the mean part of it served from the prefix cache. depth==reused means the whole context was a cache hit. Per-request HISTORY is strata-only; llama.cpp depth comes from /slots at completion and is kept only for the current/previous task.",
+          "datasource": {
+            "type": "loki",
+            "uid": "loki"
+          },
+          "gridPos": {
+            "h": 7,
+            "w": 12,
+            "x": 12,
+            "y": 24
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "axisPlacement": "auto",
+                "drawStyle": "line",
+                "fillOpacity": 10,
+                "gradientMode": "none",
+                "lineWidth": 1,
+                "pointSize": 5,
+                "scaleDistribution": {
+                  "type": "linear"
+                },
+                "showPoints": "auto",
+                "spanNulls": false,
+                "stacking": {
+                  "group": "A",
+                  "mode": "none"
+                }
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  }
+                ]
+              },
+              "unit": "short"
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "calcs": [
+                "mean",
+                "lastNotNull",
+                "max"
+              ],
+              "displayMode": "table",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "loki",
+                "uid": "loki"
+              },
+              "editorMode": "code",
+              "expr": "avg by (model) (avg_over_time({namespace=\"default\", container=\"log-exporter\"} | json | event=\"llm_req\" | kind=\"prefill\" | model=~\"$model\" | unwrap depth [$__range]))",
+              "legendFormat": "depth {{model}}",
+              "instant": true,
+              "queryType": "instant",
+              "range": false,
+              "refId": "A"
+            },
+            {
+              "datasource": {
+                "type": "loki",
+                "uid": "loki"
+              },
+              "editorMode": "code",
+              "expr": "avg by (model) (avg_over_time({namespace=\"default\", container=\"log-exporter\"} | json | event=\"llm_req\" | kind=\"prefill\" | model=~\"$model\" | unwrap reused [$__range]))",
+              "legendFormat": "reused {{model}}",
+              "instant": true,
+              "queryType": "instant",
+              "range": false,
+              "refId": "B"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "collapsed": false,
+      "type": "row",
+      "id": 160,
+      "title": "Request context (gateway - every engine)",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 32
+      },
+      "panels": [
+        {
+          "id": 161,
+          "type": "timeseries",
+          "title": "Mean context per request (gateway)",
+          "description": "Gateway-derived, every engine: what LiteLLM charged/recorded, not what the engine measured. requested_model is the gateway alias; pick it in the $litellm_model variable. Independent of the engine-side record row by design - the two never join per-request (no join key exists), so each row is honest about its own source. input tokens include the cached part, so this is the full context the request carried, averaged over requests.",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "gridPos": {
+            "h": 7,
+            "w": 12,
+            "x": 0,
+            "y": 33
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "axisPlacement": "auto",
+                "drawStyle": "line",
+                "fillOpacity": 10,
+                "gradientMode": "none",
+                "lineWidth": 1,
+                "pointSize": 5,
+                "scaleDistribution": {
+                  "type": "linear"
+                },
+                "showPoints": "auto",
+                "spanNulls": false,
+                "stacking": {
+                  "group": "A",
+                  "mode": "none"
+                }
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  }
+                ]
+              },
+              "unit": "short"
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "calcs": [
+                "mean",
+                "lastNotNull",
+                "max"
+              ],
+              "displayMode": "table",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "editorMode": "code",
+              "expr": "sum by (requested_model) (increase(litellm_input_tokens_metric_total{requested_model=~\"$litellm_model\"}[$__interval])) / sum by (requested_model) (increase(litellm_proxy_total_requests_metric_total{requested_model=~\"$litellm_model\"}[$__interval]))",
+              "legendFormat": "{{requested_model}}",
+              "range": true,
+              "refId": "A"
+            }
+          ]
+        },
+        {
+          "id": 162,
+          "type": "timeseries",
+          "title": "Cached share of context (gateway)",
+          "description": "Gateway-derived, every engine: what LiteLLM charged/recorded, not what the engine measured. requested_model is the gateway alias; pick it in the $litellm_model variable. Independent of the engine-side record row by design - the two never join per-request (no join key exists), so each row is honest about its own source. share of input tokens the engine reported as served from its prefix cache (engine-reported via the gateway).",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "gridPos": {
+            "h": 7,
+            "w": 12,
+            "x": 12,
+            "y": 33
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "axisPlacement": "auto",
+                "drawStyle": "line",
+                "fillOpacity": 10,
+                "gradientMode": "none",
+                "lineWidth": 1,
+                "pointSize": 5,
+                "scaleDistribution": {
+                  "type": "linear"
+                },
+                "showPoints": "auto",
+                "spanNulls": false,
+                "stacking": {
+                  "group": "A",
+                  "mode": "none"
+                }
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  }
+                ]
+              },
+              "unit": "percentunit"
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "calcs": [
+                "mean",
+                "lastNotNull",
+                "max"
+              ],
+              "displayMode": "table",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "editorMode": "code",
+              "expr": "sum by (requested_model) (increase(litellm_input_cached_tokens_metric_total{requested_model=~\"$litellm_model\"}[$__interval])) / sum by (requested_model) (increase(litellm_input_tokens_metric_total{requested_model=~\"$litellm_model\"}[$__interval]))",
+              "legendFormat": "{{requested_model}}",
+              "range": true,
+              "refId": "A"
+            }
+          ]
+        }
+      ]
     }
   ],
   "schemaVersion": 39,
@@ -1651,7 +2431,7 @@
           "uid": "prometheus"
         },
         "query": {
-          "query": "label_values(litellm_total_tokens_metric_total, model)",
+          "query": "label_values(litellm_total_tokens_metric_total, requested_model)",
           "refId": "StandardVariableQuery"
         },
         "refresh": 2,
