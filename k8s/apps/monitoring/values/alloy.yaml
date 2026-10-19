@@ -35,6 +35,13 @@ alloy:
 
       loki.process "kubernetes" {
         forward_to = [loki.write.kubernetes.receiver]
+        // The container runtime writes CRI-format lines: `<ts> <stdout|stderr>
+        // <F|P> <content>`. Without this stage every stored line carried the
+        // runtime prefix, so `| json` in LogQL failed on every line and every
+        // dashboard log view showed the prefix. Parses the embedded timestamp
+        // as the entry time (more accurate than file-read time) and is a no-op
+        // on lines that are not CRI format.
+        stage.cri { }
         stage.regex {
           // loki.source.file exposes the path as `filename`, not `__path__`.
           source = "filename"
