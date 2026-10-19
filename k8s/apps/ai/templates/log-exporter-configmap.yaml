@@ -5,70 +5,202 @@ metadata:
   labels:
     app.kubernetes.io/part-of: ai
 data:
-  # Tails the model's log (shared emptyDir), exposes the LIVE decode/prefill
-  # rates as gauges, and echoes each line to its own stdout so Alloy ships the
-  # model's log to Loki (the model's stdout is redirected to this file, so the
-  # container-runtime log is empty without the echo).
+  # The fleet's engine adapter. Three jobs, one process:
+  #   1. LIVE   - expose the rate and phase of the phase running RIGHT NOW, as
+  #      engine-neutral gauges (ai_model_live_*).
+  #   2. RECORD - emit one canonical JSON line per finished phase to stdout, so
+  #      Alloy ships it to Loki as the fleet's per-request performance record
+  #      ({"event":"llm_req",...}). This is the only source the max/mean/depth
+  #      panels may read.
+  #   3. ECHO   - echo each model log line to stdout so Alloy still ships the
+  #      model's log (the model's stdout is redirected to a file, so the
+  #      container-runtime log is empty without the echo).
   #
-  # WHY THIS SIDECAR EXISTS — keep these two facts apart, conflating them has
-  # caused the wrong conclusion twice:
-  #   - an engine's NATIVE Prometheus gauges are not live. llama.cpp's llamacpp:*
-  #     only tick when a turn completes; strata's strata:* are live but scraped
-  #     at 30s (the ServiceMonitor) against this exporter's 2s (the PodMonitor),
-  #     and a gauge that is only non-zero while generating is 15x likelier to be
-  #     missed. So the log is the live source AND the 2s scrape is load-bearing.
-  #   - that does NOT mean the log parse is not live. Both engines print live,
-  #     periodic progress lines; the exporter's job is to pick the live one.
+  # WHY TWO SOURCES AND NEVER ONE FOR BOTH — keep these classes apart; the fleet
+  # has confused them three times (see k8s/manifests/ai-model-metrics.yaml's
+  # liveness contract, which is the same rule for metrics):
+  #   - an engine's NATIVE Prometheus gauges tick at completion, not while it
+  #     works, and a gauge that is non-zero only during a phase is missed by a
+  #     30s scrape: strata prefills are p50 3.4s / p90 8.1s, 95.8% under 10s.
+  #   - a per-request summary line is printed ONCE when the request finishes, so
+  #     it can never be live. It is still the best per-request source there is -
+  #     it just answers "what did that request cost", not "what is it doing".
+  # The 2s PodMonitor on this pod is load-bearing for the same reason.
   #
-  # llama.cpp (print_timing, periodic during the phase — both are live):
-  #   decode:  "n_gen = 7792, tg = 34.62 t/s, tg_3s = 34.33 t/s"
-  #   prefill: "prompt processing, n_tokens = 4096, progress = 0.98, t = 8.97 s / 456.69 tokens per second"
-  # Strata (engine: strata entries) prints its own formats:
-  #   decode (live, ~1s):  "[strata] <phase>: 96 of max 16384 tokens, 35.9 tok/s, 3 s"
-  #     <phase> is set from the event kind, so it is "thinking", "answering",
-  #     "writing a tool call: bash" (note the inner colon), "tool call complete"...
-  #     Match the LINE SHAPE, never the phase name: pinning it to
-  #     (answering|thinking) silently dropped 867 of 2356 progress lines (37% of
-  #     decode time — all of it tool-call writing, which is most agentic traffic).
-  #   prefill (live, ~1s):  "[strata] reading the prompt: 135,756 of 135,761 tokens, 3 s so far"
-  #     (the "of B" part is absent when the engine reports no progress tuple). It
-  #     carries no tok/s, so the rate is DERIVED from consecutive lines. Do not
-  #     parse the per-request summary ("prompt N tokens = ... read in T ms (X tok/s),
-  #     M generated in ...") instead: that line is printed ONCE WHEN THE REQUEST
-  #     FINISHES, so the gauge holds a dead request's mean for DECAY_S and the
-  #     panel draws one isolated point per request instead of a live trace.
+  # PER ENGINE - where each class comes from, and why it differs:
   #
-  # Same gauges: each engine's regexes feed the same llamacpp_live_*_tps metrics
-  # (the name is historical — it is the fleet's engine-neutral live-rate name).
-  # Stdlib-only (no pip install): http.server + re. Rotates the log when it
-  # exceeds ROTATE_BYTES (the model writes O_APPEND, so truncation is clean — the
-  # next write goes to the new end).
-  # Rotates the log when it exceeds ROTATE_BYTES (the model writes O_APPEND, so
-  # truncation is clean — the next write goes to the new end).
+  # strata: poll GET /metrics on loopback once a second. It content-negotiates:
+  #   Prometheus text only when Accept names openmetrics/text/plain or with
+  #   ?format=prometheus; the DEFAULT response is a JSON state document
+  #   (serve/prometheus.py:wants_prometheus, serve/server.py:metrics()). From it:
+  #     live.state            reading|generating|idle|unloaded  -> LIVE phase
+  #     live.prefill_tok_s_mean / live.tok_s                     -> LIVE rate
+  #     live.prompt_read / prompt_total / generated              -> LIVE progress
+  #     requests[]            one entry per finished request     -> RECORD
+  #   The request ring is deque(maxlen=500) and the default view returns only the
+  #   last 12, so the poll asks ?requests=all. That ring is what makes this
+  #   adapter restart-safe: records it missed while down are still there.
+  #   strata's LOG is not parsed at all. Its live prompt line
+  #   ("reading the prompt: 59,814 of 59,815 tokens, 3 s so far") appears 1-2
+  #   times per request, always at the tail, so no rate can be derived from it -
+  #   the derivation this file used to do produced 4.0 to 6822 t/s for a ~1100
+  #   t/s engine. Do not put it back.
+  #
+  # llama.cpp: poll GET /slots once a second for depth and cache reuse
+  #   (n_prompt_tokens / n_prompt_tokens_cache / n_prompt_tokens_processed, plus
+  #   id_task), and keep parsing the log for everything else:
+  #     LIVE decode:  "n_gen = 7792, tg = 34.62 t/s, tg_3s = 34.33 t/s"
+  #     LIVE prefill: "prompt processing, n_tokens = 4096, progress = 0.98, t = 8.97 s / 456.69 tokens per second"
+  #       (both are periodic during the phase, so both are genuinely live - the
+  #       gauge value 0.28 t/s that looked broken matched its own log line and is
+  #       a real cold-start prefill)
+  #     RECORD: "prompt eval time = 54341.82 ms / 19 tokens (0.35 tokens per second)"
+  #             "eval time = 3496.79 ms / 191 tokens (54.34 tokens per second)"
+  #             "draft acceptance = 1.00000 (2 accepted / 2 generated)"
+  #       each prefixed "id <slot> | task <n>" - the same id_task /slots reports,
+  #       which is how depth joins to timings without correlating timestamps.
+  #   /slots gives no timings, no reading-vs-generating distinction and no spec
+  #   counters, which is exactly why the log parse stays.
+  #   NEVER log a /slots payload: it carries the prompt text.
+  #
+  # STATELESS RECORDS. One record per phase, never one per request: llama.cpp
+  # splits prefill and decode across two lines, strata reports both in one, and a
+  # join would need buffer state plus a flush timeout for requests that die
+  # mid-block. No panel needs both phases in one row.
+  #
+  # Absent fields stay ABSENT, never zero: a llama.cpp record with reused=0 would
+  # read as "no cache reuse" instead of "this engine does not report it".
+  #
+  # Stdlib-only (no pip install): http.server + re + urllib. Rotates the log when
+  # it exceeds ROTATE_BYTES (the model writes O_APPEND, so truncation is clean -
+  # the next write goes to the new end).
   exporter.py: |
-    import os, re, time, threading
+    import json, os, re, threading, time, urllib.error, urllib.request
     from http.server import HTTPServer, BaseHTTPRequestHandler
 
     LOG_FILE = os.environ.get("LOG_FILE", "/var/log/llama.log")
     MODEL = os.environ.get("MODEL", "unknown")
     POD = os.environ.get("POD", "unknown")
+    ENGINE = os.environ.get("ENGINE", "llama")            # strata | llama
+    ENGINE_URL = os.environ.get("ENGINE_URL", "")         # http://127.0.0.1:8558
+    ENGINE_KEY = os.environ.get("ENGINE_API_KEY", "")
     PORT = int(os.environ.get("PORT", "9399"))
-    DECAY_S = 5.0        # set a gauge to 0 after this many seconds without a line
-    ROTATE_BYTES = 100 * 1024 * 1024  # rotate the log past this size
+    POLL_S = 1.0            # matches strata's own 1s telemetry sample tick
+    DECAY_S = 5.0           # a live gauge with no fresh line for this long is 0
+    SHAPE_WARN_S = 300.0    # rate limit for "the engine changed its shape" reports
+    ROTATE_BYTES = 100 * 1024 * 1024
 
-    state = {"decode": 0.0, "prefill": 0.0, "last_decode": 0.0, "last_prefill": 0.0}
-    # last live prompt-read progress sample, to derive tokens/s between two lines
-    prog = {"pos": 0, "at": 0.0}
     lock = threading.Lock()
+    # LIVE state: rate per phase, the phase itself, and progress. Written by the
+    # tailer (llama.cpp) or the poller (strata), read by /metrics.
+    live = {
+        "prefill": 0.0, "decode": 0.0,
+        "at_prefill": 0.0, "at_decode": 0.0,
+        "phase": "unknown",
+        "prompt_read": 0, "prompt_total": 0, "generated": 0,
+        "scrape_ok": 0, "shape_ok": 1,
+    }
+    last_shape_warn = [0.0]
+    # RECORD dedupe: strata's ring is replayed whole on every poll.
+    seen_req = [0.0]
+    seeded = [False]
+    first_record = [True]        # the first record this adapter ever saw is the wake-up
+    # llama.cpp: depth/reuse per (slot, task), from /slots, for the log records.
+    # Bounded - a long-lived pod would otherwise keep one entry per task forever.
+    slots = {}
+    SLOT_MAX = 256
 
+    def emit(obj):
+        # One JSON record per line on stdout -> Alloy -> Loki.
+        print(json.dumps(obj, separators=(",", ":")), flush=True)
+
+    def shape_changed(why):
+        # Fail LOUDLY. A silent zero is how the old prefill derivation hid for
+        # weeks while reporting 4-6822 t/s for a ~1100 t/s engine.
+        with lock:
+            live["shape_ok"] = 0
+        now = time.time()
+        if now - last_shape_warn[0] > SHAPE_WARN_S:
+            last_shape_warn[0] = now
+            print(f"[adapter] ENGINE SHAPE CHANGED ({ENGINE}): {why} - live gauges "
+                  f"and per-request records are unreliable until this is fixed", flush=True)
+
+    # ---------------------------------------------------------------- log tail
     decode_re = re.compile(r"tg_3s\s*=\s*([0-9.]+)\s*t/s")
     prefill_re = re.compile(r"prompt processing.*?([0-9.]+)\s*tokens per second")
-    # strata live decode: line shape, NOT phase name (a phase can contain a colon:
-    # "writing a tool call: bash"). The non-greedy .+? backtracks past that colon.
+    # strata live decode (only used if ENGINE != strata and someone still points
+    # this at a strata log): match the LINE SHAPE, never the phase name - a phase
+    # can contain a colon ("writing a tool call: bash"), and pinning the
+    # alternation to (answering|thinking) once dropped 37% of decode time.
     strata_decode_re = re.compile(r"^\[strata\] .+?: \d+ of max \d+ tokens, ([0-9.]+) tok/s")
-    # strata live prompt read: position reached (comma-grouped), optional total
-    strata_reading_re = re.compile(
-        r"^\[strata\] reading the prompt: ([\d,]+)(?: of [\d,]+)? tokens, \d+ s so far")
+    # llama.cpp per-request completion lines, all sharing "id <slot> | task <n>"
+    task_re = re.compile(r"\bid\s+(\d+)\s*\|\s*task\s+(\d+)")
+    p_eval_re = re.compile(r"prompt eval time =\s*([0-9.]+) ms /\s*(\d+) tokens \(\s*([0-9.]+) ms per token,\s*([0-9.]+) tokens per second\)")
+    d_eval_re = re.compile(r"(?<!prompt )eval time =\s*([0-9.]+) ms /\s*(\d+) tokens \(\s*([0-9.]+) ms per token,\s*([0-9.]+) tokens per second\)")
+    spec_re = re.compile(r"draft acceptance =\s*([0-9.]+) \(\s*(\d+) accepted /\s*(\d+) generated\)")
+
+    def record(kind, fields, task=None):
+        rec = {"event": "llm_req", "kind": kind, "model": MODEL,
+               "engine": ENGINE, "pod": POD}
+        if task:
+            rec["task"] = task
+        rec.update({k: v for k, v in fields.items() if v is not None})
+        if kind == "prefill":
+            # The pod is created per model load (the swapper scales the Deployment
+            # 0->1) and strata has no in-place idle unload here, so the first
+            # record this adapter sees IS the post-wake request.
+            rec["warmup"] = first_record[0]
+            first_record[0] = False
+        emit(rec)
+
+    def parse_line(line):
+        # LIVE rates from the periodic lines. Gated by engine: the llama.cpp
+        # patterns must not fire on a strata log and vice versa - the shapes are
+        # unrelated, but a parser that runs on everything is a parser that
+        # eventually matches something it never meant to.
+        if ENGINE == "strata":
+            # fallback only: the poller is the live source, this keeps a rate on
+            # the panel if the engine endpoint is down
+            m = strata_decode_re.search(line)
+            if m:
+                with lock:
+                    live["decode"] = float(m.group(1))
+                    live["at_decode"] = time.time()
+                    live["phase"] = "decode"
+            return
+        for rx, key in ((decode_re, "decode"), (prefill_re, "prefill")):
+            m = rx.search(line)
+            if m:
+                with lock:
+                    live[key] = float(m.group(1))
+                    live["at_" + key] = time.time()
+                    live["phase"] = "decode" if key == "decode" else "prefill"
+                break
+        # RECORD: the completion lines. Stateless - each becomes its own record.
+        if "eval time = " not in line and "draft acceptance = " not in line:
+            return
+        task = None
+        tm = task_re.search(line)
+        if tm:
+            task = f"{tm.group(1)}:{tm.group(2)}"
+        depth = reused = processed = None
+        if task and task in slots:
+            depth, reused, processed = slots[task]
+        m = p_eval_re.search(line)
+        if m:
+            ms, tokens, _, tps = float(m.group(1)), int(m.group(2)), m.group(3), float(m.group(4))
+            record("prefill", {"tokens": tokens, "depth": depth, "reused": reused,
+                               "seconds": round(ms / 1000.0, 3), "tps": tps}, task)
+            return
+        m = d_eval_re.search(line)
+        if m:
+            ms, tokens, _, tps = float(m.group(1)), int(m.group(2)), m.group(3), float(m.group(4))
+            record("decode", {"tokens": tokens, "depth": depth,
+                              "seconds": round(ms / 1000.0, 3), "tps": tps}, task)
+            return
+        m = spec_re.search(line)
+        if m:
+            record("spec", {"accepted": int(m.group(2)), "drafts": int(m.group(3))}, task)
 
     def tail():
         f = None
@@ -79,64 +211,163 @@ data:
                     f.seek(0, 2)
                 line = f.readline()
                 if line:
-                    print(line, end="", flush=True)  # -> own stdout -> Alloy -> Loki
+                    print(line, end="", flush=True)      # ECHO -> Loki
                 if not line:
                     size = os.path.getsize(LOG_FILE)
-                    if size < f.tell():      # truncated (model restart / rotation)
+                    if size < f.tell():                  # truncated (restart/rotate)
                         f.seek(0, 2)
-                    if size > ROTATE_BYTES:  # rotate: model writes O_APPEND, clean
+                    if size > ROTATE_BYTES:
                         with open(LOG_FILE, "w"):
                             pass
                         f.seek(0, 2)
                     now = time.time()
                     with lock:
-                        if state["decode"] and now - state["last_decode"] > DECAY_S:
-                            state["decode"] = 0.0
-                        if state["prefill"] and now - state["last_prefill"] > DECAY_S:
-                            state["prefill"] = 0.0
+                        for k in ("prefill", "decode"):
+                            if live[k] and now - live["at_" + k] > DECAY_S:
+                                live[k] = 0.0
+                        if live["phase"] != "unknown" and not any(
+                                live[k] for k in ("prefill", "decode")):
+                            live["phase"] = "idle"
                     time.sleep(0.2)
                     continue
-                m = strata_reading_re.search(line)
-                if m:
-                    # tokens/s between this line and the previous one (~1s apart).
-                    # A position that went backwards is a new request: re-baseline
-                    # instead of reporting a negative rate.
-                    pos = int(m.group(1).replace(",", ""))
-                    now = time.time()
-                    with lock:
-                        dt = now - prog["at"] if prog["at"] else 0.0
-                        if dt >= 0.5 and pos >= prog["pos"]:
-                            state["prefill"] = round((pos - prog["pos"]) / dt, 1)
-                            state["last_prefill"] = now
-                        prog["pos"], prog["at"] = pos, now
-                else:
-                    prog["at"] = 0.0        # any other line ends the reading phase
-                    for rx, key, last in (
-                        (decode_re, "decode", "last_decode"),
-                        (prefill_re, "prefill", "last_prefill"),
-                        (strata_decode_re, "decode", "last_decode"),
-                    ):
-                        m = rx.search(line)
-                        if m:
-                            with lock:
-                                state[key] = float(m.group(1))
-                                state[last] = time.time()
+                parse_line(line)
             except FileNotFoundError:
                 f = None
                 time.sleep(1)
+
+    # ------------------------------------------------------------ engine poll
+    def fetch(url):
+        req = urllib.request.Request(url)
+        if ENGINE_KEY:
+            req.add_header("Authorization", "Bearer " + ENGINE_KEY)
+        with urllib.request.urlopen(req, timeout=3) as r:
+            return json.loads(r.read().decode())
+
+    def poll_strata():
+        d = fetch(ENGINE_URL + "/metrics?requests=all")
+        lv = d.get("live")
+        if not isinstance(lv, dict):
+            shape_changed("no 'live' object in /metrics")
+            return
+        state = lv.get("state")
+        with lock:
+            live["scrape_ok"] = 1
+            live["phase"] = {"reading": "prefill", "generating": "decode"}.get(state, state or "unknown")
+            live["prompt_read"] = lv.get("prompt_read") or 0
+            live["prompt_total"] = lv.get("prompt_total") or 0
+            live["generated"] = lv.get("generated") or 0
+            if state == "reading" and lv.get("prefill_tok_s_mean"):
+                live["prefill"] = float(lv["prefill_tok_s_mean"])
+                live["at_prefill"] = time.time()
+            elif state == "generating" and lv.get("tok_s"):
+                live["decode"] = float(lv["tok_s"])
+                live["at_decode"] = time.time()
+        reqs = d.get("requests")
+        if not isinstance(reqs, list):
+            shape_changed("no 'requests' list in /metrics")
+            return
+        if not seeded[0]:
+            # Seed the watermark instead of replaying the ring: at pod start the
+            # ring is empty anyway, and a sidecar-only restart must not re-emit
+            # records already in Loki.
+            seeded[0] = True
+            if reqs:
+                seen_req[0] = max(float(r.get("time") or 0) for r in reqs)
+            return
+        for r in sorted(reqs, key=lambda x: float(x.get("time") or 0)):
+            t = float(r.get("time") or 0)
+            if t <= seen_req[0]:
+                continue
+            seen_req[0] = t
+            read, pms = r.get("prompt_read"), r.get("prompt_ms")
+            record("prefill", {
+                "tokens": read, "depth": r.get("prompt_tokens"), "reused": r.get("reused"),
+                "seconds": round(pms / 1000.0, 3) if pms is not None else None,
+                "tps": round(read / (pms / 1000.0), 2) if read and pms else None,
+                "finish": r.get("finish")})
+            dms, gen = r.get("decode_ms"), r.get("output_tokens")
+            record("decode", {
+                "tokens": gen, "depth": r.get("prompt_tokens"),
+                "seconds": round(dms / 1000.0, 3) if dms is not None else None,
+                "tps": r.get("decode_tok_s"), "finish": r.get("finish")})
+            if r.get("drafts_offered"):
+                record("spec", {"drafts": r.get("drafts_offered"),
+                                "accepted": r.get("drafts_accepted")})
+
+    def poll_llama():
+        # /slots carries the depth and cache reuse the log never prints. The
+        # payload also contains the prompt text, so only these numbers are read
+        # and nothing here is ever logged.
+        d = fetch(ENGINE_URL + "/slots")
+        if not isinstance(d, list):
+            shape_changed("/slots did not return a list")
+            return
+        with lock:
+            live["scrape_ok"] = 1
+            for s in d:
+                if not isinstance(s, dict) or s.get("id_task") is None:
+                    continue
+                task = f"{s.get('id')}:{s.get('id_task')}"
+                slots[task] = (s.get("n_prompt_tokens"), s.get("n_prompt_tokens_cache"),
+                               s.get("n_prompt_tokens_processed"))
+                if s.get("is_processing"):
+                    live["prompt_total"] = s.get("n_prompt_tokens") or 0
+            while len(slots) > SLOT_MAX:      # oldest first: dicts keep insertion order
+                slots.pop(next(iter(slots)))
+
+    def poll():
+        if not ENGINE_URL:
+            return
+        while True:
+            try:
+                (poll_strata if ENGINE == "strata" else poll_llama)()
+            except (urllib.error.URLError, OSError, TimeoutError) as e:
+                # the engine is busy, restarting or not up yet - not a shape change
+                with lock:
+                    live["scrape_ok"] = 0
+            except Exception as e:
+                with lock:
+                    live["scrape_ok"] = 0
+                shape_changed(f"{type(e).__name__}: {e}")
+            time.sleep(POLL_S)
 
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):
             if self.path == "/metrics":
                 with lock:
-                    body = (
-                        "# HELP llamacpp_live_decode_tps Live decode rate (tokens/s) from tg_3s\n"
-                        "# TYPE llamacpp_live_decode_tps gauge\n"
-                        'llamacpp_live_decode_tps{model="' + MODEL + '",pod="' + POD + '"} ' + str(state["decode"]) + "\n"
-                        "# HELP llamacpp_live_prefill_tps Live prefill rate (tokens/s) from prompt progress\n"
-                        "# TYPE llamacpp_live_prefill_tps gauge\n"
-                        'llamacpp_live_prefill_tps{model="' + MODEL + '",pod="' + POD + '"} ' + str(state["prefill"]) + "\n"
-                    )
+                    phase = live["phase"]
+                    m = 'model="' + MODEL + '",pod="' + POD + '"'
+                    # One line per output element: the HELP/TYPE/metric lines must
+                    # each end in \n or the exposition is malformed and Prometheus
+                    # rejects the whole scrape.
+                    rows = [
+                        "# HELP ai_model_live_tokens_per_second Rate of the phase running now; non-zero only while it runs. LIVE class.",
+                        "# TYPE ai_model_live_tokens_per_second gauge",
+                        'ai_model_live_tokens_per_second{' + m + ',phase="prefill"} ' + str(live["prefill"]),
+                        'ai_model_live_tokens_per_second{' + m + ',phase="decode"} ' + str(live["decode"]),
+                        "# HELP ai_model_live_phase 1 for the phase the engine is in. LIVE class.",
+                        "# TYPE ai_model_live_phase gauge",
+                    ]
+                    for p in ("unloaded", "idle", "prefill", "decode"):
+                        rows.append('ai_model_live_phase{' + m + ',phase="' + p + '"} ' + ("1" if phase == p else "0"))
+                    rows += [
+                        "# HELP ai_model_live_prompt_read_tokens Prompt tokens read so far by the running request. LIVE class.",
+                        "# TYPE ai_model_live_prompt_read_tokens gauge",
+                        "ai_model_live_prompt_read_tokens{" + m + "} " + str(live["prompt_read"]),
+                        "# HELP ai_model_live_prompt_total_tokens Prompt tokens the running request is reading. LIVE class.",
+                        "# TYPE ai_model_live_prompt_total_tokens gauge",
+                        "ai_model_live_prompt_total_tokens{" + m + "} " + str(live["prompt_total"]),
+                        "# HELP ai_model_live_generated_tokens Tokens generated so far by the running request. LIVE class.",
+                        "# TYPE ai_model_live_generated_tokens gauge",
+                        "ai_model_live_generated_tokens{" + m + "} " + str(live["generated"]),
+                        "# HELP ai_model_adapter_up 1 when the engine endpoint answered. Adapter health.",
+                        "# TYPE ai_model_adapter_up gauge",
+                        'ai_model_adapter_up{' + m + ',engine="' + ENGINE + '"} ' + str(live["scrape_ok"]),
+                        "# HELP ai_model_adapter_shape_ok 0 when the engine changed a response shape this adapter depends on. Adapter health.",
+                        "# TYPE ai_model_adapter_shape_ok gauge",
+                        'ai_model_adapter_shape_ok{' + m + ',engine="' + ENGINE + '"} ' + str(live["shape_ok"]),
+                    ]
+                    body = "\n".join(rows) + "\n"
                 self.send_response(200)
                 self.send_header("Content-Type", "text/plain; version=0.0.4")
                 self.end_headers()
@@ -144,8 +375,10 @@ data:
             else:
                 self.send_response(404)
                 self.end_headers()
+
         def log_message(self, *a):
             pass
 
     threading.Thread(target=tail, daemon=True).start()
+    threading.Thread(target=poll, daemon=True).start()
     HTTPServer(("0.0.0.0", PORT), Handler).serve_forever()

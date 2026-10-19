@@ -165,7 +165,7 @@ spec:
               memory: {{ $.m.memoryRequest }}
             limits:
               memory: {{ $.m.memoryLimit }}
-        {{- include "ai.logExporterSidecar" $.name | nindent 8 }}
+        {{- include "ai.logExporterSidecar" (dict "name" $.name "port" $.m.port "engine" "llama") | nindent 8 }}
       volumes:
         {{- include "ai.modelCommonVolumes" . | nindent 8 }}
         {{- if $.m.nixBinary }}

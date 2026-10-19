@@ -9,15 +9,29 @@
 #
 # The label contract is fixed here:
 #   model   the DEPLOYMENT NAME (swift-qwen3-8-27b, flash-next-strata-iq4xs).
-#           Native series carry it as `job`; the log-exporter sidecar carries it
-#           as `model`. Every rule normalises to `model`, so the dashboard's
-#           $model variable (sourced from the sidecar gauge) selects them all.
+#           Native series carry it as `job`; the adapter sidecar carries it as
+#           `model`. Every rule normalises to `model`, so the dashboard's
+#           $model variable selects them all - and that variable is sourced from
+#           kube_deployment_status_replicas_available, NOT from any model metric,
+#           which is why a model that is asleep still appears in the dropdown.
 #   pod     only on series that are per-pod by nature; do not rely on it in panels.
 #
 # LIVENESS CONTRACT - the class each rule belongs to, and the panel title that
 # may claim it. Two mistakes have been made here by reading one class as another:
 #   LIVE      non-zero only while the phase is running, refreshed every scrape.
-#             May be titled "live" / "... tokens/s".
+#             May be titled "live" / "... tokens/s". NOTE what "live" is allowed
+#             to mean: the engine's recent rate over its own short window, not an
+#             instantaneous one. A LIVE panel may never be used for range stats -
+#             at a 7d step (~14min) a 10-130s prefill burst renders only if a
+#             step instant lands inside it, which is how "prefill is one dot"
+#             looked for months. Measured: the same panel query returned 0 series
+#             at a 15m step, 2 points at 5m, 22 at 1m.
+#   REQUEST   one record per finished phase, emitted by the adapter to Loki as
+#             {"event":"llm_req",...}. The ONLY class a max/mean/depth statistic
+#             may be computed from, and the only one that is correct at every
+#             range: a record has no idle samples to exclude, so the `> 0` filter
+#             the LIVE panels use is not needed here. Never title it live - it is
+#             written when the request finishes.
 #   COMPLETION  an engine-native gauge/counter that only ticks when a turn
 #             finishes. Never title it live. (llamacpp:* and strata:* are all
 #             this class.)
@@ -26,21 +40,35 @@
 #   CONFIG    a setting, not a measurement. Never title it as observed.
 #
 # WHAT IS NOT ALIASED, and why:
-#   llamacpp_live_decode_tps / llamacpp_live_prefill_tps are the LIVE rates and
-#   need no alias - they come from the log-exporter sidecar, which every engine
-#   runs, so they are already engine-neutral. The name is a misnomer (it predates
-#   the fleet having two engines); renaming it would cost a GPU-pod rollout and a
-#   metric migration for no functional gain, so it stays and this comment is its
-#   correction. The dashboard's two live panels read these directly.
+#   ai_model_live_* and ai_model_adapter_* are the adapter's own engine-neutral
+#   names (log-exporter sidecar, PodMonitor at 2s) and need no rule - every
+#   engine feeds them, so they are neutral at the source:
+#     ai_model_live_tokens_per_second{phase="prefill"|"decode"}   LIVE
+#     ai_model_live_phase{phase="unloaded"|"idle"|"prefill"|"decode"}  LIVE
+#     ai_model_live_prompt_read_tokens / _prompt_total_tokens / _generated_tokens  LIVE
+#     ai_model_adapter_up / ai_model_adapter_shape_ok              adapter health
+#   shape_ok goes 0 when an engine changes a response shape the adapter depends
+#   on. Alert-worthy: a silent zero is what let the old strata prefill derivation
+#   report 4-6822 t/s for a ~1100 t/s engine unnoticed.
+#   The previous names (llamacpp_live_decode_tps / llamacpp_live_prefill_tps) are
+#   GONE - clean cut, no dual-emission. Prefill's values were artifacts, so there
+#   was no history worth preserving; decode's correct history restarts the day the
+#   sidecar rolls, and a discontinuity there is that rollout, not a regression.
 #   DCGM (gpu=*) and LiteLLM (requested_model=*) series have their own variables
 #   and are engine-neutral already.
 #
-# COVERAGE - honest about what Strata cannot answer:
+# COVERAGE - honest about what each engine cannot answer:
 #   ai:model:max_sequence_tokens and ai:model:busy_slots_per_decode are llama.cpp
 #   only. Strata exposes strata:engine_max_context, which is the CONFIGURED
 #   context, not an observed maximum - aliasing it would be a different metric
 #   wearing the same name. Those two panels are empty for strata models, which is
 #   the truth; the panel descriptions say so.
+#   Per-request records: depth and cache reuse exist on BOTH engines (strata from
+#   its /metrics request ring; llama.cpp from GET /slots, joined to its log lines
+#   by id_task), but per-request HISTORY is strata-only - its ring holds 500
+#   finished requests, while /slots keeps only the current and previous task. A
+#   llama.cpp record missed during an adapter gap is gone; the raw log line in
+#   Loki is the backstop. Absent fields are omitted from the record, never zero.
 #
 # Applied at activation (see nix/services/k3s.nix, the monitoring label_all line).
 apiVersion: monitoring.coreos.com/v1
