@@ -640,13 +640,21 @@
               fi
               # PSS scoping (P2-36): the DCGM exporter needs root + SYS_ADMIN
               # (CDI GPU driver), so it gets a dedicated gpu/ namespace at PSS
-              # privileged. monitoring/ stays at baseline — alloy's hostPath
-              # /var/log/pods is allowed at baseline, and grafana/prometheus/
-              # loki need nothing more. label --overwrite is idempotent, so an
-              # existing namespace gets the label too (this also downgrades a
-              # pre-existing privileged label on monitoring/).
+              # privileged. monitoring/ must also be privileged: hostPath
+              # volumes are forbidden at baseline — full stop, no read-only
+              # exception — and this namespace runs two hostPath DaemonSets
+              # by design (alloy tails /var/log/pods; kps node-exporter reads
+              # /proc,/sys,/root). The original "baseline is enough" claim was
+              # never true: it only looked true because every pod in the
+              # namespace was grandfathered at create time, and the first
+              # DaemonSet recreation proved it — alloy bounced and could not
+              # come back until the label changed. grafana/prometheus/loki
+              # pods themselves need nothing more than what privileged allows
+              # them, so the namespace is privileged only because its
+              # DaemonSets are. label --overwrite is idempotent, so an
+              # existing namespace gets the label too.
               $KCTL label namespace gpu pod-security.kubernetes.io/enforce=privileged --overwrite
-              $KCTL label namespace monitoring pod-security.kubernetes.io/enforce=baseline --overwrite
+              $KCTL label namespace monitoring pod-security.kubernetes.io/enforce=privileged --overwrite
               # Migration: older deploys applied three kubernetes-system
               # PrometheusRules (controller-manager/kube-proxy/scheduler) that
               # are now disabled in values. They carry no managed label, so
