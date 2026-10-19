@@ -82,14 +82,26 @@ lifecycle:
 {{- end -}}
 
 {{/*
-The log-exporter sidecar: tails the model's log (shared emptyDir), exposes the
-live decode/prefill rates, and echoes each line to its own stdout so Alloy ships
-the model log to Loki. Port 9399 is scraped by the llm-log-exporter PodMonitor
-at 2s — that interval is load-bearing, see the configmap's header comment.
+The engine adapter sidecar: tails the model's log (shared emptyDir), exposes the
+LIVE rate/phase/progress as engine-neutral gauges, emits the per-request record
+({"event":"llm_req",...}) that becomes the fleet's performance history, and
+echoes each log line to its own stdout so Alloy still ships the model log to
+Loki. Port 9399 is scraped by the llm-log-exporter PodMonitor at 2s - that
+interval is load-bearing, see the configmap's header comment.
+
+It also POLLS the engine on loopback once a second, which is why it needs two
+things a pure log tailer never did:
+  ENGINE_URL - the engine listens on localhost inside the pod, on the model's
+    own port (the same one the Service targets).
+  ENGINE_API_KEY - both engines gate every endpoint except /health behind the
+    shared pod key (litellm-keys/pod-api-key: llama-server's --api-key, strata's
+    API_KEY). Without it /metrics and /slots answer 401 and the live view is
+    silently empty, so this is mounted rather than optional.
+
 MODEL must be the DEPLOYMENT NAME, not modelName: it is the label the fleet
 dashboard's $model variable and every {model=~"$model"} panel filter key off,
 and it matches the model ServiceMonitor's job label.
-Usage: {{- include "ai.logExporterSidecar" $name | nindent 8 }}
+Usage: {{- include "ai.logExporterSidecar" (dict "name" $.name "port" $.m.port "engine" "strata") | nindent 8 }}
 */}}
 {{- define "ai.logExporterSidecar" -}}
 - name: log-exporter
@@ -99,13 +111,22 @@ Usage: {{- include "ai.logExporterSidecar" $name | nindent 8 }}
     - name: LOG_FILE
       value: /var/log/llama.log
     - name: MODEL
-      value: {{ . }}
+      value: {{ .name }}
     - name: POD
       valueFrom:
         fieldRef:
           fieldPath: metadata.name
     - name: PORT
       value: "9399"
+    - name: ENGINE
+      value: {{ .engine | default "llama" | quote }}
+    - name: ENGINE_URL
+      value: http://127.0.0.1:{{ required "logExporterSidecar needs the engine port" .port }}
+    - name: ENGINE_API_KEY
+      valueFrom:
+        secretKeyRef:
+          name: litellm-keys
+          key: pod-api-key
   ports:
     - name: log-exporter
       containerPort: 9399
