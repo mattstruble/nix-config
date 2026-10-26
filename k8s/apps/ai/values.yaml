@@ -89,5 +89,12 @@ gateway:
   # The gateway always uses the master key + Postgres key store + per-source
   # api_key_alias label; clients must present a minted key (just mint-key
   # <name>). There is no keyless mode.
-  postgresImage: postgres:16-alpine
+  postgresImage: postgres:16-alpine@sha256:0cefaabd882e42bcb2a2f3dc56d3ce4770560ba62fd7f197f1a2e008fd5731ab
   postgresDataSize: 1Gi
+  # Base image for the chart's own processes: the head-end's validate-config and
+  # reap init containers, the llama-swap container (whose binary is mounted from
+  # the nix bundle, not shipped in this image), and the log-exporter sidecar on
+  # every model pod. It lives here rather than in the templates because nothing
+  # declarative can read a string out of a template - a pinned image the
+  # automation cannot see is an image that never gets a security bump.
+  toolsImage: python:3.12-alpine@sha256:b658b05ce9c4eb97ec6fc19424818a1f31993659c2b505a532f470e83807815d

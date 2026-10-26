@@ -36,7 +36,7 @@ spec:
                 - ALL
             seccompProfile:
               type: RuntimeDefault
-          image: {{ .Values.gateway.postgresImage | default "postgres:16-alpine" }}
+          image: {{ required "gateway.postgresImage is required" .Values.gateway.postgresImage }}
           env:
             - name: POSTGRES_USER
               value: litellm

@@ -1,5 +1,6 @@
 {{- if and .Values.headEnd.enable (not (empty .Values.headEnd.bundle)) }}
 {{- $h := .Values.headEnd }}
+{{- $tools := required "gateway.toolsImage is required" .Values.gateway.toolsImage }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -40,7 +41,7 @@ spec:
         # previously loaded config running when a reload fails, which is the
         # right behaviour at runtime and a silent lie at rollout time.
         - name: validate-config
-          image: python:3.12-alpine
+          image: {{ $tools }}
           command: ["sh", "-c", "{{ $h.bundle }}/bin/llama-swap --validate --config /etc/llama-swap/config.yaml"]
           securityContext:
             allowPrivilegeEscalation: false
@@ -57,7 +58,7 @@ spec:
         # outlive the swapper. A config reload never runs this (the container
         # runs --watch-config), so a roster edit still costs zero model reloads.
         - name: reap
-          image: python:3.12-alpine
+          image: {{ $tools }}
           command: ["sh", "-c", "{{ $h.bundle }}/bin/swapk8s reap"]
           securityContext:
             allowPrivilegeEscalation: false
@@ -67,7 +68,7 @@ spec:
             - { name: nix-store, mountPath: /nix/store, readOnly: true }
       containers:
         - name: llama-swap
-          image: python:3.12-alpine
+          image: {{ $tools }}
           # The bundle is a nix store path mounted read-only from nix-store-pvc -
           # the same build-linked pattern as the strata pod, so the head-end runs
           # the llama-swap this generation built, not a tag someone else moved.
