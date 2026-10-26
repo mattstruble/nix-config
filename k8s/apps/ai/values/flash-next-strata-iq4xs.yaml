@@ -37,13 +37,14 @@ models:
     # (services.k3s.aiChart.strataBundle -> .Values.strataBundle), so the pod
     # mounts whatever this system's build produced. A literal path here would
     # only be a per-model override for standalone `helm template` runs.
-    # digest-pinned, not alpine:3.20: this is only the shell the bundle's
-    # entrypoint runs in, but a mutable tag means the pod's base can change under
-    # a redeploy (or fail to start after a node rebuild if the tag is ever
-    # removed upstream). Digest is what containerd resolves the tag to on mjolnir
-    # today (crictl inspecti docker.io/library/alpine:3.20), so pinning it is a
-    # no-op pull-wise. Regenerate with that command when bumping.
-    image: alpine@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc  # alpine:3.20
+    # tag AND digest: the tag names the release, the digest freezes what containerd
+    # resolves it to on mjolnir (this is what `crictl inspecti` reports for
+    # docker.io/library/alpine:3.20). This is only the shell the bundle's
+    # entrypoint runs in, but a mutable tag alone means the pod's base can change
+    # under a redeploy - or fails to start after a node rebuild if the tag is ever
+    # removed upstream. Re-resolve with ./scripts/resolve-digest.sh alpine:3.20
+    # when bumping; pinning the current digest is a no-op pull-wise.
+    image: alpine:3.20@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc
     # the CARD POOL, not a pin (same contract as the other models): the shim
     # lands this model on any free card at wake. It was card-pinned for its
     # whole resident life; since it became a summoned model the pin is just a

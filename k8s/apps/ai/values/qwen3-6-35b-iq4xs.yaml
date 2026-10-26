@@ -17,7 +17,7 @@ models:
     coldStartSeconds: 240
     memoryRequest: 8Gi
     memoryLimit: 40Gi
-    image: ghcr.io/ggml-org/llama.cpp@sha256:41ebf873c2e085dcc3186dc4717ce8112bf8011aabd98038b6bb2b1fe66c86b9
+    image: ghcr.io/ggml-org/llama.cpp:server-cuda12-b10603@sha256:41ebf873c2e085dcc3186dc4717ce8112bf8011aabd98038b6bb2b1fe66c86b9
     gpu: "0,1"
     port: 8555
     modelName: "Qwen3.6-35B-A3B"
