@@ -1,15 +1,23 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "description": "Keeps the k3s cluster's images current. Depends on the convention in k8s/README.md: every image is `repository:tag@digest` and resolves from a values file, never a chart template. Validated by running Renovate against this repo: the image manager extracts 9 of 9 pins. The chart-image-digests workflow fails CI if a pin drifts from its tag, so a reference that stops matching this config is loud rather than silent.",
-  "extends": ["config:recommended", ":semanticCommits", ":maintainLockFilesDisabled"],
-  "schedule": ["before 6am on monday"],
+  "extends": [
+    "config:recommended",
+    ":semanticCommits",
+    ":maintainLockFilesDisabled"
+  ],
+  "schedule": [
+    "before 6am on monday"
+  ],
   "prConcurrentLimit": 5,
   "separateMinorPatch": false,
-  "helm-values": { "enabled": false },
+  "helm-values": {
+    "enabled": false
+  },
   "customManagers": [
     {
       "customType": "regex",
-      "description": "Container images in the ai chart's values files. Keys match as *image:/*Image: because the chart names them per consumer (image, toolsImage, postgresImage) - a literal `image:` pattern silently drops the other two. Patterns are globs: an unescaped / inside a slash-delimited pattern ends the regex early and matches nothing.",
+      "description": "Container images in the ai chart values files. Keys are matched as *image:/*Image: because the chart names them per consumer (image, toolsImage, postgresImage) - a literal image: pattern silently drops the others. Patterns are globs, not /regex/: an unescaped / inside a slash-delimited pattern ends the regex early and matches nothing. There is deliberately no autoReplaceStringTemplate here: Renovate replaces the whole match, and the match starts at the key, so a template that emits `image:` renames toolsImage/postgresImage and breaks the helm render. Without a template Renovate substitutes the tag and digest inside the match and leaves the key and repository alone.",
       "managerFilePatterns": [
         "k8s/apps/ai/values.yaml",
         "k8s/apps/ai/values/*.yaml"
@@ -18,49 +26,68 @@
         "[A-Za-z0-9_-]*[iI]mage:\\s*(?<depName>[^\\s:@]+):(?<currentValue>[^\\s@]+)@sha256:(?<currentDigest>[a-f0-9]{64})"
       ],
       "datasourceTemplate": "docker",
-      "versioningTemplate": "docker",
-      "autoReplaceStringTemplate": "image: {{{depName}}}:{{{newValue}}}@sha256:{{{newDigest}}}"
+      "versioningTemplate": "docker"
     }
   ],
   "packageRules": [
     {
-      "matchManagers": ["regex"],
-      "matchFileNames": ["k8s/apps/ai/values.yaml"],
+      "matchManagers": [
+        "regex"
+      ],
+      "matchFileNames": [
+        "k8s/apps/ai/values.yaml"
+      ],
       "groupName": "ai chart control-plane images",
       "groupSlug": "ai-chart-images",
       "commitMessageTopic": "ai chart control-plane images"
     },
     {
-      "matchManagers": ["regex"],
-      "matchFileNames": ["k8s/apps/ai/values/*.yaml"],
+      "matchManagers": [
+        "regex"
+      ],
+      "matchFileNames": [
+        "k8s/apps/ai/values/*.yaml"
+      ],
       "groupName": "ai model serving images",
       "groupSlug": "ai-model-images",
       "commitMessageTopic": "ai model serving images"
     },
     {
-      "matchDepNames": ["ghcr.io/ggml-org/llama.cpp"],
+      "matchDepNames": [
+        "ghcr.io/ggml-org/llama.cpp"
+      ],
       "versioning": "regex:^server-cuda12-b(?<major>\\d+)$",
       "description": "llama.cpp publishes each CUDA build as its own tag (server-cuda12-b11151, 858 of them, newest b11889). Docker versioning cannot order those, so Renovate sees no upgrade at all and offers only a digest move; the regex versioning ranks them by build number. Never auto-merged: a bad build is a model that will not wake, and the per-model pins differ on purpose (b10603 on qwen3 for IQ4_XS support)."
     },
     {
-      "matchUpdateTypes": ["digest"],
+      "matchUpdateTypes": [
+        "digest"
+      ],
       "automerge": false,
       "description": "A digest-only bump means the content behind a tag moved - usually a CVE fix to a base image, which is worth knowing about, but it is an unreviewed content change under a version that looks unchanged, so it never merges by itself."
     },
     {
-      "matchUpdateTypes": ["patch"],
+      "matchUpdateTypes": [
+        "patch"
+      ],
       "automerge": true,
       "automergeStrategy": "rebase",
-      "labels": ["auto-merge"],
+      "labels": [
+        "auto-merge"
+      ],
       "description": "Patch bumps merge on green, matching the existing update-flake-lock workflow. Minor and major wait for a human."
     },
     {
-      "matchFileNames": ["k8s/apps/ai/values/*.yaml"],
+      "matchFileNames": [
+        "k8s/apps/ai/values/*.yaml"
+      ],
       "automerge": false,
       "description": "A model's serving image is the one dependency where a wrong build costs a GPU and an outage that looks like a deploy."
     },
     {
-      "matchDepNames": ["ghcr.io/berriai/litellm"],
+      "matchDepNames": [
+        "ghcr.io/berriai/litellm"
+      ],
       "automerge": false,
       "description": "The gateway holds the LiteLLM master key and fronts every route; its updates are reviewed."
     }
