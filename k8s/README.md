@@ -18,6 +18,37 @@ Adding an app: new dir under `apps/<domain>/` with its own chart. Adding a model
 to the ai chart: one `values/<model>.yaml` — the chart renders a Deployment +
 Service for it and adds it to the LiteLLM gateway model_list.
 
+## Keeping images current
+
+`renovate.json` reads the chart's values files with a regex manager, so a new model
+file is covered the moment it lands — no annotation to remember, as long as the key
+ends in `image:`/`Image:` and the file lives under `values/`. Renovate was run against
+this repo to confirm it extracts all nine pins; a literal `image:` pattern matches one
+of them, which is the trap.
+
+- **Weekly, grouped.** Control-plane images (`values.yaml`) and model serving images
+  (`values/*.yaml`) are separate PRs, because "bump the gateway" and "bump what three
+  models serve" are different decisions.
+- **Auto-merge is patch-only**, and never for `values/*.yaml`, never for LiteLLM (it
+  holds the master key), never for a digest-only bump (content moved under a version
+  that looks unchanged). Everything else waits for a human.
+- **llama.cpp is versioned by build number**, not by Docker versioning: upstream ships
+  each CUDA build as its own tag (`server-cuda12-b11151`, 858 of them), which Docker
+  versioning cannot order — without the regex versioning Renovate offers no upgrade at
+  all and llama.cpp, the thing parsing every model file, never gets a security bump.
+- **`.github/workflows/chart-image-digests.yml`** resolves every pinned tag at its
+  registry and requires the digest to match. It runs on a schedule as well as on PRs,
+  because the two ways a pin rots — a per-architecture digest pasted in place of the
+  index digest, or upstream re-pushing a tag — produce no commit here and surface as a
+  pod that will not pull.
+
+Not yet automated: the Helm charts vendored as release tarballs in
+`nix/services/k3s.nix`. Their `sha256` has to be rewritten in the same commit as the
+URL, so they wait for a CI job that can push to a Renovate branch.
+
+Renovate is inert until the GitHub App is installed on the repo with this repo's
+access; the config validates and extracts without it, but nothing files a PR.
+
 ## Deploy
 
 - `just deploy mjolnir` — nix build + post-activation hook renders the chart and
