@@ -27,6 +27,19 @@
       ],
       "datasourceTemplate": "docker",
       "versioningTemplate": "docker"
+    },
+    {
+      "customType": "regex",
+      "description": "Helm charts vendored as GitHub release tarballs in nix/services/k3s.nix. packageName comes from the URL and the archive name becomes the depName, so commit messages name the chart rather than the repo. No annotation to remember: a fourth chart is covered the moment someone adds it.",
+      "managerFilePatterns": [
+        "nix/services/k3s.nix"
+      ],
+      "matchStrings": [
+        "url = \"https://github\\.com/(?<packageName>[^\"]+?)/releases/download/(?<archive>[^\"]+?)-(?<currentValue>\\d+\\.\\d+\\.\\d+)/[^\"]+\";"
+      ],
+      "datasourceTemplate": "github-releases",
+      "versioningTemplate": "semver",
+      "depNameTemplate": "{{{archive}}}"
     }
   ],
   "packageRules": [
@@ -90,6 +103,20 @@
       ],
       "automerge": false,
       "description": "The gateway holds the LiteLLM master key and fronts every route; its updates are reviewed."
+    },
+    {
+      "matchManagers": [
+        "regex"
+      ],
+      "matchFileNames": [
+        "nix/services/k3s.nix"
+      ],
+      "autoReplaceGlobalMatch": true,
+      "automerge": false,
+      "groupName": "vendored helm charts",
+      "groupSlug": "vendored-helm-charts",
+      "commitMessageTopic": "vendored Helm charts",
+      "description": "autoReplaceGlobalMatch because each version appears twice in the URL - the release path and the asset filename - and Renovate substitutes only the first occurrence by default, leaving a URL that half-points at the new asset. Never auto-merged: these charts render the monitoring stack, and a chart patch can rewrite a dashboard or an alert rule. The sha256 is repaired by the chart-hash-fixup workflow, which Renovate cannot do itself."
     }
   ]
 }

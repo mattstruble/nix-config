@@ -1,0 +1,61 @@
+name: chart-hash-fixup
+
+# Renovate cannot hash these. Its nix manager only understands flake inputs, so a
+# vendored chart bump arrives as a new URL carrying the OLD sha256, and the PR is
+# red until someone recomputes it - which is the same "automation can see the
+# version but not the artifact" gap the image pins were built to close, one layer
+# down. This job recomputes it and pushes the correction to the PR branch.
+#
+# Two deliberate constraints:
+#
+#   The fixer runs from the BASE revision, not the PR head. A job holding a
+#   write token must not execute code that the pull request authored; `git show
+#   base:scripts/chart-hashes.sh` takes the script from a revision this repo
+#   already accepted, and only the file it inspects comes from the PR.
+#
+#   Only pins whose URL this PR actually moved get rewritten (the script's
+#   --against). A pin whose URL did not move but whose hash disagrees is a
+#   re-pushed release asset, and quietly adopting the new bytes is exactly what
+#   the pin exists to prevent. That case stays red for a human.
+on:
+  pull_request:
+    paths:
+      - "nix/services/k3s.nix"
+      - "scripts/chart-hashes.sh"
+
+permissions:
+  contents: write
+
+jobs:
+  rehash:
+    # Renovate is the only author that leaves a bumped URL behind a stale hash.
+    if: github.actor == 'renovate[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Recompute the hashes of URLs this PR moved
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          git show "$BASE:scripts/chart-hashes.sh" > /tmp/chart-hashes.sh
+          bash /tmp/chart-hashes.sh --fix --against "$BASE"
+
+      - name: Push the correction
+        run: |
+          set -euo pipefail
+          if git diff --quiet -- nix/services/k3s.nix; then
+            echo "no hash needed repairing"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add nix/services/k3s.nix
+          git commit -m "fix(k8s): rehash vendored chart tarballs"
+          git push
+          echo "::notice::repaired chart hashes; other checks were not re-triggered (a GITHUB_TOKEN push does not start workflows)"
