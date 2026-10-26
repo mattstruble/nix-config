@@ -42,9 +42,15 @@ of them, which is the trap.
   index digest, or upstream re-pushing a tag — produce no commit here and surface as a
   pod that will not pull.
 
-Not yet automated: the Helm charts vendored as release tarballs in
-`nix/services/k3s.nix`. Their `sha256` has to be rewritten in the same commit as the
-URL, so they wait for a CI job that can push to a Renovate branch.
+**Vendored Helm charts** (`nix/services/k3s.nix`) are release tarballs fetched by
+`fetchurl`, so they carry a second pin that update automation cannot see: the
+`sha256`. Renovate's nix manager only understands flake inputs, so it bumps the URL and
+leaves the hash behind - `chart-hash-fixup.yml` recomputes it and pushes the correction to
+the Renovate branch, running its script from the base revision rather than the pull request.
+`./scripts/chart-hashes.sh` does the checking and the repairing; run it with `--check` to
+audit. It only repairs pins whose URL actually moved, because a pin whose URL did not move
+but whose hash disagrees is a re-pushed release asset, and quietly adopting those bytes is
+what the pin exists to prevent. Those stay red for a human.
 
 Renovate is inert until the GitHub App is installed on the repo with this repo's
 access; the config validates and extracts without it, but nothing files a PR.
