@@ -57,10 +57,24 @@ resolve() {
   # registry is worth keeping off it.
   headers=$(printf 'header = "Authorization: Bearer %s"\n' "$tok" | curl -sS "${curl_timeout[@]}" --config - \
     -D - -o /dev/null -H "Accept: $accept" "https://$host/v2/$repo/manifests/$tag")
-  local digest
+  local digest ctype
   digest=$(printf '%s' "$headers" | tr -d '\r' | sed -n 's/^Docker-Content-Digest: //Ip')
+  ctype=$(printf '%s' "$headers" | tr -d '\r' | sed -n 's/^Content-Type: *//Ip' | cut -d';' -f1)
   # A 404 returns no digest; say which leg failed instead of emitting `@`.
   [ -n "$digest" ] || { echo "cannot resolve $orig_repo:$tag (tag missing or not readable)" >&2; return 1; }
+  # The digest is only the thing a runtime resolves the tag to if the registry
+  # answered with the index. A registry that ignored our Accept list and handed
+  # back one architecture would otherwise produce a reference that is valid,
+  # silently architecture-specific, and wrong the moment the pod lands on a
+  # different CPU. Anything else is not a manifest at all - refuse it.
+  case "$ctype" in
+    *index.v1+json | *manifest.list.v2+json) : ;;
+    *manifest.v1+json | *manifest.v2+json)
+      echo "note: $orig_repo:$tag resolved to a single image manifest, not an index - this pin is architecture-specific" >&2 ;;
+    *)
+      echo "unexpected Content-Type '${ctype:-none}' from $host for $orig_repo:$tag; refusing to guess a digest" >&2
+      return 1 ;;
+  esac
   # Echo the reference as the caller wrote it: this tool adds a digest, it does
   # not decide whether you spell Docker Hub images `postgres` or `library/postgres`.
   printf '%s:%s@%s\n' "$orig_repo" "$tag" "$digest"
