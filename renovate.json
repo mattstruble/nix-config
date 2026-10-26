@@ -30,7 +30,7 @@
     },
     {
       "customType": "regex",
-      "description": "Helm charts vendored as GitHub release tarballs in nix/services/k3s.nix. packageName comes from the URL and the archive name becomes the depName, so commit messages name the chart rather than the repo. No annotation to remember: a fourth chart is covered the moment someone adds it.",
+      "description": "Helm charts vendored as GitHub release tarballs in nix/services/k3s.nix. packageName comes from the URL and the archive name becomes the depName, so commit messages name the chart rather than the repo. No annotation to remember: a fourth chart is covered the moment someone adds it extractVersion is required: these are monorepo release tags (loki-20.0.1, kube-prometheus-stack-91.7.0), and without stripping the chart name Renovate finds no candidate that parses as a version and files nothing - silently.",
       "managerFilePatterns": [
         "nix/services/k3s.nix"
       ],
@@ -39,7 +39,8 @@
       ],
       "datasourceTemplate": "github-releases",
       "versioningTemplate": "semver",
-      "depNameTemplate": "{{{archive}}}"
+      "depNameTemplate": "{{{archive}}}",
+      "extractVersionTemplate": "^{{{archive}}}-(?<version>[0-9][^/]*)$"
     }
   ],
   "packageRules": [
