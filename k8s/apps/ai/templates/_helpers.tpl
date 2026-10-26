@@ -101,11 +101,11 @@ things a pure log tailer never did:
 MODEL must be the DEPLOYMENT NAME, not modelName: it is the label the fleet
 dashboard's $model variable and every {model=~"$model"} panel filter key off,
 and it matches the model ServiceMonitor's job label.
-Usage: {{- include "ai.logExporterSidecar" (dict "name" $.name "port" $.m.port "engine" "strata") | nindent 8 }}
+Usage: {{- include "ai.logExporterSidecar" (dict "name" $.name "port" $.m.port "engine" "strata" "image" $.root.Values.gateway.toolsImage) | nindent 8 }}
 */}}
 {{- define "ai.logExporterSidecar" -}}
 - name: log-exporter
-  image: python:3.12-alpine
+  image: {{ required "logExporterSidecar needs \"image\" - pass gateway.toolsImage from the caller" .image }}
   command: [python, /exporter.py]
   env:
     - name: LOG_FILE

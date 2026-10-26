@@ -12,8 +12,11 @@ Everything here must keep the RENDERED OBJECT unchanged; these pods hold a GPU.
 Verified by rendering before and after and diffing the parsed documents:
   helm template ... | python3 scripts/normalize-manifest.py > before.json
 
-Context: dict "name" <model key> "m" <model values>. $ stays that dict inside
-nested ranges, which is why the body reads $.m / $.name.
+Context: dict "name" <model key> "m" <model values> "root" <template root>.
+$ stays that dict inside nested ranges, which is why the body reads $.m / $.name.
+"root" is required and means what it means in ai.strataDeployment: the
+log-exporter sidecar's image is a value, and a value the templates cannot reach
+is a value that ends up hardcoded in a template instead.
 */}}
 {{- define "ai.modelDeployment" -}}
 {{- $binary := "" }}
@@ -165,7 +168,7 @@ spec:
               memory: {{ $.m.memoryRequest }}
             limits:
               memory: {{ $.m.memoryLimit }}
-        {{- include "ai.logExporterSidecar" (dict "name" $.name "port" $.m.port "engine" "llama") | nindent 8 }}
+        {{- include "ai.logExporterSidecar" (dict "name" $.name "port" $.m.port "engine" "llama" "image" $.root.Values.gateway.toolsImage) | nindent 8 }}
       volumes:
         {{- include "ai.modelCommonVolumes" . | nindent 8 }}
         {{- if $.m.nixBinary }}

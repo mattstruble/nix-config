@@ -27,7 +27,7 @@ data:
     {{- if eq ($m.engine | default "llama") "strata" }}
     {{- include "ai.strataDeployment" (dict "name" $name "m" $m "root" $) | fromYaml | toJson | nindent 4 }}
     {{- else }}
-    {{- include "ai.modelDeployment" (dict "name" $name "m" $m) | fromYaml | toJson | nindent 4 }}
+    {{- include "ai.modelDeployment" (dict "name" $name "m" $m "root" $) | fromYaml | toJson | nindent 4 }}
     {{- end }}
   {{- end }}
   {{- end }}

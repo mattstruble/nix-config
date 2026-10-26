@@ -7,7 +7,7 @@ scaling a summoned model back to zero.
 */}}
 {{- range $name, $m := .Values.models }}
 {{- if and $m.enable (ne ($m.engine | default "llama") "strata") (eq ($m.lifecycle | default "static") "static") }}
-{{- include "ai.modelDeployment" (dict "name" $name "m" $m) }}
+{{- include "ai.modelDeployment" (dict "name" $name "m" $m "root" $) }}
 ---
 {{- end }}
 {{- end }}
