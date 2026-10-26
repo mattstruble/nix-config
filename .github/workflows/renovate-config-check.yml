@@ -1,0 +1,133 @@
+name: renovate-config-check
+
+# renovate.json is the only file here whose failure is invisible. A pattern that
+# matches nothing is a perfectly valid config: Renovate extracts fewer
+# dependencies, files fewer PRs, and the cluster quietly stops receiving security
+# bumps. Two of the three defects in the update pipeline were exactly this - a
+# regex that saw 1 of 9 image keys, and a chart manager that extracted all three
+# charts and proposed nothing - and neither was visible in review or in CI.
+#
+# So validate the schema, then run the real extractor and require it to account
+# for every pin in the tree. The comparison is deliberately not a hardcoded
+# count: adding a model values file changes both sides, so the check keeps its
+# teeth without needing to be edited, and a pin that becomes invisible - or a
+# pattern that starts matching something that is not a pin - goes red.
+on:
+  pull_request:
+    paths:
+      - "renovate.json"
+      - "k8s/apps/ai/values.yaml"
+      - "k8s/apps/ai/values/**"
+      - "nix/services/k3s.nix"
+      - ".github/workflows/renovate-config-check.yml"
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  extracts-every-pin:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Catches malformed options and misspelled keys. It does not validate that a
+      # datasourceTemplate names a datasource that exists - a bogus one still
+      # extracts, so the count check below will not notice either. Hosted Renovate
+      # reports that case as a config error on the PR.
+      - name: Validate the config schema
+        run: |
+          set -euo pipefail
+          docker run --rm -v "$PWD:/usr/src/app" -w /usr/src/app \
+            --entrypoint renovate-config-validator \
+            renovate/renovate:44 renovate.json
+
+      - name: Require the extractor to see every pin
+        run: |
+          set -euo pipefail
+          # Extraction happens before any registry lookup, so this needs no
+          # token; unresolvable versions are skipped later and do not change the
+          # counts. GIT_CONFIG_* because the container does not run as the user
+          # that owns the checkout.
+          docker run --rm -v "$PWD:/usr/src/app" -w /usr/src/app \
+            -e LOG_FORMAT=json -e LOG_LEVEL=debug \
+            -e RENOVATE_AUTODISCOVER=false -e RENOVATE_PLATFORM=local \
+            -e RENOVATE_DRY_RUN=true \
+            -e RENOVATE_CONFIG_FILE=/usr/src/app/renovate.json \
+            -e GIT_CONFIG_COUNT=1 -e GIT_CONFIG_KEY_1=safe.directory \
+            -e GIT_CONFIG_VALUE_1='*' \
+            renovate/renovate:44 > /tmp/renovate.jsonl 2>&1 || true
+
+          cat > /tmp/compare.py <<'PY'
+          import json, subprocess, sys
+
+          # The authoritative extraction: renovate logs its whole packageFiles
+          # structure under `config`, keyed by manager.
+          pkg = None
+          for line in open("/tmp/renovate.jsonl", errors="replace"):
+              try:
+                  rec = json.loads(line)
+              except ValueError:
+                  continue
+              if rec.get("msg") == "packageFiles with updates":
+                  pkg = rec.get("config")
+          if not isinstance(pkg, dict):
+              tail = open("/tmp/renovate.jsonl", errors="replace").read()[-2000:]
+              print("renovate never reported its extracted package files; it probably failed to run:")
+              print(tail)
+              sys.exit(1)
+
+          # Distinct (file, package, version) identities. A local-platform run lists
+          # every file twice - git's file list and the glob fallback both feed the
+          # extractor - so raw counts are exactly 2x reality and useless to assert
+          # on. Identity dedupe is what makes the comparison mean something.
+          found = set()
+          for entry in pkg.get("regex", []):
+              f = entry.get("packageFile")
+              for d in entry.get("deps", []):
+                  if f:
+                      found.add((f, d.get("packageName"), d.get("currentValue")))
+
+          def count(pattern, path):
+              out = subprocess.run(["grep", "-rhoE", pattern, path],
+                                   capture_output=True, text=True).stdout
+              return len([l for l in out.splitlines() if l.strip()])
+
+          # Deliberately key-agnostic. Counting `@sha256:<64hex>` occurrences says
+          # "a digest pin exists here" without restating the manager's pattern: if
+          # the tree side used the same pattern, a rename that hides a pin from
+          # renovate would hide it from this check too, and both sides would drop
+          # together and pass. (That is exactly how the first version of this check
+          # behaved when tested.)
+          IMAGE = r'@sha256:[a-f0-9]{64}'
+          CHART = r'url = "https://github[.]com/[^"]+/releases/download/[^"]+";'
+
+          # (label, how a renovate file belongs to this group, where to grep the tree)
+          groups = [
+              ("gateway values", lambda f: f == "k8s/apps/ai/values.yaml",
+               IMAGE, "k8s/apps/ai/values.yaml"),
+              ("model values",   lambda f: f.startswith("k8s/apps/ai/values/"),
+               IMAGE, "k8s/apps/ai/values"),
+              ("chart tarballs", lambda f: f == "nix/services/k3s.nix",
+               CHART, "nix/services/k3s.nix"),
+          ]
+
+          failed = False
+          for label, belongs, pattern, path in groups:
+              got = len({t for t in found if belongs(t[0])})
+              want = count(pattern, path)
+              print(f"  {label:16} renovate {got:2}   tree {want:2}")
+              if got != want:
+                  failed = True
+
+          print(f"{len(found)} distinct dependencies extracted from the regex managers")
+          if failed:
+              print("::error::renovate and the tree disagree. Either a pin became invisible to "
+                    "update automation - the failure this whole check exists for - or a pattern "
+                    "reaches something that is not a pin. Check customManagers in renovate.json "
+                    "against the key names and paths actually in use.")
+              sys.exit(1)
+          PY
+          python3 /tmp/compare.py
