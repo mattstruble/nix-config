@@ -42,7 +42,7 @@ models:
     # the same digest-pinned alpine shell the 1-GPU variant runs in: the nix
     # bundle is self-contained (engine + venv + entrypoint), the image is only
     # the shell that mounts it.
-    image: alpine@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc
+    image: alpine:3.20@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc
     lifecycle: on-demand
     # The fleet-killer variant does not squat both cards for half an hour:
     # a short ttl hands them back as soon as the heavy work stops.

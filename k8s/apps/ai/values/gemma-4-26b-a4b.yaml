@@ -17,7 +17,7 @@ models:
     enable: true
     lifecycle: on-demand
     coldStartSeconds: 240
-    image: ghcr.io/ggml-org/llama.cpp:server-cuda12-b11151
+    image: ghcr.io/ggml-org/llama.cpp:server-cuda12-b11151@sha256:014f721265464f38ccb247c1338d07d852c4bae7509a4b4734d07a2bbadc765c
     # the CARD POOL, not a pin: placement is the shim's - it lands this model on
     # any free card in the pool at wake time, waits for one if all are busy, and
     # fails with a reason if its wait budget expires. A single-card pool ("0")

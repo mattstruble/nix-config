@@ -27,7 +27,8 @@ Service for it and adds it to the LiteLLM gateway model_list.
 
 ## Conventions
 
-- **Digest-pin every image** (`image@sha256:...`); no tags.
+- **Pin every image as `repository:tag@digest`** — resolve with `./scripts/resolve-digest.sh <image:tag>`. The digest is what runs; the tag is what update automation reads, so a digest-only reference silently opts an image out of security bumps. The digest must be the index digest the runtime resolves, not a per-architecture manifest; the script refuses anything else.
+- **Two known exceptions, both template literals rather than values:** `python:3.12-alpine` (head-end init containers, and the `ai.logExporterSidecar` helper) and the `postgres:16-alpine` default. They stay tag-only because nothing declarative reads a string out of a template, and moving them means threading an image through two levels of the model-pod templates - a change that wants its own review, not a rider on a convention fix. Until then this rule covers every image a values file references.
 - **One values file per model** under `values/`; `enable: false` = no pod, no route.
 - **GPU pinning:** `gpu: "0"|"1"` → `NVIDIA_VISIBLE_DEVICES` + `runtimeClassName: nvidia` (CDI mode). Never two models on one GPU.
 - **PSS restricted** on every pod: runAsNonRoot, drop ALL, seccomp, no SA token, readOnlyRootFilesystem (container-level — k3s drops the pod-level field).

@@ -2,7 +2,8 @@
 # = adding one entry here; the chart renders a Deployment + Service for it AND
 # adds it to the LiteLLM gateway model_list.
 #
-#   image:      digest-pinned. Image models use the image's /app/llama-server;
+#   image:      `repository:tag@digest` (see k8s/README.md). Image models use
+#               the image's /app/llama-server;
 #               fork models set nixBinary: true + command: [/nix/store/<hash>/bin/llama-server]
 #   gpu:        the CARD POOL, e.g. "0", "1", "0,1" (CDI-mode nvidia runtime
 #               honours NVIDIA_VISIBLE_DEVICES). Placement is the shim's: it
@@ -82,7 +83,7 @@ headEnd:
 # pi/opencode point to).
 gateway:
   enable: true
-  image: ghcr.io/berriai/litellm:v1.102.1
+  image: ghcr.io/berriai/litellm:v1.102.1@sha256:87f34979b9f8cb274fac90ca8a4fdda07d8480de22755562a26adeb95ce20d02
   hostPort: 8000
   # Postgres for the LiteLLM key store (virtual keys require PostgreSQL).
   # The gateway always uses the master key + Postgres key store + per-source
