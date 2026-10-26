@@ -1,0 +1,74 @@
+name: chart-image-digests
+
+# The `repository:tag@digest` convention (k8s/README.md) only protects the cluster
+# if the digest still belongs to the tag. Two ways it stops being true, neither of
+# which produces a commit here: someone pastes a per-architecture manifest digest
+# instead of the index digest, or upstream re-pushes a tag so the pin silently
+# points at old content. Both look correct in review and only fail at pull time,
+# on a cluster where the failure is a model that will not wake.
+#
+# So: resolve every pinned tag at its registry and require the same digest. The
+# schedule is the point - a re-push cannot be caught by a pull_request trigger.
+on:
+  pull_request:
+    paths:
+      - "k8s/apps/ai/values.yaml"
+      - "k8s/apps/ai/values/**"
+      - "scripts/resolve-digest.sh"
+      - ".github/workflows/chart-image-digests.yml"
+  push:
+    branches: [main]
+  schedule:
+    - cron: "30 5 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  pins-match-tags:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check every pinned digest against its tag
+        run: |
+          set -uo pipefail
+          FILES=(k8s/apps/ai/values.yaml k8s/apps/ai/values/*.yaml)
+          # Same shape Renovate reads (renovate.json customManagers): any key ending
+          # in image:/Image:, not just a literal `image:`, and any whitespace after it.
+          # A literal `image: ` pattern matches 1 of the 9 pins, which is how this repo
+          # nearly shipped it. Scoped globs, not a recursive walk, because the deploy
+          # loads exactly this set (nix/services/k3s.nix: values/*.yaml).
+          PATTERN='[A-Za-z0-9_-]*[iI]mage:[[:space:]]*[^ ]+@sha256:[a-f0-9]{64}'
+          mapfile -t pins < <(
+            grep -rhoE "$PATTERN" "${FILES[@]}" \
+              | sed -E 's/^[A-Za-z0-9_-]*[iI]mage:[[:space:]]*//' | sort -u
+          )
+          # Coverage, not just correctness. A pin this regex cannot see would leave
+          # the loop below checking the ones it likes and reporting green - the
+          # silent opt-out the convention exists to prevent. So count every digest
+          # in the chart and require the readable pattern to account for all of them.
+          total=$(grep -rhoE '@sha256:[a-f0-9]{64}' "${FILES[@]}" | wc -l | tr -d ' ')
+          readable=$(grep -rhoE "$PATTERN" "${FILES[@]}" | wc -l | tr -d ' ')
+          if [ "$total" != "$readable" ]; then
+            echo "::error::$total digest-pinned references in the chart but only $readable match the update regex: a pin has become invisible to Renovate. The key must end in image:/Image: (see k8s/README.md)."
+            exit 1
+          fi
+          echo "checking ${#pins[@]} unique references ($readable pins, all readable by the update regex)"
+          failed=0
+          for pin in "${pins[@]}"; do
+            ref="${pin%@sha256:*}"
+            want="${pin##*@}"
+            if ! got=$(./scripts/resolve-digest.sh "$ref" 2>/dev/null | sed -E 's/.*@//'); then
+              echo "::error::$ref - tag does not resolve at its registry"
+              failed=1; continue
+            fi
+            if [ "$got" != "$want" ]; then
+              echo "::error::$ref - pinned ${want:0:19}... but the tag now resolves to ${got:0:19}..."
+              failed=1
+            else
+              echo "ok   $ref  ${got:0:19}..."
+            fi
+          done
+          exit $failed
