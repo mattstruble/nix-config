@@ -36,18 +36,21 @@ jobs:
           set -uo pipefail
           FILES=(k8s/apps/ai/values.yaml k8s/apps/ai/values/*.yaml)
           # Same shape Renovate reads (renovate.json customManagers): any key ending
-          # in image:/Image:, not just a literal `image:`. A literal pattern matches
-          # 1 of the 9 pins, which is how this repo nearly shipped it.
+          # in image:/Image:, not just a literal `image:`, and any whitespace after it.
+          # A literal `image: ` pattern matches 1 of the 9 pins, which is how this repo
+          # nearly shipped it. Scoped globs, not a recursive walk, because the deploy
+          # loads exactly this set (nix/services/k3s.nix: values/*.yaml).
+          PATTERN='[A-Za-z0-9_-]*[iI]mage:[[:space:]]*[^ ]+@sha256:[a-f0-9]{64}'
           mapfile -t pins < <(
-            grep -rhoE '[A-Za-z0-9_-]*[iI]mage: [^ ]+@sha256:[a-f0-9]{64}' "${FILES[@]}" \
-              | sed -E 's/^[^ ]+ +//' | sort -u
+            grep -rhoE "$PATTERN" "${FILES[@]}" \
+              | sed -E 's/^[A-Za-z0-9_-]*[iI]mage:[[:space:]]*//' | sort -u
           )
           # Coverage, not just correctness. A pin this regex cannot see would leave
           # the loop below checking the ones it likes and reporting green - the
           # silent opt-out the convention exists to prevent. So count every digest
           # in the chart and require the readable pattern to account for all of them.
           total=$(grep -rhoE '@sha256:[a-f0-9]{64}' "${FILES[@]}" | wc -l | tr -d ' ')
-          readable=$(grep -rhoE '[A-Za-z0-9_-]*[iI]mage: [^ ]+@sha256:[a-f0-9]{64}' "${FILES[@]}" | wc -l | tr -d ' ')
+          readable=$(grep -rhoE "$PATTERN" "${FILES[@]}" | wc -l | tr -d ' ')
           if [ "$total" != "$readable" ]; then
             echo "::error::$total digest-pinned references in the chart but only $readable match the update regex: a pin has become invisible to Renovate. The key must end in image:/Image: (see k8s/README.md)."
             exit 1
