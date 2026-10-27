@@ -1,0 +1,108 @@
+# The BookStack database. Single replica, Recreate (the PVC is RWO — two pods
+# on one volume is data corruption, not high availability).
+#
+# Runs as the image's own mysql user, non-root, all capabilities dropped,
+# nothing writable but the data directory. That is the whole point of putting
+# the wiki's database in its own pod: the application above it is a root-at-
+# init PHP container, and this one is not.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: wiki-mariadb
+  labels:
+    app.kubernetes.io/component: database
+    app.kubernetes.io/part-of: wiki
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/component: database
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/component: database
+        app.kubernetes.io/part-of: wiki
+    spec:
+      securityContext:
+        runAsUser: {{ .Values.database.uid }}
+        runAsGroup: {{ .Values.database.gid }}
+        fsGroup: {{ .Values.database.gid }}
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      automountServiceAccountToken: false
+      containers:
+        - name: mariadb
+          image: {{ required "database.image is required" .Values.database.image }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          env:
+            - name: MARIADB_DATABASE
+              value: {{ .Values.database.database }}
+            - name: MARIADB_USER
+              value: {{ .Values.database.username }}
+            - name: MARIADB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secretName }}
+                  key: DB_PASSWORD
+            # The image refuses to start (rather than silently downgrading)
+            # when the data dir was written by a newer server than the image.
+            # Explicit, so an image digest bump that moves MariaDB backwards
+            # fails loudly instead of quietly.
+            - name: MARIADB_AUTO_UPGRADE
+              value: "1"
+          ports:
+            - name: mysql
+              containerPort: {{ .Values.database.port }}
+          # The image's own check: opens a connection and waits for InnoDB to
+          # finish recovery. Preferred over `mariadb-admin ping`, which needs
+          # credentials on the command line where any process in the pod can
+          # read them from /proc.
+          readinessProbe:
+            exec:
+              command:
+                - /usr/local/bin/healthcheck.sh
+                - --connect
+                - --innodb_initialized
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+          livenessProbe:
+            exec:
+              command:
+                - /usr/local/bin/healthcheck.sh
+                - --connect
+            initialDelaySeconds: 60
+            periodSeconds: 20
+            timeoutSeconds: 5
+          resources:
+            requests:
+              cpu: {{ .Values.database.resources.requests.cpu }}
+              memory: {{ .Values.database.resources.requests.memory }}
+            limits:
+              memory: {{ .Values.database.resources.limits.memory }}
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/mysql
+              subPath: mysql
+            # The image writes its socket and pidfile here; with a read-only
+            # root filesystem it has to be an explicit empty directory.
+            - name: run
+              mountPath: /run/mysqld
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: wiki-data
+        - name: run
+          emptyDir: {}
+        - name: tmp
+          emptyDir: {}

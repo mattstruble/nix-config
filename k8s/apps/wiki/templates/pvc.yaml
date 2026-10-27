@@ -1,0 +1,24 @@
+# The claim that binds the wiki's single local PV
+# (k8s/manifests/wiki-local-pv.yaml). Both workloads mount it, with different
+# subPaths, so the database and the uploads cannot drift apart: one volume,
+# one backup story, one thing to move.
+#
+# persistence.size must not exceed the capacity in that PV manifest. The two
+# live in different files because they are applied by different mechanisms
+# (k3s' manifest auto-loader for the cluster-scoped PV, this chart for the
+# namespaced claim) — the same split as the ai chart's postgres claim against
+# k8s/manifests/local-pvs.yaml. A claim larger than the PV does not error at
+# render time; it sits Pending forever, which is a worse failure to debug.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: wiki-data
+  labels:
+    app.kubernetes.io/part-of: wiki
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: wiki-data
+  resources:
+    requests:
+      storage: {{ .Values.persistence.size }}
