@@ -80,8 +80,8 @@ jobs:
           STRATA_BUNDLE=$(get_bundle .#nixosConfigurations.mjolnir.config.services.k3s.aiChart.strataBundle /nix/store/00000000000000000000000000000000-strata-preview)
           HEADEND_BUNDLE=$(get_bundle .#nixosConfigurations.mjolnir.config.services.k3s.aiChart.headEndBundle /nix/store/00000000000000000000000000000000-head-end-preview)
           render() {
-            # Render the chart under $1 (default: this checkout). Same values-file
-            # glob as `just k8s-render` and the nix render derivation
+            # Render every chart under $1 (default: this checkout). Same values-file
+            # glob as `just k8s-render` and the nix render derivations
             # (modules/services/k3s.nix); the chart dir is detected so a pre-rename
             # base renders too.
             local root=${1:-$PWD}
@@ -93,6 +93,14 @@ jobs:
             # shows empty mount paths and disagrees with production
             F+=(--set "strataBundle=$STRATA_BUNDLE" --set "headEnd.bundle=$HEADEND_BUNDLE")
             helm template "$(basename "$CHART")" "$CHART" "${F[@]}"
+            # No bundle injection here, and the absence guard is the point: a PR
+            # that adds an app must diff against a base that does not have it,
+            # which is the only way this preview shows the whole app as new
+            # rather than showing nothing at all.
+            local W="$root/k8s/apps/wiki"
+            if [ -d "$W" ]; then
+              helm template wiki "$W" -f "$W/values.yaml" --namespace wiki
+            fi
           }
           render > /tmp/pr.yaml
           # Render the base from its own worktree. `git restore --source=base -- k8s/`
