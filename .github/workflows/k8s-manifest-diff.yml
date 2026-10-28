@@ -131,6 +131,11 @@ jobs:
         uses: peter-evans/find-comment@v4
         with:
           issue-number: ${{ github.event.pull_request.number }}
+          # Without an author filter this matches whatever comment a human
+          # wrote last, and the next step then writes a rendered manifest diff
+          # into their remark.
+          comment-author: 'github-actions[bot]'
+          body-includes: '## Rendered manifest diff'
           direction: last
 
       - name: Post or update comment
@@ -139,4 +144,9 @@ jobs:
           comment-id: ${{ steps.fc.outputs.comment-id }}
           issue-number: ${{ github.event.pull_request.number }}
           body-path: /tmp/comment.md
+          # The action's default is `append`, which stacks a second full diff
+          # section under the first on every push: the stale one stays on top,
+          # and the body grows toward GitHub's 65536-character comment limit
+          # until the update itself starts failing.
+          edit-mode: replace
           reactions: "+1"
