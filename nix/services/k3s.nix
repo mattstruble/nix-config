@@ -79,11 +79,13 @@
             helm template ai $src/apps/ai "''${F[@]}" > $out/rendered.yaml
           '';
 
-      # The wiki chart: BookStack + MariaDB + the permission seed Job.
-      # Rendered at build time like the ai chart — no sops values are needed to
-      # render it, because the workloads read a Secret by name and the Secret is
-      # created at activation (k8s/apps/wiki/SECRETS.md explains why the chart
-      # deliberately cannot create it).
+      # The wiki chart: BookStack + MariaDB, and nothing else. Rendered at build
+      # time like the ai chart — no sops values are needed to render it, because
+      # the workloads read a Secret by name and the Secret is created at
+      # activation (k8s/apps/wiki/SECRETS.md explains why the chart deliberately
+      # cannot create it). There is no seed Job: the roles, shelves and grants
+      # are configured once in the BookStack UI and protected by the database
+      # backup, with the steps and their traps in k8s/apps/wiki/RUNBOOK.md.
       wikiChartRendered = pkgs.runCommand "wiki-chart-rendered"
         {
           src = k8sDir;

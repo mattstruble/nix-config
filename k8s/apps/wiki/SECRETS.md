@@ -20,8 +20,10 @@ at `/run/secrets` — the same route that already creates `litellm-keys`,
 
 That is a deliberate reading of "the chart never creates a Secret": the chart
 does not, the activation script does, and nothing is ever typed into a terminal
-by hand. A Secret created by hand is invisible to a restore, and the point of
-the seed Job is that the whole model is reproducible from a PR.
+by hand. A Secret typed in by hand is invisible to a restore — and since the
+permission model now lives only in the database, the restore is the one thing
+that has to be able to bring the credentials and the configuration back
+together.
 
 The values come from `nix/services/homelab/homelab-secrets-wiki.yaml`, whose
 recipients are the human and mjolnir — **not roque**. That recipient list is

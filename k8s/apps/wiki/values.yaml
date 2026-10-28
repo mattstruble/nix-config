@@ -61,11 +61,6 @@ oidc:
   # in networkpolicy.yaml is what makes it so. A Pocket ID that is only
   # resolvable on the LAN means the wiki cannot log anyone in.
   issuer: https://id.struble.app
-  # The empty role every auto-registered user gets. Not a hardening nicety:
-  # OIDC_REMOVE_FROM_GROUPS makes this role "always matched", so whatever it
-  # points at is what every holder of a Pocket ID account receives. Pointing
-  # it at anything but an empty role hands out read access by default.
-  registrationRole: no-access
   # Pocket ID emits group NAMES under the `groups` scope; BookStack matches
   # them (lower-cased, spaces to hyphens) against each role's External
   # Authentication IDs, falling back to the role display name.
@@ -94,73 +89,3 @@ persistence:
   # pre-owned by systemd.tmpfiles in nix/services/k3s.nix — the same trick
   # k8s/manifests/local-pvs.yaml uses for postgres.
   hostPath: /var/lib/wiki
-
-seed:
-  # The Job that turns an empty BookStack into the permission model this
-  # file describes. Runs `php artisan` inside the app image, so it needs no
-  # API token (see the comment in templates/seed-job.yaml for why that
-  # matters). Idempotent: re-running asserts rather than duplicates.
-  enabled: true
-  admin:
-    email: admin@struble.app
-    name: Wiki Admin
-    # The Pocket ID `sub` claim of the admin account. This is the one value
-    # nothing else can guess, and it is why the admin is usable at all:
-    # BookStack does NOT link an existing local user to an OIDC identity by
-    # email, so an admin created with a password becomes a second, no-access
-    # user the moment OIDC login is enabled. Empty refuses to run the Job.
-    externalAuthId: ""
-  # Roles are created with External Authentication IDs equal to their names,
-  # so a Pocket ID group of the same name maps to them. Display names are
-  # editable in the UI; a rename would silently strip everyone's role on
-  # their next login, which is why the ID is set explicitly.
-  #
-  # Audience roles carry NO global permissions, deliberately. BookStack has a
-  # set of global `*-view-all` permissions that are evaluated before entity
-  # grants, so a single one of them on a role makes every entity grant on this
-  # wiki decorative. BookStack's own Viewer/Public roles ship with five of
-  # them; the seed strips them and says so. Verified: with them, a family user
-  # opened the Cluster book; without, they got 404 and plex-users got the
-  # mirror image.
-  #
-  # Trimmed deliberately: `wiki-ops` was dropped as probably the same two
-  # people as `wiki-admin`, and `calibre-users` had no stated audience. A
-  # group is cheap to add and expensive to remove once content depends on it.
-  roles:
-    - name: no-access
-      # No system_name: an empty custom role. No external_auth_id either —
-      # it must be assignable without matching any group.
-      externalAuthId: ""
-    - name: wiki-admin
-      systemName: admin
-      externalAuthId: wiki-admin
-    - name: family
-      externalAuthId: family
-    - name: plex-users
-      externalAuthId: plex-users
-  # Shelf = audience, book = topic. Enforcement lives on books (shelf
-  # permissions do not cascade — a shelf is a filing label). `viewers` is the
-  # list of roles granted view at book level, cascading to chapters and pages
-  # unless a child overrides it.
-  shelves:
-    - name: Family
-      viewers: [family, wiki-admin]
-      books: [Printers, Travel, Home]
-    - name: Home Apps
-      viewers: [family, plex-users, wiki-admin]
-      books: [Plex]
-    - name: Ops
-      viewers: [wiki-admin]
-      books: [Cluster, Network]
-  # One chapter per book, restricted to wiki-admin. The whole permission
-  # model rests on this convention: "if a friend should not see it, write it
-  # in Internal" is a decision about WHERE you save, never a dialog.
-  #
-  # Making a chapter deny what its book allows needs more than the absence of
-  # a grant: BookStack walks up the entity chain and stops at the first level
-  # that carries a role_id = 0 "fallback" row, which is how an entity says "I
-  # am not inheriting". The seed writes that row via BookStack's own
-  # PermissionsUpdater, because a hand-rolled set of per-role rows looks
-  # correct in every table and still lets the audience read the chapter.
-  internalChapter: Internal
-  internalViewers: [wiki-admin]

@@ -14,11 +14,10 @@ template` emits kinds in Helm's install order, which puts NetworkPolicy
 immediately after Namespace, and the apply script feeds that file to kubectl
 in document order — so the deny lands first.
 
-Four policies, and the set is closed: anything not written here is dropped.
+Three policies, and the set is closed: anything not written here is dropped.
   1. deny everything, both directions, for every pod in the namespace
   2. bookstack: in from the edge connector; out to DNS, the database, 443
-  3. mariadb:   in from bookstack and the seed job; no egress at all
-  4. seed job:  out to DNS and the database only
+  3. mariadb:   in from bookstack only; no egress at all
 
 The ingress rule names the `edge` namespace and a connector pod label that do
 not exist yet — the Pangolin connector is a separate change. Until they do
@@ -121,44 +120,6 @@ spec:
         - podSelector:
             matchLabels:
               app.kubernetes.io/component: bookstack
-        - podSelector:
-            matchLabels:
-              app.kubernetes.io/component: seed
-      ports:
-        - protocol: TCP
-          port: {{ .Values.database.port }}
----
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  name: seed-job
-  labels:
-    app.kubernetes.io/part-of: wiki
-spec:
-  podSelector:
-    matchLabels:
-      app.kubernetes.io/component: seed
-  policyTypes:
-    - Egress
-  egress:
-    # The seed runs `php artisan`, so it talks to the database directly and
-    # to nothing else — no HTTP, no IdP, no internet.
-    - to:
-        - namespaceSelector:
-            matchLabels:
-              kubernetes.io/metadata.name: kube-system
-          podSelector:
-            matchLabels:
-              k8s-app: kube-dns
-      ports:
-        - protocol: UDP
-          port: 53
-        - protocol: TCP
-          port: 53
-    - to:
-        - podSelector:
-            matchLabels:
-              app.kubernetes.io/component: database
       ports:
         - protocol: TCP
           port: {{ .Values.database.port }}

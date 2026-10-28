@@ -11,11 +11,11 @@ k8s/
 │   │   ├── templates/
 │   │   ├── values.yaml        # shared values (gateway, chat template)
 │   │   └── values/<model>.yaml  # one file per model; maps merge across -f
-│   └── wiki/          #   BookStack + MariaDB + the permission seed Job
+│   └── wiki/          #   BookStack + MariaDB; permissions are set in the UI
 │       ├── templates/
-│       ├── values.yaml        # audiences, shelves/books, images, OIDC
+│       ├── values.yaml        # images, resources, OIDC, storage
 │       ├── SECRETS.md         # the Secret this chart references and never creates
-│       └── RUNBOOK.md         # the four human steps before it will deploy
+│       └── RUNBOOK.md         # activation, and the one-time UI configuration
 └── manifests/         # cluster-level yaml auto-applied by k3s (nix/services/k3s.nix)
 ```
 
