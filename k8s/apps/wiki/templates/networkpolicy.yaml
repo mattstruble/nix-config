@@ -1,0 +1,125 @@
+{{- /*
+Containment for the wiki namespace. k3s enforces these: its embedded
+kube-router network-policy controller is on by default (only
+--disable-network-policy turns it off, and services.k3s.disable lists just
+metrics-server), so these rules bite on stock Flannel with no Cilium or
+Calico. That is also why the egress allows below are load-bearing rather than
+decorative — see the correction in the cluster notes about the stale
+"Flannel ignores NetworkPolicy" claim in k8s/manifests/ai-networkpolicies.yaml.
+
+Order matters and is not accidental: a namespace with no policy selecting a
+pod is DEFAULT ALLOW, so the deny has to be applied before the workloads or
+the first apply leaves BookStack wide open until the second one. `helm
+template` emits kinds in Helm's install order, which puts NetworkPolicy
+immediately after Namespace, and the apply script feeds that file to kubectl
+in document order — so the deny lands first.
+
+Three policies, and the set is closed: anything not written here is dropped.
+  1. deny everything, both directions, for every pod in the namespace
+  2. bookstack: in from the edge connector; out to DNS, the database, 443
+  3. mariadb:   in from bookstack only; no egress at all
+
+The ingress rule names the `edge` namespace and a connector pod label that do
+not exist yet — the Pangolin connector is a separate change. Until they do
+this matches nothing, which is the correct reading: the wiki is unreachable
+from outside the cluster, and reachable from nowhere else once the connector
+lands. Nothing about the wiki's exposure is decided by anything outside this
+file.
+*/ -}}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: wiki-default-deny
+  labels:
+    app.kubernetes.io/part-of: wiki
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: bookstack
+  labels:
+    app.kubernetes.io/part-of: wiki
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/component: bookstack
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # The only path in. There is no Ingress object and no hostPort: the wiki
+    # is published by the Pangolin connector, so "who may reach BookStack"
+    # and "who may reach the tunnel" collapse into one rule.
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: edge
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/component: connector
+      ports:
+        - protocol: TCP
+          port: {{ .Values.bookstack.port }}
+  egress:
+    # Service discovery for `mariadb`. Without this the pod cannot even
+    # resolve its own database, which is the failure mode a default-deny-egress
+    # policy written from the ticket text produces.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/component: database
+      ports:
+        - protocol: TCP
+          port: {{ .Values.database.port }}
+    # OIDC discovery + any future webhook. See oidc.egressCidrs for why this
+    # is a CIDR and why its default is wider than anyone would choose.
+    - to:
+        {{- range .Values.oidc.egressCidrs }}
+        - ipBlock:
+            cidr: {{ . }}
+        {{- end }}
+      ports:
+        - protocol: TCP
+          port: 443
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: mariadb
+  labels:
+    app.kubernetes.io/part-of: wiki
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/component: database
+  policyTypes:
+    # Ingress only, deliberately. Egress is already denied by the
+    # namespace-wide policy, and adding an Egress type here with no rules
+    # would not re-open it — but omitting it keeps the intent unambiguous:
+    # the database listens, it does not call out.
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/component: bookstack
+      ports:
+        - protocol: TCP
+          port: {{ .Values.database.port }}

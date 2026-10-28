@@ -79,6 +79,24 @@
             helm template ai $src/apps/ai "''${F[@]}" > $out/rendered.yaml
           '';
 
+      # The wiki chart: BookStack + MariaDB, and nothing else. Rendered at build
+      # time like the ai chart — no sops values are needed to render it, because
+      # the workloads read a Secret by name and the Secret is created at
+      # activation (k8s/apps/wiki/SECRETS.md explains why the chart deliberately
+      # cannot create it). There is no seed Job: the roles, shelves and grants
+      # are configured once in the BookStack UI and protected by the database
+      # backup, with the steps and their traps in k8s/apps/wiki/RUNBOOK.md.
+      wikiChartRendered = pkgs.runCommand "wiki-chart-rendered"
+        {
+          src = k8sDir;
+          nativeBuildInputs = [ pkgs.kubernetes-helm ];
+        }
+        ''
+          mkdir -p $out
+          helm template wiki $src/apps/wiki -f $src/apps/wiki/values.yaml \
+            --namespace wiki > $out/rendered.yaml
+        '';
+
       # curl for the oneshot below (the metrics-key registration talks to the
       # gateway's /metrics + /key/generate over HTTP). Wrapped in a
       # single-output script because interpolating curl's default `bin`
@@ -215,6 +233,15 @@
         # local-path PVs are root-owned. See k8s/manifests/local-pvs.yaml.
         systemd.tmpfiles.rules = [
           "d /var/lib/postgres-data 0700 999 999 -"
+          # The wiki's local PV (k8s/manifests/wiki-local-pv.yaml) is one host
+          # directory mounted into both workloads by subPath, so both
+          # subdirectories are pre-owned here. Same reason as postgres above:
+          # these pods cannot chown for themselves, and BookStack's own
+          # root-at-init chown runs on a directory it first has to be able to
+          # write.
+          "d /var/lib/wiki 0755 root root -"
+          "d /var/lib/wiki/mysql 0750 999 999 -"
+          "d /var/lib/wiki/bookstack 0770 983 983 -"
         ];
 
         # Monitoring secrets (mjolnir-decryptable). Consumed by the rendered
@@ -250,6 +277,23 @@
           # machine.
           "services/ai/litellm/metrics-key" = {
             sopsFile = ./homelab/homelab-secrets-ai.yaml;
+          };
+          # Wiki (BookStack). Deliberately a different sops file from every
+          # secret above: homelab-secrets-wiki.yaml is encrypted to the human
+          # and mjolnir only, so the wiki's database password and OIDC client
+          # secret are not decryptable on roque, which holds the IdP, the NAS
+          # mount and n8n's credential store.
+          "services/wiki/app-key" = {
+            sopsFile = ./homelab/homelab-secrets-wiki.yaml;
+          };
+          "services/wiki/db-password" = {
+            sopsFile = ./homelab/homelab-secrets-wiki.yaml;
+          };
+          "services/wiki/oidc-client-id" = {
+            sopsFile = ./homelab/homelab-secrets-wiki.yaml;
+          };
+          "services/wiki/oidc-client-secret" = {
+            sopsFile = ./homelab/homelab-secrets-wiki.yaml;
           };
         };
         # Materialise secrets in the activation script (setupSecrets) instead of
@@ -298,6 +342,9 @@
             local-pvs = {
               source = "${k8sDir}/manifests/local-pvs.yaml";
             };
+            wiki-pvs = {
+              source = "${k8sDir}/manifests/wiki-local-pv.yaml";
+            };
           };
         };
 
@@ -308,6 +355,7 @@
         # time.
         system.build = {
           aiChartRendered = aiChartRendered;
+          wikiChartRendered = wikiChartRendered;
           # kps chart (fetched .tgz) — rendered at activation, not build time.
           kpsChart = kpsChart;
         }
@@ -404,6 +452,23 @@
             METRICS_KEY="$(cat ${config.sops.secrets."services/ai/litellm/metrics-key".path})"
             [ -n "$METRICS_KEY" ] || { echo "error: services/ai/litellm/metrics-key sops secret is empty" >&2; exit 1; }
 
+            # Wiki secrets. Unlike every secret above, these are allowed to be
+            # unconfigured: the Pocket ID OIDC client has to be created by hand,
+            # and until it exists the two client values are the literal string
+            # "unset". Deploying BookStack against a client that does not exist
+            # produces a login redirect to an error page, which reads as a
+            # broken wiki rather than an unconfigured one — so the whole wiki
+            # pass is skipped, loudly, and everything else still applies.
+            WIKI_APP_KEY="$(cat ${config.sops.secrets."services/wiki/app-key".path})"
+            WIKI_DB_PASSWORD="$(cat ${config.sops.secrets."services/wiki/db-password".path})"
+            WIKI_OIDC_CLIENT_ID="$(cat ${config.sops.secrets."services/wiki/oidc-client-id".path})"
+            WIKI_OIDC_CLIENT_SECRET="$(cat ${config.sops.secrets."services/wiki/oidc-client-secret".path})"
+            WIKI_DEPLOY=1
+            for wv in "$WIKI_APP_KEY" "$WIKI_DB_PASSWORD" "$WIKI_OIDC_CLIENT_ID" "$WIKI_OIDC_CLIENT_SECRET"; do
+              [ -n "$wv" ] || { echo "error: a services/wiki sops secret is empty" >&2; exit 1; }
+              [ "$wv" = "unset" ] && WIKI_DEPLOY=0
+            done
+
             # Every resource this script applies carries the managed-by label,
             # and each `kubectl apply --prune` pass is scoped to it, so a prune
             # can never delete anything outside our charts (k3s built-ins,
@@ -422,6 +487,7 @@
             SEL_MONITORING="$MANAGED,mjolnir/prune-group=monitoring"
             SEL_KUBE_SYSTEM="$MANAGED,mjolnir/prune-group=kube-system"
             SEL_GPU="$MANAGED,mjolnir/prune-group=gpu"
+            SEL_WIKI="$MANAGED,mjolnir/prune-group=wiki"
             # Kinds a prune pass may delete. kubectl's default allowlist has
             # no CRs, so the monitoring.coreos.com kinds must be listed.
             PRUNE_ALLOWLIST=(
@@ -588,6 +654,7 @@
             # chart renders those as one v1 List that cannot be split by
             # namespace, and the SM must live in gpu/ to select the pod).
             label_all gpu "true" ${monitoringChartRendered.dcgm}/rendered.yaml ${k8sDir}/manifests/dcgm-networkpolicy.yaml ${k8sDir}/manifests/dcgm-servicemonitor.yaml > "$T/gpu-charts.json"
+            label_all wiki "true" ${wikiChartRendered}/rendered.yaml > "$T/wiki-chart.json"
             cat "$T/cluster-kps.json" "$T/cluster-kubelet-crb.json" > "$T/cluster.yaml"
             cat "$T/monitoring-kubelet-sa.json" "$T/monitoring-kps.json" "$T/monitoring-charts.json" > "$T/monitoring-static.json"
             cat "$T/kube-system-kps.json" > "$T/kube-system.yaml"
@@ -599,6 +666,7 @@
             [ -s "$T/kube-system.yaml" ] || { echo "error: rendered kube-system.yaml is empty" >&2; exit 1; }
             [ -s "$T/default-ai.json" ] || { echo "error: rendered default-ai.json is empty" >&2; exit 1; }
             [ -s "$T/gpu-charts.json" ] || { echo "error: rendered gpu-charts.json is empty" >&2; exit 1; }
+            [ -s "$T/wiki-chart.json" ] || { echo "error: rendered wiki-chart.json is empty" >&2; exit 1; }
             set +e
 
             # CIDR containment: is $2 (net/prefix) a subnet of $1? The node's
@@ -626,6 +694,7 @@
             for i in $(seq 1 150); do
               $KCTL get namespace monitoring >/dev/null 2>&1 || $KCTL create namespace monitoring
               $KCTL get namespace gpu >/dev/null 2>&1 || $KCTL create namespace gpu
+              $KCTL get namespace wiki >/dev/null 2>&1 || $KCTL create namespace wiki
               # Divergence check: the nftables rule for 9100/10250 is scoped
               # to $CLUSTER_CIDR (k3s' default; the nix k3s module exposes no
               # cluster-cidr option). The node's podCIDR is a /24 slice of the
@@ -655,6 +724,16 @@
               # existing namespace gets the label too.
               $KCTL label namespace gpu pod-security.kubernetes.io/enforce=privileged --overwrite
               $KCTL label namespace monitoring pod-security.kubernetes.io/enforce=privileged --overwrite
+              # The wiki namespace is baseline, not privileged, and that is a
+              # claim about the BookStack container rather than an aspiration:
+              # it starts as root (s6-overlay cannot start any other way — as
+              # uid 983 it dies with "unable to setgid to root"), and it needs
+              # CHOWN, DAC_OVERRIDE, FOWNER, SETGID and SETUID, all five of
+              # which are on baseline's allowed add-list, with
+              # allowPrivilegeEscalation: false (verified against the image,
+              # including with no_new_privs). See the header of
+              # k8s/apps/wiki/templates/bookstack-deployment.yaml.
+              $KCTL label namespace wiki pod-security.kubernetes.io/enforce=baseline --overwrite
               # Migration: older deploys applied three kubernetes-system
               # PrometheusRules (controller-manager/kube-proxy/scheduler) that
               # are now disabled in values. They carry no managed label, so
@@ -762,6 +841,25 @@
                 && apply_pruned "$SEL_DEFAULT" "default" "$T/default.yaml" \
                 && apply_pruned "$SEL_MONITORING" "monitoring" "$T/monitoring.yaml" \
                 && apply_pruned "$SEL_GPU" "gpu" "$T/gpu-charts.json" \
+                && { if [ "$WIKI_DEPLOY" = "1" ]; then
+                      # Secret first: the chart's pods read it at start, and
+                      # applying the workloads a moment earlier only buys a
+                      # CreateContainerConfigError that resolves itself.
+                      # Paths straight into --from-file, so no wiki secret ever
+                      # appears in kubectl's argv.
+                      $KCTL create secret generic bookstack \
+                          --namespace wiki \
+                          --from-file=APP_KEY=${config.sops.secrets."services/wiki/app-key".path} \
+                          --from-file=DB_PASSWORD=${config.sops.secrets."services/wiki/db-password".path} \
+                          --from-file=OIDC_CLIENT_ID=${config.sops.secrets."services/wiki/oidc-client-id".path} \
+                          --from-file=OIDC_CLIENT_SECRET=${config.sops.secrets."services/wiki/oidc-client-secret".path} \
+                          --dry-run=client -o yaml | label_all wiki "true" > "$T/wiki-secret.json" \
+                      && cat "$T/wiki-secret.json" "$T/wiki-chart.json" > "$T/wiki.yaml" \
+                      && apply_pruned "$SEL_WIKI" "wiki" "$T/wiki.yaml"
+                    else
+                      echo "wiki: OIDC client values are still the 'unset' sentinel; skipping the wiki pass. Create the Pocket ID client, put its id and secret into nix/services/homelab/homelab-secrets-wiki.yaml, and re-activate."
+                    fi
+                  } \
                 && apply_pruned "$SEL_KUBE_SYSTEM" "kube-system" "$T/kube-system.yaml" \
                 && $KCTL label configmap mjolnir-dashboards --namespace monitoring grafana_dashboard=1 --overwrite \
                 && register_metrics_key \

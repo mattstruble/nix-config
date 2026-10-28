@@ -6,11 +6,16 @@ Helm charts and cluster manifests for the homelab k3s cluster (mjolnir).
 
 ```
 k8s/
-├── apps/<domain>/     # one helm chart per app domain (ai = LLM fleet + gateway)
-│   └── ai/
+├── apps/<domain>/     # one helm chart per app domain
+│   ├── ai/            #   LLM fleet + LiteLLM gateway
+│   │   ├── templates/
+│   │   ├── values.yaml        # shared values (gateway, chat template)
+│   │   └── values/<model>.yaml  # one file per model; maps merge across -f
+│   └── wiki/          #   BookStack + MariaDB; permissions are set in the UI
 │       ├── templates/
-│       ├── values.yaml        # shared values (gateway, chat template)
-│       └── values/<model>.yaml  # one file per model; maps merge across -f
+│       ├── values.yaml        # images, resources, OIDC, storage
+│       ├── SECRETS.md         # the Secret this chart references and never creates
+│       └── RUNBOOK.md         # activation, and the one-time UI configuration
 └── manifests/         # cluster-level yaml auto-applied by k3s (nix/services/k3s.nix)
 ```
 
@@ -20,11 +25,11 @@ Service for it and adds it to the LiteLLM gateway model_list.
 
 ## Keeping images current
 
-`renovate.json` reads the chart's values files with a regex manager, so a new model
+`renovate.json` reads the chart values files with a regex manager, so a new model
 file is covered the moment it lands — no annotation to remember, as long as the key
-ends in `image:`/`Image:` and the file lives under `values/`. Renovate was run against
-this repo to confirm it extracts all nine pins; a literal `image:` pattern matches one
-of them, which is the trap.
+ends in `image:`/`Image:` and the file is listed in `managerFilePatterns`. Renovate
+was run against this repo to confirm it extracts all eleven pins across both apps; a
+literal `image:` pattern matches one of them, which is the trap.
 
 - **Weekly, grouped.** Control-plane images (`values.yaml`) and model serving images
   (`values/*.yaml`) are separate PRs, because "bump the gateway" and "bump what three

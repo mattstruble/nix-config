@@ -1,0 +1,42 @@
+# Local PV for the wiki: the BookStack database and its uploads, on mjolnir's
+# NVMe. Not NFS — a database on NFS is a latency story nobody needs — and not
+# a hostPath in the pod, which would break the namespace's Pod Security
+# posture. Same shape as k8s/manifests/local-pvs.yaml, including the reason
+# for selecting on the stable `storage=mjolnir` label rather than
+# kubernetes.io/hostname: a node rename would otherwise orphan the volume.
+#
+# ONE volume, TWO mounts. The chart mounts it twice with subPath (mysql/ for
+# the database, bookstack/ for the app's /config). The alternative — a
+# database-only volume — loses every uploaded image on a pod delete, and
+# loses it quietly, because a node-pinned volume reschedules so rarely that
+# nobody sees it happen.
+#
+# Reclaim is Retain: this is the only copy of the wiki's content until the
+# backup timer exists, and a deleted PVC should not also delete the data.
+#
+# Applied by k3s' own manifest auto-loader (services.k3s.manifests in
+# nix/services/k3s.nix), the same route as local-pvs.yaml, so it is outside
+# the prune scope entirely.
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: wiki-data
+  labels:
+    app.kubernetes.io/part-of: wiki
+spec:
+  capacity:
+    storage: 10Gi
+  accessModes:
+    - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: wiki-data
+  local:
+    path: /var/lib/wiki
+  nodeAffinity:
+    required:
+      nodeSelectorTerms:
+        - matchExpressions:
+            - key: storage
+              operator: In
+              values:
+                - mjolnir

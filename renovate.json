@@ -17,10 +17,11 @@
   "customManagers": [
     {
       "customType": "regex",
-      "description": "Container images in the ai chart values files. Keys are matched as *image:/*Image: because the chart names them per consumer (image, toolsImage, postgresImage) - a literal image: pattern silently drops the others. Patterns are globs, not /regex/: an unescaped / inside a slash-delimited pattern ends the regex early and matches nothing. There is deliberately no autoReplaceStringTemplate here: Renovate replaces the whole match, and the match starts at the key, so a template that emits `image:` renames toolsImage/postgresImage and breaks the helm render. Without a template Renovate substitutes the tag and digest inside the match and leaves the key and repository alone.",
+      "description": "Container images in the chart values files (ai + wiki). Keys are matched as *image:/*Image: because the charts name them per consumer (image, toolsImage, postgresImage) - a literal image: pattern silently drops the others. Patterns are globs, not /regex/: an unescaped / inside a slash-delimited pattern ends the regex early and matches nothing. There is deliberately no autoReplaceStringTemplate here: Renovate replaces the whole match, and the match starts at the key, so a template that emits `image:` renames toolsImage/postgresImage and breaks the helm render. Without a template Renovate substitutes the tag and digest inside the match and leaves the key and repository alone.",
       "managerFilePatterns": [
         "k8s/apps/ai/values.yaml",
-        "k8s/apps/ai/values/*.yaml"
+        "k8s/apps/ai/values/*.yaml",
+        "k8s/apps/wiki/values.yaml"
       ],
       "matchStrings": [
         "[A-Za-z0-9_-]*[iI]mage:\\s*(?<depName>[^\\s:@]+):(?<currentValue>[^\\s@]+)@sha256:(?<currentDigest>[a-f0-9]{64})"

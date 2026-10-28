@@ -80,8 +80,8 @@ jobs:
           STRATA_BUNDLE=$(get_bundle .#nixosConfigurations.mjolnir.config.services.k3s.aiChart.strataBundle /nix/store/00000000000000000000000000000000-strata-preview)
           HEADEND_BUNDLE=$(get_bundle .#nixosConfigurations.mjolnir.config.services.k3s.aiChart.headEndBundle /nix/store/00000000000000000000000000000000-head-end-preview)
           render() {
-            # Render the chart under $1 (default: this checkout). Same values-file
-            # glob as `just k8s-render` and the nix render derivation
+            # Render every chart under $1 (default: this checkout). Same values-file
+            # glob as `just k8s-render` and the nix render derivations
             # (modules/services/k3s.nix); the chart dir is detected so a pre-rename
             # base renders too.
             local root=${1:-$PWD}
@@ -93,6 +93,14 @@ jobs:
             # shows empty mount paths and disagrees with production
             F+=(--set "strataBundle=$STRATA_BUNDLE" --set "headEnd.bundle=$HEADEND_BUNDLE")
             helm template "$(basename "$CHART")" "$CHART" "${F[@]}"
+            # No bundle injection here, and the absence guard is the point: a PR
+            # that adds an app must diff against a base that does not have it,
+            # which is the only way this preview shows the whole app as new
+            # rather than showing nothing at all.
+            local W="$root/k8s/apps/wiki"
+            if [ -d "$W" ]; then
+              helm template wiki "$W" -f "$W/values.yaml" --namespace wiki
+            fi
           }
           render > /tmp/pr.yaml
           # Render the base from its own worktree. `git restore --source=base -- k8s/`
@@ -123,6 +131,11 @@ jobs:
         uses: peter-evans/find-comment@v4
         with:
           issue-number: ${{ github.event.pull_request.number }}
+          # Without an author filter this matches whatever comment a human
+          # wrote last, and the next step then writes a rendered manifest diff
+          # into their remark.
+          comment-author: 'github-actions[bot]'
+          body-includes: '## Rendered manifest diff'
           direction: last
 
       - name: Post or update comment
@@ -131,4 +144,9 @@ jobs:
           comment-id: ${{ steps.fc.outputs.comment-id }}
           issue-number: ${{ github.event.pull_request.number }}
           body-path: /tmp/comment.md
+          # The action's default is `append`, which stacks a second full diff
+          # section under the first on every push: the stale one stays on top,
+          # and the body grows toward GitHub's 65536-character comment limit
+          # until the update itself starts failing.
+          edit-mode: replace
           reactions: "+1"

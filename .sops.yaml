@@ -23,3 +23,13 @@ creation_rules:
           - *MacStruble
           - *roque
           - *mjolnir
+  # Wiki (BookStack) keys. Deliberately NOT *roque: the wiki database password
+  # and OIDC client secret must not be decryptable by the host that runs the
+  # IdP, the NAS mount and n8n's credential store. This is the one secret scope
+  # in the repo with a per-host recipient set, and it is the shape the rest
+  # moves to once the roque-only keys migrate out of homelab-secrets.yaml.
+  - path_regex: nix/services/homelab/homelab-secrets-wiki.yaml$
+    key_groups:
+      - age:
+          - *MacStruble
+          - *mjolnir

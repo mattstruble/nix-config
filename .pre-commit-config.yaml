@@ -7,8 +7,10 @@ repos:
       - id: end-of-file-fixer # All files only end in newline
       - id: check-yaml # verify yaml syntax
         args: [--allow-multiple-documents]
-        # helm templates are Go templates ({{ }}), not plain YAML — helm lint covers them
-        exclude: k8s/apps/ai/templates/
+        # helm templates are Go templates ({{ }}), not plain YAML — helm lint
+        # covers them. Matched per app rather than listing one chart, because
+        # the reason is a property of helm, not of the ai chart.
+        exclude: k8s/apps/[^/]+/templates/
       - id: check-added-large-files # prevent extremely large files from being committed
         args: [--maxkb=10000]
       - id: mixed-line-ending # force linux line endings

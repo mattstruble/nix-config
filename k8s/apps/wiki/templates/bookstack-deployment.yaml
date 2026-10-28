@@ -1,0 +1,190 @@
+# BookStack itself.
+#
+# THE POD SECURITY EXCEPTION, stated plainly rather than buried:
+#
+# This is the least isolated container in the cluster, and it is that way for
+# one reason — the image is a LinuxServer s6-overlay image, which starts as
+# root, does its own privilege drop, and then needs to write inside a
+# directory it has just chowned to the unprivileged user. Both halves were
+# tested against the real image rather than reasoned about:
+#
+#   * started as uid 983: `s6-overlay-suexec: fatal: unable to setgid to
+#     root: Operation not permitted` — it does not start at all.
+#   * started as root with CAP_DAC_OVERRIDE dropped: `mkdir: cannot create
+#     directory '/config/keys': Permission denied`, because init chowns
+#     /config to PUID and then, as root, creates directories inside it.
+#   * started as root with the five caps below: migrates, serves /status 200.
+#   * started as root with the five caps AND no_new_privs: still 200, so
+#     allowPrivilegeEscalation: false is not part of the exception.
+#
+# What that buys back: the namespace is `baseline`, not `privileged`. Every
+# one of CHOWN, DAC_OVERRIDE, FOWNER, SETGID, SETUID is on baseline's allowed
+# add-list, and baseline permits runAsUser 0 — so this pod is baseline-
+# compliant with no namespace-level exception at all. The exception is
+# against `restricted`, which would additionally require a non-root user and
+# a read-only root filesystem, neither of which this image can do.
+#
+# The trade is deliberate and it is bounded by the network policies, not by
+# the container: a PHP application on the public internet, patched by a
+# digest bump, running as root at init, contained by the fact that it can
+# only reach its own database, DNS and 443, and can only be reached through
+# one connector pod.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: wiki-bookstack
+  labels:
+    app.kubernetes.io/component: bookstack
+    app.kubernetes.io/part-of: wiki
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/component: bookstack
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/component: bookstack
+        app.kubernetes.io/part-of: wiki
+    spec:
+      securityContext:
+        # Root at init, drops to uid {{ .Values.bookstack.uid }} for the app.
+        # runAsNonRoot: false is explicit, not omitted: its absence is what
+        # makes an unrelated default in a future Kubernetes quietly reject
+        # this pod, and the reason it must be root belongs next to it.
+        runAsUser: 0
+        runAsNonRoot: false
+        fsGroup: {{ .Values.bookstack.gid }}
+        seccompProfile:
+          type: RuntimeDefault
+      automountServiceAccountToken: false
+      containers:
+        - name: bookstack
+          image: {{ required "bookstack.image is required" .Values.bookstack.image }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            # The app writes sqlite-free state under /config, but nginx and
+            # php-fpm also write pidfiles and sockets under /var/run and
+            # /var/log; s6's stage1 unpacks into /run as well.
+            readOnlyRootFilesystem: false
+            capabilities:
+              drop:
+                - ALL
+              add:
+                # CHOWN + FOWNER: init chowns /config to PUID/PGID.
+                # SETUID + SETGID: the privilege drop to the app user.
+                # DAC_OVERRIDE: init writes inside the directory it just
+                # chowned away from root (see the header comment).
+                - CHOWN
+                - DAC_OVERRIDE
+                - FOWNER
+                - SETGID
+                - SETUID
+          env:
+            - name: PUID
+              value: "{{ .Values.bookstack.uid }}"
+            - name: PGID
+              value: "{{ .Values.bookstack.gid }}"
+            - name: TZ
+              value: Etc/UTC
+            - name: APP_URL
+              value: {{ .Values.bookstack.appUrl | quote }}
+            - name: APP_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secretName }}
+                  key: APP_KEY
+            - name: DB_HOST
+              value: wiki-mariadb
+            - name: DB_PORT
+              value: "{{ .Values.database.port }}"
+            - name: DB_DATABASE
+              value: {{ .Values.database.database }}
+            - name: DB_USERNAME
+              value: {{ .Values.database.username }}
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secretName }}
+                  key: DB_PASSWORD
+            # ── Authentication ───────────────────────────────────────────
+            # OIDC is the ONLY auth method: there is no password form to
+            # brute force, and no local account to hand over.
+            - name: AUTH_METHOD
+              value: oidc
+            # With a single auth method this skips the intermediate "Login
+            # with Pocket ID" click. Without it the first thing a non-
+            # technical user sees is a button they have never been told about.
+            - name: AUTH_AUTO_INITIATE
+              value: "true"
+            - name: OIDC_NAME
+              value: Pocket ID
+            - name: OIDC_DISPLAY_NAME_CLAIMS
+              value: name
+            - name: OIDC_ISSUER
+              value: {{ .Values.oidc.issuer | quote }}
+            - name: OIDC_ISSUER_DISCOVER
+              value: "true"
+            # RP-initiated logout, if the issuer advertises one.
+            - name: OIDC_END_SESSION_ENDPOINT
+              value: "true"
+            # ── Group → role sync ────────────────────────────────────────
+            - name: OIDC_USER_TO_GROUPS
+              value: "true"
+            - name: OIDC_GROUPS_CLAIM
+              value: {{ .Values.oidc.groupsClaim }}
+            # BookStack only asks for openid/profile/email; Pocket ID puts
+            # group names behind a `groups` scope it will not otherwise
+            # honour. Without this the claim is simply absent and every user
+            # silently loses their roles at their next login.
+            - name: OIDC_ADDITIONAL_SCOPES
+              value: {{ .Values.oidc.groupsClaim }}
+            # Drop roles the user no longer matches. Load-bearing in both
+            # directions: it is what makes removing someone from a Pocket ID
+            # group revoke anything, and it is also why the registration
+            # default role must be an empty one — while this is on, BookStack
+            # treats that role as always-matched and assigns it.
+            - name: OIDC_REMOVE_FROM_GROUPS
+              value: "true"
+          ports:
+            - name: http
+              containerPort: {{ .Values.bookstack.port }}
+          # /status reports the three things that actually make BookStack
+          # usable — database, cache and session all answering — as JSON over
+          # 200. A TCP-socket probe would report "Running" for a pod that
+          # cannot read its own database, which is the failure that matters.
+          readinessProbe:
+            httpGet:
+              path: /status
+              port: http
+            initialDelaySeconds: 20
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 6
+          livenessProbe:
+            httpGet:
+              path: /status
+              port: http
+            initialDelaySeconds: 120
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 6
+          resources:
+            requests:
+              cpu: {{ .Values.bookstack.resources.requests.cpu }}
+              memory: {{ .Values.bookstack.resources.requests.memory }}
+            limits:
+              memory: {{ .Values.bookstack.resources.limits.memory }}
+          volumeMounts:
+            # The image's entire persistent state: .env is supplied by env
+            # vars, but storage/, bootstrap/cache/ and public/uploads/ live
+            # here and are the only copies of every uploaded image.
+            - name: data
+              mountPath: /config
+              subPath: bookstack
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: wiki-data
