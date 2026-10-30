@@ -56,7 +56,26 @@ spec:
         # this pod, and the reason it must be root belongs next to it.
         runAsUser: 0
         runAsNonRoot: false
-        fsGroup: {{ .Values.bookstack.gid }}
+        # No fsGroup — and there is deliberately none on the mariadb pod
+        # either. Both pods mount the SAME claim (wiki-data) through
+        # different subPaths, and kubelet reconciles fsGroup ownership and
+        # volume modes per pod at the VOLUME ROOT, not at the subPath. With
+        # 983 here and 999 there, every pod start recursively chowned the
+        # whole tree — the sibling subtree included, InnoDB datadir included —
+        # so on-disk ownership was decided by whichever pod started last and
+        # kubelet's mode handling overwrote the intended 0750/0770. A
+        # recursive chown racing MySQL's file creation can also fail the
+        # mount outright.
+        #
+        # What replaces it: the host subdirectories are created and owned by
+        # systemd.tmpfiles in nix/services/k3s.nix (/var/lib/wiki/bookstack
+        # 0770 983:983, /var/lib/wiki/mysql 0750 999:999) and re-asserted at
+        # every activation, and each pod already pins the identity it writes
+        # as (this one drops to PUID/PGID after init; mariadb runs as the
+        # image's own mysql user). This pod needs nothing from kubelet: it is
+        # root at init with CAP_CHOWN and chowns /config to PUID/PGID itself
+        # (see the caps below). Do not add fsGroup back to either pod without
+        # first giving each workload its own PV.
         seccompProfile:
           type: RuntimeDefault
       automountServiceAccountToken: false

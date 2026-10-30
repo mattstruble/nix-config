@@ -28,7 +28,15 @@ spec:
       securityContext:
         runAsUser: {{ .Values.database.uid }}
         runAsGroup: {{ .Values.database.gid }}
-        fsGroup: {{ .Values.database.gid }}
+        # No fsGroup: this pod and the BookStack pod mount the same claim
+        # (wiki-data) by different subPaths, and kubelet applies fsGroup
+        # ownership and mode reconciliation per pod at the volume root — so
+        # with a fsGroup here too, each pod start recursively chowned the
+        # other's subtree, including this datadir, and replaced the intended
+        # 0750. What replaces it: the host directory is created and owned by
+        # systemd.tmpfiles in nix/services/k3s.nix and re-asserted at every
+        # activation, and this pod runs as that uid/gid, so it writes the
+        # directory directly. Full reasoning in bookstack-deployment.yaml.
         runAsNonRoot: true
         seccompProfile:
           type: RuntimeDefault
