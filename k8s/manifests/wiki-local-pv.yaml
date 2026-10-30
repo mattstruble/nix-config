@@ -30,6 +30,12 @@ spec:
     - ReadWriteOnce
   persistentVolumeReclaimPolicy: Retain
   storageClassName: wiki-data
+  # Pre-bound to the wiki claim: while this PV sat Available, any claim in any
+  # namespace asking for this storage class could have won it, and on a
+  # single-node cluster the node affinity would never have refused them.
+  claimRef:
+    namespace: wiki
+    name: wiki-data
   local:
     path: /var/lib/wiki
   nodeAffinity:
