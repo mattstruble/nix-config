@@ -44,6 +44,45 @@ jobs:
             exit 1
           fi
 
+  oidc-issuer-linked:
+    # Pocket ID signs the `iss` claim from its own APP_URL
+    # (nix/services/homelab/homelab.nix) and BookStack validates `iss` against
+    # oidc.issuer in the wiki values. The two live in independent sources
+    # edited by different flows, and a drift between them does not error — it
+    # produces a login that never completes, the wrong-looking problem that
+    # tempts operators into loosening issuer validation. Assert they agree.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: wiki oidc.issuer must equal Pocket ID APP_URL
+        run: |
+          set -euo pipefail
+          # Capture the FIRST quoted string after `=`: anchoring on `[^=]*=`
+          # and `^[^"]*` keeps a quoted word in a trailing comment from
+          # shifting the match (a greedy `.*"` would swallow up to the last
+          # quote on the line).
+          # `|| true` on each pipeline: with `set -o pipefail`, a grep that
+          # finds nothing would otherwise kill the script at the assignment
+          # and make the explicit ::error:: checks below unreachable; the
+          # empty result must reach them so the failure names its reason.
+          idp=$(grep -E '^[[:space:]]*APP_URL = ' nix/services/homelab/homelab.nix | head -n1 | sed -E 's/^[^=]*=[[:space:]]*"([^"]*)".*/\1/' || true)
+          wiki=$(grep -E '^[[:space:]]*issuer: ' k8s/apps/wiki/values.yaml | head -n1 | sed -E 's/^[[:space:]]*issuer:[[:space:]]*//' || true)
+          if [ -z "$idp" ]; then
+            echo "::error::could not read Pocket ID APP_URL from nix/services/homelab/homelab.nix"
+            exit 1
+          fi
+          if [ -z "$wiki" ]; then
+            echo "::error::could not read oidc.issuer from k8s/apps/wiki/values.yaml"
+            exit 1
+          fi
+          echo "pocket-id APP_URL: $idp"
+          echo "wiki oidc.issuer:  $wiki"
+          if [ "$idp" != "$wiki" ]; then
+            echo "::error::wiki oidc.issuer ($wiki) does not match Pocket ID APP_URL ($idp); Pocket ID signs iss from APP_URL, so BookStack logins would never complete"
+            exit 1
+          fi
+
   manifest-diff:
     runs-on: ubuntu-latest
     steps:

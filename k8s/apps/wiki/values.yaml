@@ -56,11 +56,20 @@ database:
 secretName: bookstack # pragma: allowlist secret
 
 oidc:
+  # The source of truth for this value is Pocket ID's APP_URL in
+  # nix/services/homelab/homelab.nix: Pocket ID signs the `iss` claim from
+  # its own APP_URL, and BookStack validates `iss` against this exact string.
+  # A mismatch does not error — the login simply never completes, which is
+  # exactly the shape that tempts an operator into loosening issuer
+  # validation. Do not; align this value instead. The oidc-issuer-linked job
+  # in .github/workflows/k8s-manifest-diff.yml fails CI when the two drift.
+  # (The durable hostname — auth vs id — belongs to plans/canonical-cluster-urls.)
+  #
   # BookStack fetches <issuer>/.well-known/openid-configuration from inside
   # its own pod, so this must be reachable from the cluster — the egress rule
   # in networkpolicy.yaml is what makes it so. A Pocket ID that is only
   # resolvable on the LAN means the wiki cannot log anyone in.
-  issuer: https://id.struble.app
+  issuer: https://auth.struble.app
   # Pocket ID emits group NAMES under the `groups` scope; BookStack matches
   # them (lower-cased, spaces to hyphens) against each role's External
   # Authentication IDs, falling back to the role display name.
