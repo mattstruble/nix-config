@@ -795,6 +795,10 @@
                 printf '%s' "$POD_API_KEY" > "$T/secret-pod-api-key"
                 printf '%s' "$GRAFANA_PW" > "$T/secret-grafana-pw"
                 printf '%s' "$METRICS_KEY" > "$T/secret-metrics-key"
+                printf '%s' "$WIKI_APP_KEY" > "$T/secret-wiki-app-key"
+                printf '%s' "$WIKI_DB_PASSWORD" > "$T/secret-wiki-db-password"
+                printf '%s' "$WIKI_OIDC_CLIENT_ID" > "$T/secret-wiki-oidc-client-id"
+                printf '%s' "$WIKI_OIDC_CLIENT_SECRET" > "$T/secret-wiki-oidc-client-secret"
               )
               $KCTL apply -f "$T/monitoring-kubelet-sa.json" \
                 && $KCTL create token kubelet-monitoring --namespace monitoring \
@@ -845,14 +849,17 @@
                       # Secret first: the chart's pods read it at start, and
                       # applying the workloads a moment earlier only buys a
                       # CreateContainerConfigError that resolves itself.
-                      # Paths straight into --from-file, so no wiki secret ever
-                      # appears in kubectl's argv.
+                      # Values come from the printf'd 0600 temp files above,
+                      # never straight from the sops paths: --from-file on a
+                      # sops file would ship whatever trailing newline the
+                      # materialisation happens to have, and OIDC_CLIENT_SECRET
+                      # must byte-match the secret registered in Pocket ID.
                       $KCTL create secret generic bookstack \
                           --namespace wiki \
-                          --from-file=APP_KEY=${config.sops.secrets."services/wiki/app-key".path} \
-                          --from-file=DB_PASSWORD=${config.sops.secrets."services/wiki/db-password".path} \
-                          --from-file=OIDC_CLIENT_ID=${config.sops.secrets."services/wiki/oidc-client-id".path} \
-                          --from-file=OIDC_CLIENT_SECRET=${config.sops.secrets."services/wiki/oidc-client-secret".path} \
+                          --from-file=APP_KEY="$T/secret-wiki-app-key" \
+                          --from-file=DB_PASSWORD="$T/secret-wiki-db-password" \
+                          --from-file=OIDC_CLIENT_ID="$T/secret-wiki-oidc-client-id" \
+                          --from-file=OIDC_CLIENT_SECRET="$T/secret-wiki-oidc-client-secret" \
                           --dry-run=client -o yaml | label_all wiki "true" > "$T/wiki-secret.json" \
                       && cat "$T/wiki-secret.json" "$T/wiki-chart.json" > "$T/wiki.yaml" \
                       && apply_pruned "$SEL_WIKI" "wiki" "$T/wiki.yaml"
