@@ -279,21 +279,21 @@
             sopsFile = ./homelab/homelab-secrets-ai.yaml;
           };
           # Wiki (BookStack). Deliberately a different sops file from every
-          # secret above: homelab-secrets-wiki.yaml is encrypted to the human
+          # secret above: homelab-wiki-secrets.yaml is encrypted to the human
           # and mjolnir only, so the wiki's database password and OIDC client
           # secret are not decryptable on roque, which holds the IdP, the NAS
           # mount and n8n's credential store.
           "services/wiki/app-key" = {
-            sopsFile = ./homelab/homelab-secrets-wiki.yaml;
+            sopsFile = ./homelab/homelab-wiki-secrets.yaml;
           };
           "services/wiki/db-password" = {
-            sopsFile = ./homelab/homelab-secrets-wiki.yaml;
+            sopsFile = ./homelab/homelab-wiki-secrets.yaml;
           };
           "services/wiki/oidc-client-id" = {
-            sopsFile = ./homelab/homelab-secrets-wiki.yaml;
+            sopsFile = ./homelab/homelab-wiki-secrets.yaml;
           };
           "services/wiki/oidc-client-secret" = {
-            sopsFile = ./homelab/homelab-secrets-wiki.yaml;
+            sopsFile = ./homelab/homelab-wiki-secrets.yaml;
           };
         };
         # Materialise secrets in the activation script (setupSecrets) instead of
@@ -857,7 +857,7 @@
                       && cat "$T/wiki-secret.json" "$T/wiki-chart.json" > "$T/wiki.yaml" \
                       && apply_pruned "$SEL_WIKI" "wiki" "$T/wiki.yaml"
                     else
-                      echo "wiki: OIDC client values are still the 'unset' sentinel; skipping the wiki pass. Create the Pocket ID client, put its id and secret into nix/services/homelab/homelab-secrets-wiki.yaml, and re-activate."
+                      echo "wiki: OIDC client values are still the 'unset' sentinel; skipping the wiki pass. Create the Pocket ID client, put its id and secret into nix/services/homelab/homelab-wiki-secrets.yaml, and re-activate."
                     fi
                   } \
                 && apply_pruned "$SEL_KUBE_SYSTEM" "kube-system" "$T/kube-system.yaml" \

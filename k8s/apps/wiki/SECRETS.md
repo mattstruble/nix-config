@@ -25,7 +25,7 @@ permission model now lives only in the database, the restore is the one thing
 that has to be able to bring the credentials and the configuration back
 together.
 
-The values come from `nix/services/homelab/homelab-secrets-wiki.yaml`, whose
+The values come from `nix/services/homelab/homelab-wiki-secrets.yaml`, whose
 recipients are the human and mjolnir — **not roque**. That recipient list is
 plaintext sops metadata, so the boundary is auditable from a diff.
 

@@ -38,7 +38,7 @@ produces "my wife got access denied from Pocket ID".
 ## 3. Put the values where mjolnir can read them
 
 ```
-sops nix/services/homelab/homelab-secrets-wiki.yaml
+sops nix/services/homelab/homelab-wiki-secrets.yaml
 ```
 
 Replace the two `unset` strings with the client ID and secret. `app-key` and
