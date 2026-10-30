@@ -52,10 +52,19 @@ spec:
                 secretKeyRef:
                   name: {{ .Values.secretName }}
                   key: DB_PASSWORD
-            # The image refuses to start (rather than silently downgrading)
-            # when the data dir was written by a newer server than the image.
-            # Explicit, so an image digest bump that moves MariaDB backwards
-            # fails loudly instead of quietly.
+            # The entrypoint refuses to initialise an empty data dir without
+            # one of the root-password options set, so the first run on a fresh
+            # volume dies before the server ever starts. Nothing here needs a
+            # known root credential — BookStack connects as the application
+            # user above — so the password is random and the pod log holds it
+            # ("GENERATED ROOT PASSWORD: ...") for the rare manual repair.
+            # Ignored once the data dir exists, so it is inert after initdb.
+            - name: MARIADB_RANDOM_ROOT_PASSWORD
+              value: "1"
+            # Run mariadb-upgrade at start when the data dir is older than the
+            # image, and create the healthcheck users the probes below sign in
+            # as. Without it, an image bump that moves MariaDB forwards leaves
+            # the system tables on the old schema.
             - name: MARIADB_AUTO_UPGRADE
               value: "1"
           ports:
