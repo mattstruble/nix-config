@@ -100,6 +100,13 @@
       "description": "A model's serving image is the one dependency where a wrong build costs a GPU and an outage that looks like a deploy."
     },
     {
+      "matchFileNames": [
+        "k8s/apps/wiki/values.yaml"
+      ],
+      "automerge": false,
+      "description": "Both wiki containers migrate the only copy of the data on first start - BookStack runs `artisan migrate --force` and the self-migrating MariaDB runs `mariadb-upgrade` against the data dir - and no backup exists yet, so a patch bump that brings up a mismatched image pair rewrites a database that cannot be restored. The automerge carve-out for k8s/apps/ai/values/*.yaml does not reach this file: it is a file named values.yaml, not a file inside a values/ directory."
+    },
+    {
       "matchDepNames": [
         "ghcr.io/berriai/litellm"
       ],
