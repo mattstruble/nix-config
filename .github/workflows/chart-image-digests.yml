@@ -14,6 +14,7 @@ on:
     paths:
       - "k8s/apps/ai/values.yaml"
       - "k8s/apps/ai/values/**"
+      - "k8s/apps/wiki/values.yaml"
       - "scripts/resolve-digest.sh"
       - ".github/workflows/chart-image-digests.yml"
   push:
@@ -34,12 +35,13 @@ jobs:
       - name: Check every pinned digest against its tag
         run: |
           set -uo pipefail
-          FILES=(k8s/apps/ai/values.yaml k8s/apps/ai/values/*.yaml)
+          FILES=(k8s/apps/ai/values.yaml k8s/apps/ai/values/*.yaml k8s/apps/wiki/values.yaml)
           # Same shape Renovate reads (renovate.json customManagers): any key ending
           # in image:/Image:, not just a literal `image:`, and any whitespace after it.
           # A literal `image: ` pattern matches 1 of the 9 pins, which is how this repo
           # nearly shipped it. Scoped globs, not a recursive walk, because the deploy
-          # loads exactly this set (nix/services/k3s.nix: values/*.yaml).
+          # loads exactly this set (nix/services/k3s.nix: apps/ai/values.yaml,
+          # apps/ai/values/*.yaml, apps/wiki/values.yaml).
           PATTERN='[A-Za-z0-9_-]*[iI]mage:[[:space:]]*[^ ]+@sha256:[a-f0-9]{64}'
           mapfile -t pins < <(
             grep -rhoE "$PATTERN" "${FILES[@]}" \
@@ -48,11 +50,12 @@ jobs:
           # Coverage, not just correctness. A pin this regex cannot see would leave
           # the loop below checking the ones it likes and reporting green - the
           # silent opt-out the convention exists to prevent. So count every digest
-          # in the chart and require the readable pattern to account for all of them.
+          # in the guarded values files and require the readable pattern to account
+          # for all of them.
           total=$(grep -rhoE '@sha256:[a-f0-9]{64}' "${FILES[@]}" | wc -l | tr -d ' ')
           readable=$(grep -rhoE "$PATTERN" "${FILES[@]}" | wc -l | tr -d ' ')
           if [ "$total" != "$readable" ]; then
-            echo "::error::$total digest-pinned references in the chart but only $readable match the update regex: a pin has become invisible to Renovate. The key must end in image:/Image: (see k8s/README.md)."
+            echo "::error::$total digest-pinned references in the guarded values files but only $readable match the update regex: a pin has become invisible to Renovate. The key must end in image:/Image: (see k8s/README.md)."
             exit 1
           fi
           echo "checking ${#pins[@]} unique references ($readable pins, all readable by the update regex)"
