@@ -82,7 +82,7 @@ jobs:
           render() {
             # Render every chart under $1 (default: this checkout). Same values-file
             # glob as `just k8s-render` and the nix render derivations
-            # (modules/services/k3s.nix); the chart dir is detected so a pre-rename
+            # (nix/services/k3s.nix); the chart dir is detected so a pre-rename
             # base renders too.
             local root=${1:-$PWD}
             local CHART="$root/k8s/apps/ai"; [ -d "$CHART" ] || CHART="$root/k8s/llama-fleet"

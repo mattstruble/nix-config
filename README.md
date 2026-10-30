@@ -88,7 +88,7 @@ LiteLLM gateway. Follow the conventions in [k8s/README.md](k8s/README.md)
 **New app domain**: create `k8s/apps/<domain>/` as a standalone Helm chart
 (`Chart.yaml`, `templates/`, `values.yaml`). Render it with `helm template`, then
 ship it via `k8s/manifests/` (auto-applied at node start) or a post-activation
-hook like `nix/modules/services/k3s.nix`.
+hook like `nix/services/k3s.nix`.
 
 ## References
 
