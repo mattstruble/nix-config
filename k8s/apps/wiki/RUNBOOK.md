@@ -224,6 +224,36 @@ can be correct while the direct fetch is not.
   Until the backup ticket lands, a disk failure means redoing section 6 from
   memory. See the ticket; the acceptance criterion that matters is a rehearsed
   restore, not a timer that might be firing.
+- **An empty database reads as healthy — until the activation check says
+  otherwise.** If `/var/lib/wiki/mysql` is ever gone — wiped host directory,
+  replaced NVMe, the PV recreated against a fresh tmpfiles directory, or a
+  partial restore that brought back the uploads tree but not the mysql tree —
+  the MariaDB image runs initdb, BookStack's startup `artisan migrate --force`
+  builds a fresh empty schema, and `/status` answers 200 because its database
+  check is a migrations-row count, which a freshly migrated schema passes.
+  The pod reports Ready and serves an empty instance with BookStack's stock
+  default roles at the real URL; readiness, probes and the pod-level
+  monitoring alerts all stay green. There is no metrics path for row counts,
+  so the alarm is an activation-time check at the end of `ai-chart-apply`: a
+  Ready BookStack pod coexisting with zero rows in `pages` **and** `shelves`
+  fails the unit with a `WIKI EMPTY-DATABASE ALARM` line in the journal, and
+  it stays failed until a restore brings the rows back or content exists
+  again. Its limits: it observes only when that unit runs (a deploy that
+  changes the charts, or a boot), it abstains while no BookStack pod is Ready,
+  and a first-ever activation fires it by construction — a brand-new wiki and
+  a wiped one are the same rows, so the expected first-run sequence is alarm,
+  restore (or start writing), green. Checking by hand:
+
+  ```
+  kubectl -n wiki exec deploy/wiki-mariadb -- \
+    mariadb -u bookstack -p bookstack -N -B \
+    -e "select (select count(*) from pages) as pages, (select count(*) from shelves) as shelves"
+  ```
+
+  (`-p` prompts; the password is `DB_PASSWORD` in the `bookstack` Secret, see
+  `SECRETS.md`.) Recovery is the rehearsed restore from the note above; with
+  no backup, the empty instance is the state of the world and the alarm
+  clears once content exists again.
 - **A role rename strips membership** unless the role has an Authentication ID.
   Give every role one when you create it.
 - **New chapter → set permissions immediately**, per 6.5.
