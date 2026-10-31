@@ -1,5 +1,9 @@
-# Values for the wiki chart (BookStack + MariaDB, namespace `wiki`).
+# Values for the wiki chart (BookStack + MariaDB).
 #
+# The namespace is not a value here: it comes from the render/apply
+# invocation (`--namespace wiki` in nix/services/k3s.nix) as
+# `.Release.Namespace`, the precedent the ai chart follows — a key nothing
+# reads can only drift.
 # Images follow the repo-wide `repository:tag@digest` convention
 # (k8s/README.md); Renovate bumps the tag and the digest job rehashes it, so
 # a BookStack security release is a one-line diff rather than an SSH session.
@@ -8,8 +12,6 @@
 # upstream publishes no container image at all — its own docs point at
 # LinuxServer or solidnerd. That choice has a price, and it is recorded in
 # the pod's securityContext below rather than glossed over.
-
-namespace: wiki
 
 bookstack:
   # ghcr.io rather than lscr.io for the same bytes: ghcr speaks the registry
@@ -20,9 +22,10 @@ bookstack:
   # `php artisan bookstack:update-url`, not just a value bump.
   appUrl: https://wiki.struble.app
   # The unprivileged user the app actually runs as after s6 init. 983 is
-  # unassigned on mjolnir; the host directory is pre-owned by it (see
-  # persistence.hostPath) because the cluster's non-root stance forbids a
-  # root chown initContainer.
+  # unassigned on mjolnir; the host directory is pre-owned by it (the
+  # systemd.tmpfiles rules in nix/services/k3s.nix, on the directory
+  # k8s/manifests/wiki-local-pv.yaml exports) because the cluster's
+  # non-root stance forbids a root chown initContainer.
   uid: 983
   gid: 983
   port: 80
@@ -93,8 +96,10 @@ persistence:
   # would lose every uploaded image on a pod delete, silently, because the
   # volume is node-pinned and reschedules are rare enough to never notice.
   size: 10Gi
-  storageClassName: wiki-data
-  # Host directory behind the static PV, on mjolnir's NVMe. Created and
-  # pre-owned by systemd.tmpfiles in nix/services/k3s.nix — the same trick
-  # k8s/manifests/local-pvs.yaml uses for postgres.
-  hostPath: /var/lib/wiki
+  # The storage class and the host directory are deliberately NOT values:
+  # the claim hardcodes storageClassName: wiki-data (templates/pvc.yaml) to
+  # match the PV, and the host directory on mjolnir's NVMe is
+  # spec.local.path in k8s/manifests/wiki-local-pv.yaml — the one file that
+  # decides it, its contents created and pre-owned by the systemd.tmpfiles
+  # rules in nix/services/k3s.nix. A values key for either would be a knob
+  # wired to nothing.
