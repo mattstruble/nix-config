@@ -162,11 +162,51 @@ spec:
               value: {{ .Values.oidc.groupsClaim }}
             # Drop roles the user no longer matches. Load-bearing in both
             # directions: it is what makes removing someone from a Pocket ID
-            # group revoke anything, and it is also why the registration
-            # default role must be an empty one — while this is on, BookStack
-            # treats that role as always-matched and assigns it.
+            # group revoke anything — at that user's NEXT LOGIN, not when the
+            # membership changes, because this sync runs inside the OIDC login
+            # flow and BookStack never revisits a session that is already
+            # live — and it is also why the registration default role must be
+            # an empty one: while this is on, BookStack treats that role as
+            # always-matched and assigns it.
+            #
+            # The next-login qualifier is the threat model rather than a
+            # footnote to it: this deployment exists so that a plex-users
+            # member cannot read the Family shelves, and between a group
+            # removal and the next login the removed member still holds the
+            # roles they were issued. Closing that window is an operator
+            # action — see the Revoke step in RUNBOOK.md. The SESSION_*
+            # settings below bound how long a session can survive without
+            # activity; the end-to-end delay is an open measurement, not a
+            # number this file asserts.
             - name: OIDC_REMOVE_FROM_GROUPS
               value: "true"
+            # ── Session lifetime ─────────────────────────────────────────
+            # Because group → role sync happens at login only (see
+            # OIDC_REMOVE_FROM_GROUPS), the lifetime of a BookStack session is
+            # exactly the window in which a removed member keeps the roles
+            # they were issued. Left alone, that window is whatever the image
+            # ships; setting both keys here makes it a recorded decision that a
+            # diff can change and a reviewer can object to.
+            #
+            # What each one bounds: SESSION_ACTIVITY_LIMIT is the minutes of
+            # inactivity after which BookStack logs a user out;
+            # SESSION_TOKEN_TIME is the minutes a session token stays valid
+            # before the session stops being accepted. The shorter of the two
+            # is the ceiling on an unattended session — 120 minutes here, so a
+            # laptop left open costs at most two hours of stale roles.
+            #
+            # What neither one bounds: a member who keeps using the app
+            # refreshes both, so these settings revoke nobody. They cap what
+            # forgetting to act costs; the revocation itself stays explicit
+            # (RUNBOOK.md, Revoke). SESSION_TOKEN_TIME is deliberately kept
+            # above the image's refresh threshold (SESSION_TOKEN_TIME_REFRESH,
+            # left at its default): below it a token would expire before it
+            # could ever be refreshed, and every login would die on the first
+            # idle interval.
+            - name: SESSION_ACTIVITY_LIMIT
+              value: "240"
+            - name: SESSION_TOKEN_TIME
+              value: "120"
           ports:
             - name: http
               containerPort: {{ .Values.bookstack.port }}

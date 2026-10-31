@@ -155,6 +155,55 @@ tick only `wiki-admin`.
 > the private chapter, and nothing in the UI looks wrong. This applies to every
 > chapter you will ever add, not just these six.
 
+### 6.6 Revoke
+
+The one step in this section you will do more than once. Taking someone off a
+shelf is two actions, and only the first of them is in Pocket ID.
+
+1. **Pocket ID** — remove the user from `family` and/or `plex-users`. To shut
+   the wiki to the whole account instead of one audience, remove those groups
+   from the client's **Allowed User Groups**: the account then cannot complete
+   a wiki login at all, which is the difference between losing a shelf and
+   losing the wiki.
+2. **BookStack** — end the session that is still carrying the old roles.
+
+Step 2 is not a formality. BookStack runs the group → role sync inside the
+login flow and never revisits a session that is already live, so what step 1
+changes is picked up at that user's **next login** and not before; until then
+the roles they were issued stand, and the shelves they should no longer read
+stay readable. The session keys in `templates/bookstack-deployment.yaml`
+(`SESSION_ACTIVITY_LIMIT`, `SESSION_TOKEN_TIME`) bound how long an *unattended*
+session lives, which caps what forgetting step 2 costs but does not perform it:
+a member who keeps the page open refreshes the session and is never aged out.
+
+How to end it. The session driver is the image default, `database`, so the rows
+in BookStack's `sessions` table are the sessions, and deleting the ones for that
+user makes the cookie in their browser unknown to the app — their next request
+lands on the login page and comes back through Pocket ID with the new groups.
+
+```
+kubectl -n wiki exec -it deploy/wiki-mariadb -- \
+  mysql -u bookstack -p bookstack \
+  -e "delete from sessions where user_id = <id>"
+```
+
+`-p` carries no value there: it prompts, and the bare word after it is the
+database name. The password is `DB_PASSWORD` from the `bookstack` Secret
+(`SECRETS.md`), which is the same credential the pod uses.
+
+The heavier version is Users → *name* → Delete, which is the right answer when
+the account itself should not come back — and it takes their content with it, so
+it is a decision rather than a revocation.
+
+What is stated here and what is checked: the mechanism — sync at login, so a
+membership change lands at the next login — is the assumption the whole model
+rests on, and 7 exercises the login-time half of it. The SQL above, exactly what
+account deletion does to a live session, and the delay from a Pocket ID change
+to access actually being gone in a browser have none of them been exercised
+against this deployment; they are written from the schema and the image
+defaults. That delay in particular is an open measurement with its own ticket,
+and this section deliberately records no number for it.
+
 ## 7. Verify
 
 1. Log in as someone in **no** wiki group. Empty dashboard, no books, no
