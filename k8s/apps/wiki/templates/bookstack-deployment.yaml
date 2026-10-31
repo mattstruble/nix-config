@@ -178,6 +178,27 @@ spec:
             # RP-initiated logout, if the issuer advertises one.
             - name: OIDC_END_SESSION_ENDPOINT
               value: "true"
+            # The client credentials, from the same Secret as APP_KEY and
+            # DB_PASSWORD and written the same way. The activation script only
+            # applies this chart when neither value is the "unset" sentinel,
+            # so both keys exist whenever this pod is created; the values are
+            # printf'd without a trailing newline, which matters because the
+            # client secret must byte-match what Pocket ID holds.
+            # The pinned image serves the app through php-fpm with
+            # clear_env = no (checked against the pinned digest, not assumed),
+            # so these reach Laravel's env(), and Laravel loads .env through an
+            # immutable repository, so a persisted /config/www/.env line can
+            # never shadow them.
+            - name: OIDC_CLIENT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secretName }}
+                  key: OIDC_CLIENT_ID
+            - name: OIDC_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secretName }}
+                  key: OIDC_CLIENT_SECRET
             # ── Group → role sync ────────────────────────────────────────
             - name: OIDC_USER_TO_GROUPS
               value: "true"
