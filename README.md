@@ -31,9 +31,11 @@ files that shouldn't become modules.
 - `just deploy <host>` — build the host's system and deploy via deploy-rs
   (e.g. `just deploy mjolnir`). Hosts are declared in
   `nix/nix/tools/deploy.nix`.
-- `just k8s-deploy` — render the ai chart and apply it to mjolnir's k3s (fast
-  manual path, no nix build).
-- `just k8s-render` — render the ai chart to stdout (dry run).
+- `just k8s-render` — render every app chart to stdout (dry run, no nix build).
+
+There is no render-and-apply recipe: applying cluster state without a nix build
+means piping a render at the node yourself, and it leaves the next `just deploy`
+to reconcile whatever you applied by hand.
 - `just lint` — pre-commit (nixfmt, etc.).
 
 `just deploy mjolnir` also applies `k8s/manifests/` and renders the ai chart via
@@ -83,7 +85,8 @@ and it will also be covered by `just build-rpi-images`.
 `k8s/apps/ai/values/<model>.yaml` with the model's `image`, `gpu`, `resources`,
 and `enable`. The chart renders a Deployment + Service and adds it to the
 LiteLLM gateway. Follow the conventions in [k8s/README.md](k8s/README.md)
-(digest-pin, GPU pinning, PSS restricted, resource limits). Then `just k8s-deploy`.
+(digest-pin, GPU pinning, PSS restricted, resource limits). Then `just deploy
+mjolnir` — the activation applies it.
 
 **New app domain**: create `k8s/apps/<domain>/` as a standalone Helm chart
 (`Chart.yaml`, `templates/`, `values.yaml`). Render it with `helm template`, then

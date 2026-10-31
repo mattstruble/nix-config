@@ -67,9 +67,12 @@ stringData:
   OIDC_CLIENT_SECRET: <pocket id client secret>
 ```
 
-Activation builds it with `--from-file=<key>=<sops path>` rather than
+Activation builds it with `--from-file=<key>=<tempfile>` rather than
 `--from-literal`, so no value ever appears in kubectl's argv, where any local
-process could read it out of `/proc/*/cmdline` during activation.
+process could read it out of `/proc/*/cmdline` during activation. The tempfile is
+not the sops file: activation reads each secret with `$(cat …)` and rewrites it
+with `printf '%s'` into a `0600` temp dir first, which is what strips the
+trailing newline that would otherwise end up inside `OIDC_CLIENT_SECRET`.
 
 ## Rotation
 

@@ -95,7 +95,9 @@ access; the config validates and extracts without it, but nothing files a PR.
 
 - `just deploy mjolnir` — nix build + post-activation hook renders the chart and
   `kubectl apply`s it (one generation covers host config + cluster manifests).
-- `just k8s-deploy` — fast manual path: render + scp + apply, no nix build.
+- `just k8s-render` — render every app chart to stdout. There is no
+  render-and-apply recipe; a manual apply is `helm template … | ssh mjolnir
+  kubectl apply -f -`, and the next `just deploy` reconciles whatever it did.
 - PRs touching `k8s/` get a rendered-manifest diff comment (`.github/workflows/k8s-manifest-diff.yml`).
 
 ## Conventions
