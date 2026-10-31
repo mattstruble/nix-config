@@ -48,6 +48,23 @@ alloy:
           expression = `^/var/log/pods/(?P<namespace>[^_]+)_(?P<pod>.+)_(?P<poduid>[0-9a-f-]+)/(?P<container>[^/]+)/(?P<id>\d+)\.log$`
           labels_from_groups = true
         }
+        // The wiki database entrypoint prints `GENERATED ROOT PASSWORD:
+        // <secret>` to stdout once, the first time it initializes the data
+        // directory. Loki's read access is broader than Secret or kubectl-logs
+        // access, so the secret must not land there. Scoped to the one
+        // container that prints it (namespace/container come from the path
+        // regex above) instead of a global filter, so no other stream pays
+        // the regex and no other stream can be altered by it. The line is
+        // redacted, not dropped: Loki still shows that initdb ran, and the
+        // full line remains in the host log file and in `kubectl logs` of
+        // the pod that ran initdb.
+        stage.match {
+          selector = "{namespace=\"wiki\", container=\"mariadb\"}"
+          stage.replace {
+            expression = `GENERATED ROOT PASSWORD: (?P<secret>.*)`
+            replace    = "<redacted>"
+          }
+        }
       }
 
       loki.write "kubernetes" {

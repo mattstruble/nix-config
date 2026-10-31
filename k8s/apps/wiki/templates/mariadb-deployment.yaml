@@ -64,11 +64,25 @@ spec:
             # one of the root-password options set, so the first run on a fresh
             # volume dies before the server ever starts. Nothing here needs a
             # known root credential — BookStack connects as the application
-            # user above — so the password is random and the pod log holds it
-            # ("GENERATED ROOT PASSWORD: ...") for the rare manual repair.
-            # Ignored once the data dir exists, so it is inert after initdb.
+            # user above — so the password is random. It applies only to
+            # root@localhost (see MARIADB_ROOT_HOST below) and is printed to
+            # this container's stdout once, by the pod that runs initdb; the
+            # monitoring pipeline redacts it before Loki. If that pod's log is
+            # gone, recovery is to start a server against this data dir with
+            # --skip-grant-tables and SET PASSWORD for root@localhost. Ignored
+            # once the data dir exists, so it is inert after initdb.
             - name: MARIADB_RANDOM_ROOT_PASSWORD
               value: "1"
+            # The entrypoint defaults this to '%' and, during initdb, creates
+            # root@'%' with the generated password. Setting it to localhost
+            # skips that account entirely — verified against this image's
+            # docker-entrypoint.sh, where the CREATE USER 'root'@host block is
+            # guarded by MARIADB_ROOT_HOST != 'localhost', while the
+            # root@localhost password, the healthcheck users and the app user
+            # are set by separate statements. Nothing in this chart connects
+            # as root over TCP; the probes sign in as the healthcheck user.
+            - name: MARIADB_ROOT_HOST
+              value: "localhost"
             # Run mariadb-upgrade at start when the data dir is older than the
             # image, and create the healthcheck users the probes below sign in
             # as. Without it, an image bump that moves MariaDB forwards leaves
