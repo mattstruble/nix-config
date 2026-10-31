@@ -927,7 +927,8 @@
                       # The wiki pass runs last, and it is the one apply pass
                       # whose failure does NOT abort the activation: a broken
                       # optional service must not cost the monitoring stack
-                      # that sits behind it in the chain. It used to run
+                      # that sits behind it in the chain (the DB_PASSWORD
+                      # rotation guard below is the one deliberate exception). It used to run
                       # mid-chain, so with && joining every step a first-run
                       # wiki failure skipped register_metrics_key too — the
                       # step whose own comment records the 2026-10-05
@@ -954,6 +955,47 @@
                       # workloads a moment earlier only buys a
                       # CreateContainerConfigError that resolves itself.
                       if [ "$WIKI_DEPLOY" = "1" ]; then
+                        # DB_PASSWORD rotation guard. The MariaDB image
+                        # honours MARIADB_USER/MARIADB_PASSWORD only while the
+                        # data directory is empty; from then on the bookstack
+                        # account's password lives in the database, and
+                        # re-applying the Secret never touches it. So applying
+                        # a rotated db-password is a half-update: the Secret
+                        # and BookStack's environment move to the new value
+                        # while the account keeps the old one forever, and —
+                        # because nothing here restarts a pod when a Secret
+                        # changes (no checksum annotation, no reloader) — the
+                        # mismatch surfaces as Access denied at the next
+                        # BookStack start, days or weeks later, at an unrelated
+                        # restart and fully detached from the rotation. The
+                        # rotation is therefore refused rather than
+                        # half-applied: the last-applied value is read back
+                        # from the cluster's own Secret (the single record of
+                        # what was last applied), and a mismatch fails here,
+                        # before the Secret is written, with the manual
+                        # procedure spelled out. Same value, or no Secret yet
+                        # (fresh install), or the get itself failing (the
+                        # apply below fails too, and this pass's own error
+                        # handling covers it): proceed.
+                        #
+                        # Fatal, unlike everything else in this pass, on
+                        # purpose: the non-fatal rule exists for failures that
+                        # leave the cluster consistent and the deploy
+                        # meaningful (an immutable-PVC rejection). The
+                        # alternative here is a green activation that silently
+                        # drops the rotation the operator just performed. The
+                        # monitoring stack has already been applied by the
+                        # time this runs, so nothing else is lost, and the
+                        # unit stays red until the rotation is carried out by
+                        # hand or the sops value is reverted.
+                        if APPLIED_DB_B64="$($KCTL get secret bookstack -n wiki -o jsonpath='{.data.DB_PASSWORD}' 2>/dev/null)"; then
+                          APPLIED_DB_PASSWORD="$(printf '%s' "$APPLIED_DB_B64" | base64 -d 2>/dev/null)"
+                          if [ -n "$APPLIED_DB_PASSWORD" ] && [ "$APPLIED_DB_PASSWORD" != "$WIKI_DB_PASSWORD" ]; then
+                            echo "error: wiki db-password rotation refused: services/wiki/db-password no longer matches the DB_PASSWORD last applied to the wiki/bookstack Secret, and this stack cannot rotate it. The MariaDB image sets the bookstack account's password only while the data directory is empty, so applying the new value would update the Secret and BookStack's environment while the database account keeps the old password; the mismatch would surface as Access denied at the next BookStack start. The Secret is NOT updated and the wiki stays at its previous, consistent state." >&2
+                            echo "error: to change the password anyway (in one sitting — BookStack's live connections break at step 1): (1) k3s kubectl exec -it -n wiki deploy/wiki-mariadb -- mariadb -u bookstack -p  (old password at the prompt, so it stays out of any argv), then SET PASSWORD = '<the new password>';  (2) k3s kubectl delete secret bookstack -n wiki  — that Secret is this guard's memory of the last applied value;  (3) re-activate, which recreates the Secret from sops;  (4) k3s kubectl rollout restart deploy/wiki-bookstack -n wiki. Reasoning and the full version of these steps: k8s/apps/wiki/SECRETS.md." >&2
+                            exit 1
+                          fi
+                        fi
                         # Values come from the printf'd 0600 temp files above,
                         # never straight from the sops paths: --from-file on a
                         # sops file would ship whatever trailing newline the
