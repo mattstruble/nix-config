@@ -82,6 +82,26 @@ spec:
           # finish recovery. Preferred over `mariadb-admin ping`, which needs
           # credentials on the command line where any process in the pod can
           # read them from /proc.
+          #
+          # Startup first, because the two slow things this container does are
+          # not crashes: InnoDB crash recovery after an OOMKill under the 512Mi
+          # limit, and the mariadb-upgrade step MARIADB_AUTO_UPGRADE runs —
+          # against a temporary server that has networking disabled and, on an
+          # older volume, no healthcheck config written yet. Both take minutes,
+          # and a kill restarts either one from the beginning, so the window
+          # this replaces (liveness at 60s + 3 x 20s = ~100s) was one the pod
+          # could not clear by being healthy; it could only be cleared by
+          # getting lucky. 60 x 10s = 10 minutes, and liveness and readiness
+          # stay paused until it passes.
+          startupProbe:
+            exec:
+              command:
+                - /usr/local/bin/healthcheck.sh
+                - --connect
+                - --innodb_initialized
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 60
           readinessProbe:
             exec:
               command:
@@ -91,14 +111,20 @@ spec:
             initialDelaySeconds: 10
             periodSeconds: 10
             timeoutSeconds: 5
+          # --connect alone: a server that answers connections but has not
+          # finished with InnoDB is unready, not dead, and restarting it throws
+          # away the recovery in progress. No initialDelaySeconds either — the
+          # startup probe owns the start of the container now, and this one
+          # only has to answer for the steady state (3 x 20s = 60s of a server
+          # that has stopped accepting connections at all).
           livenessProbe:
             exec:
               command:
                 - /usr/local/bin/healthcheck.sh
                 - --connect
-            initialDelaySeconds: 60
             periodSeconds: 20
             timeoutSeconds: 5
+            failureThreshold: 3
           resources:
             requests:
               cpu: {{ .Values.database.resources.requests.cpu }}

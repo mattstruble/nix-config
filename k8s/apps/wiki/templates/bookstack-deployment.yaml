@@ -172,8 +172,24 @@ spec:
               containerPort: {{ .Values.bookstack.port }}
           # /status reports the three things that actually make BookStack
           # usable — database, cache and session all answering — as JSON over
-          # 200. A TCP-socket probe would report "Running" for a pod that
-          # cannot read its own database, which is the failure that matters.
+          # 200. That makes it the right readiness signal: a pod that is up but
+          # cannot read its own database is taken out of service instead of
+          # serving errors. It is the wrong liveness signal, and startup is
+          # where the difference is worth paying for.
+          #
+          # Startup covers `artisan migrate --force`, which the image runs at
+          # every container start and which can outlast a short window on a
+          # large instance. The threshold is deliberately long (40 x 15s = 10
+          # minutes) for a second reason: if this container starts while
+          # MariaDB is down, the correct behaviour is to wait, not to be killed
+          # and re-run a migration against a database that is not there.
+          startupProbe:
+            httpGet:
+              path: /status
+              port: http
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 40
           readinessProbe:
             httpGet:
               path: /status
@@ -182,11 +198,24 @@ spec:
             periodSeconds: 15
             timeoutSeconds: 5
             failureThreshold: 6
+          # Liveness asks a different question, and only a restart can answer
+          # it: is the s6 bundle (nginx, php-fpm, the queue worker and cron, in
+          # one 768Mi cgroup) still serving? /status cannot be used here, and
+          # not only because its database check makes MariaDB reachability a
+          # liveness condition — with the image default SESSION_DRIVER=database
+          # and settings read from the same table, every routed request touches
+          # MariaDB, so no HTTP path on this app is dependency-free. A MariaDB
+          # Recreate longer than ~3 minutes therefore killed this pod
+          # repeatedly, each start re-running a migration in the middle of the
+          # outage, and an OOMKill here also drops an in-flight queue job.
+          #
+          # What the TCP probe gives up: a wedged php-fpm behind a live nginx
+          # stays Running. That is the intended trade — it fails readiness, so
+          # it is loud and out of service, and it is not the condition a
+          # restart reliably fixes. Dependency health belongs to readiness.
           livenessProbe:
-            httpGet:
-              path: /status
+            tcpSocket:
               port: http
-            initialDelaySeconds: 120
             periodSeconds: 30
             timeoutSeconds: 5
             failureThreshold: 6
