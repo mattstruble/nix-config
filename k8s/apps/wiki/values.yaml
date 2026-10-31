@@ -103,6 +103,14 @@ oidc:
   # 443. 0.0.0.0/0 is no longer the default; it remains available as an
   # explicit override — a real exfil path from a PHP pod, so widening it
   # back must be a decision a diff records, not an inherited default.
+  #
+  # An empty list is a WILDCARD, not a refusal. `to` holds peers, and a
+  # NetworkPolicy egress rule with no peer matches every destination, so
+  # emptying this list — the intuitive way to turn the rule off while
+  # debugging — would open TCP/443 from the bookstack pod to the whole
+  # internet. The chart therefore fails the render on an empty or missing
+  # list; to actually close the traffic, delete the rule from
+  # templates/networkpolicy.yaml.
   egressCidrs:
     - 10.0.0.0/24
 

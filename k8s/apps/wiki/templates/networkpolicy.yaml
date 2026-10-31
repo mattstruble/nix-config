@@ -25,7 +25,19 @@ this matches nothing, which is the correct reading: the wiki is unreachable
 from outside the cluster, and reachable from nowhere else once the connector
 lands. Nothing about the wiki's exposure is decided by anything outside this
 file.
+
+oidc.egressCidrs is guarded rather than ranged bare, and the reason is the
+shape of the bug it prevents: `to` is a list of peers, and a rule whose peer
+list is empty matches every destination. An empty value therefore does not
+mean "no egress" — it means the opposite of what the operator reaching for it
+intended, on the one port (443) that reaches the rest of the network. A bare
+range cannot tell "narrowed" from "widened to everything", so the template
+checks it and refuses to render.
 */ -}}
+{{- $egressCidrs := .Values.oidc.egressCidrs -}}
+{{- if not $egressCidrs -}}
+  {{- fail "oidc.egressCidrs must list at least one CIDR. An empty list is not a refusal: it renders the TCP/443 egress rule with no `to` peer, and a NetworkPolicy rule with no peer matches EVERY destination — so emptying it opens 443 from the bookstack pod to the whole internet. List the IdP's segment (the default, 10.0.0.0/24), or delete the rule from templates/networkpolicy.yaml to actually close it." -}}
+{{- end -}}
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -92,7 +104,7 @@ spec:
     # is a CIDR and why its default is the IdP's private segment rather than
     # the whole internet.
     - to:
-        {{- range .Values.oidc.egressCidrs }}
+        {{- range $egressCidrs }}
         - ipBlock:
             cidr: {{ . }}
         {{- end }}
