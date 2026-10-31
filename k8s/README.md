@@ -6,11 +6,15 @@ Helm charts and cluster manifests for the homelab k3s cluster (mjolnir).
 
 ```
 k8s/
-├── apps/<domain>/     # one helm chart per app domain
+├── apps/<domain>/     # one directory per app domain; a helm chart where we own one
 │   ├── ai/            #   LLM fleet + LiteLLM gateway
 │   │   ├── templates/
 │   │   ├── values.yaml        # shared values (gateway, chat template)
 │   │   └── values/<model>.yaml  # one file per model; maps merge across -f
+│   ├── monitoring/    #   NOT a chart: values for the upstream monitoring charts
+│   │   ├── values/<chart>.yaml  #   (kube-prometheus-stack, loki, alloy,
+│   │   ├── dashboards/          #   dcgm-exporter), plus the Grafana dashboards
+│   │   └── llama-metrics.md     #   metrics contract the dashboards assume
 │   └── wiki/          #   BookStack + MariaDB; permissions are set in the UI
 │       ├── templates/
 │       ├── values.yaml        # images, resources, OIDC, storage
@@ -100,7 +104,7 @@ access; the config validates and extracts without it, but nothing files a PR.
 - **Every image resolves from values, never from a template literal.** A string inside a template is invisible to update automation, so the chart's own base images are `gateway.toolsImage` (head-end init containers, the llama-swap container, the log-exporter sidecar) and `gateway.postgresImage`, and the templates read them through `required` - a missing value fails the render instead of emitting an empty image field.
 - **One values file per model** under `values/`; `enable: false` = no pod, no route.
 - **GPU pinning:** `gpu: "0"|"1"` → `NVIDIA_VISIBLE_DEVICES` + `runtimeClassName: nvidia` (CDI mode). Never two models on one GPU.
-- **PSS restricted** on every pod: runAsNonRoot, drop ALL, seccomp, no SA token, readOnlyRootFilesystem (container-level — k3s drops the pod-level field).
+- **PSS restricted** is the target for every pod: runAsNonRoot, drop ALL, seccomp, no SA token, readOnlyRootFilesystem (container-level — k3s drops the pod-level field). It is not what every namespace is labelled: `wiki` is `enforce=baseline`, because the BookStack image is an s6-overlay image that cannot start below root and must write inside a directory it has just chowned — that container sets `runAsNonRoot: false` and `readOnlyRootFilesystem: false` on purpose, and the header of `k8s/apps/wiki/templates/bookstack-deployment.yaml` records what was measured, what the five added capabilities buy back, and what bounds the exception. Read that header before copying this convention into the next chart. (`gpu` and `monitoring` are labelled `enforce=privileged` for their DaemonSets; the labels are applied in `nix/services/k3s.nix`.)
 - **Resource limits on every pod.**
 - Fork-binary models (`nixBinary: true`) hardcode a `/nix/store/<hash>` path — update it when the fork is rebuilt.
 - `k8s/manifests/` is auto-applied by k3s at node start; keep it node-agnostic (per-node files go in `manifests/<node>/` if that day comes).

@@ -5,9 +5,12 @@ containment. It deliberately does **not** configure the wiki: no roles, no
 shelves, no permissions. That part is a one-time click-through in the BookStack
 UI, specified below, and the database backup is what protects it.
 
-Nothing deploys on its own. The apply script refuses while the two OIDC values
-are still the literal string `unset`, and says so in the journal rather than
-starting a BookStack that redirects login to an error page.
+Nothing deploys on its own. Activation reads all four wiki secret values and
+judges each of them on two separate states: any one of them still the literal
+string `unset` skips the whole wiki pass — loudly, in the journal — rather than
+starting a BookStack that redirects login to an error page, and any one of them
+empty fails the activation outright. `unset` is a configuration; empty is a
+mistake.
 
 ## 1. Create the OIDC client in Pocket ID
 
@@ -18,7 +21,7 @@ Administration → OIDC Clients → Add OIDC Client.
 | Name | `BookStack` |
 | Redirect URI | `https://wiki.struble.app/oidc/callback` |
 | Redirect URIs (logout) | `https://wiki.struble.app/`<br>`https://wiki.struble.app/login`<br>`https://wiki.struble.app/login?prevent_auto_init=true` |
-| General → PKCE | **on** (BookStack requires it since v24.02) |
+| General → PKCE | **on** — stated as a BookStack requirement since v24.02; stated, not measured (no changelog entry is cited here and nothing in this repo exercises the PKCE path) |
 
 All three logout URIs, not just the callback: BookStack picks one depending on
 where you were standing when you logged out, and a mismatch looks like a logout
@@ -201,8 +204,8 @@ rests on, and 7 exercises the login-time half of it. The SQL above, exactly what
 account deletion does to a live session, and the delay from a Pocket ID change
 to access actually being gone in a browser have none of them been exercised
 against this deployment; they are written from the schema and the image
-defaults. That delay in particular is an open measurement with its own ticket,
-and this section deliberately records no number for it.
+defaults. That delay in particular is an open measurement, and this section
+deliberately records no number for it.
 
 ## 7. Verify
 
@@ -221,9 +224,10 @@ can be correct while the direct fetch is not.
 
 - **Backups are load-bearing now.** The permission model exists in exactly one
   place: the database. There is no seed to re-run and no manifest to re-apply.
-  Until the backup ticket lands, a disk failure means redoing section 6 from
-  memory. See the ticket; the acceptance criterion that matters is a rehearsed
-  restore, not a timer that might be firing.
+  Nothing in this repo schedules a backup yet, so a disk failure today means
+  redoing section 6 from memory. When the backup work is filed, the acceptance
+  criterion that matters is a rehearsed restore, not a timer that might be
+  firing.
 - **An empty database reads as healthy — until the activation check says
   otherwise.** If `/var/lib/wiki/mysql` is ever gone — wiped host directory,
   replaced NVMe, the PV recreated against a fresh tmpfiles directory, or a
@@ -255,7 +259,11 @@ can be correct while the direct fetch is not.
   no backup, the empty instance is the state of the world and the alarm
   clears once content exists again.
 - **A role rename strips membership** unless the role has an Authentication ID.
-  Give every role one when you create it.
+  When you create a role, give it one if any Pocket ID group maps to it. The
+  exception is deliberate and it is in 6.2: the `no-access` default role stays
+  without an Authentication ID, because giving it one turns it into a
+  group-matched role and stops it being the always-matched default 6.1 depends
+  on.
 - **New chapter → set permissions immediately**, per 6.5.
 
 ## What this runbook cannot check for you

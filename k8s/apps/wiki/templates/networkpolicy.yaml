@@ -4,8 +4,8 @@ kube-router network-policy controller is on by default (only
 --disable-network-policy turns it off, and services.k3s.disable lists just
 metrics-server), so these rules bite on stock Flannel with no Cilium or
 Calico. That is also why the egress allows below are load-bearing rather than
-decorative — see the correction in the cluster notes about the stale
-"Flannel ignores NetworkPolicy" claim in k8s/manifests/ai-networkpolicies.yaml.
+decorative: k8s/manifests/ai-networkpolicies.yaml carries the correction to an
+earlier "Flannel ignores NetworkPolicy" claim, which was wrong.
 
 Order matters and is not accidental: a namespace with no policy selecting a
 pod is DEFAULT ALLOW, so the deny has to be applied before the workloads or

@@ -77,7 +77,9 @@ oidc:
   # exactly the shape that tempts an operator into loosening issuer
   # validation. Do not; align this value instead. The oidc-issuer-linked job
   # in .github/workflows/k8s-manifest-diff.yml fails CI when the two drift.
-  # (The durable hostname — auth vs id — belongs to plans/canonical-cluster-urls.)
+  # (Which durable hostname the IdP answers on — auth vs id — is an open
+  # decision with no record in this repo. Until it is made, these two values
+  # are the only sources of truth, and they have to agree.)
   #
   # BookStack fetches <issuer>/.well-known/openid-configuration from inside
   # its own pod, so this must be reachable from the cluster — the egress rule

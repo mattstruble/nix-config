@@ -452,13 +452,17 @@
             METRICS_KEY="$(cat ${config.sops.secrets."services/ai/litellm/metrics-key".path})"
             [ -n "$METRICS_KEY" ] || { echo "error: services/ai/litellm/metrics-key sops secret is empty" >&2; exit 1; }
 
-            # Wiki secrets. Unlike every secret above, these are allowed to be
-            # unconfigured: the Pocket ID OIDC client has to be created by hand,
-            # and until it exists the two client values are the literal string
-            # "unset". Deploying BookStack against a client that does not exist
-            # produces a login redirect to an error page, which reads as a
-            # broken wiki rather than an unconfigured one — so the whole wiki
-            # pass is skipped, loudly, and everything else still applies.
+            # Wiki secrets. The Pocket ID OIDC client has to be created by
+            # hand, and until it exists the two client values are the literal
+            # string "unset". All four values below are read on activation and
+            # judged on two separate states, and the two states fail
+            # differently: the sentinel is an allowed configuration, so seeing
+            # it skips the whole wiki pass, loudly, and everything else still
+            # applies — deploying BookStack against a client that does not
+            # exist produces a login redirect to an error page, which reads as
+            # a broken wiki rather than an unconfigured one. An empty value is
+            # never allowed: it fails the activation, because an empty secret
+            # is a mistake and not a state of the world.
             WIKI_APP_KEY="$(cat ${config.sops.secrets."services/wiki/app-key".path})"
             WIKI_DB_PASSWORD="$(cat ${config.sops.secrets."services/wiki/db-password".path})"
             WIKI_OIDC_CLIENT_ID="$(cat ${config.sops.secrets."services/wiki/oidc-client-id".path})"

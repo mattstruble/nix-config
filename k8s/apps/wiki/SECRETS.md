@@ -43,10 +43,13 @@ matches on both sides is one less mapping to get wrong in a manifest diff.
 | `OIDC_CLIENT_SECRET` | ditto; shown once, at client creation |
 
 The two OIDC values are the literal string `unset` until that client exists.
-The apply script refuses to deploy the wiki while it sees that sentinel:
-starting BookStack against a client that does not exist produces a login
-redirect to an error page, which reads as a broken wiki rather than an
-unconfigured one.
+Activation reads all four keys and judges each on two separate states, and the
+two fail differently: the `unset` sentinel skips the wiki pass — loudly, and
+everything else still applies — because starting BookStack against a client
+that does not exist produces a login redirect to an error page, which reads as
+a broken wiki rather than an unconfigured one; an empty value fails the
+activation outright, because an empty key is a mistake rather than a
+temporarily unconfigured system.
 
 ## Shape
 
@@ -117,5 +120,6 @@ Between 2 and 3 a BookStack pod start fails on the missing Secret; between 1
 and 4 it fails on the password. That is the whole cost of the rotation, paid
 in one window you chose, instead of at an unrelated restart weeks later.
 
-See `RUNBOOK.md` for the four steps that have to happen before any of this is
-deployed.
+See `RUNBOOK.md` sections 1–3 — create the Pocket ID client, create the
+groups, put the values where mjolnir can read them — for what has to happen
+before any of this is deployed. Section 4 is the deploy itself.
