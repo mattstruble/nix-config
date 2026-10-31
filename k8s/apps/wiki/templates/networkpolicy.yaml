@@ -89,7 +89,8 @@ spec:
         - protocol: TCP
           port: {{ .Values.database.port }}
     # OIDC discovery + any future webhook. See oidc.egressCidrs for why this
-    # is a CIDR and why its default is wider than anyone would choose.
+    # is a CIDR and why its default is the IdP's private segment rather than
+    # the whole internet.
     - to:
         {{- range .Values.oidc.egressCidrs }}
         - ipBlock:

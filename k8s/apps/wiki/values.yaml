@@ -29,6 +29,17 @@ bookstack:
   uid: 983
   gid: 983
   port: 80
+  # CIDRs or addresses whose X-Forwarded-* headers Laravel trusts, rendered
+  # as APP_PROXIES (the name this version reads: app/Config/app.php `proxies`,
+  # applied by app/Http/Middleware/TrustProxies.php). Empty means no proxy is
+  # trusted, which is correct only while nothing proxies to this pod. Once
+  # the Pangolin connector lands it connects from the pod network, so every
+  # request would appear to come from the connector: login throttling would
+  # lock the whole household on one person's failed logins and every audit
+  # line would record the same source IP. The connector PR must set this to
+  # the connector's pod/network — named as an acceptance item in RUNBOOK.md's
+  # tunnel note; Pocket ID sets TRUST_PROXY for the same reason.
+  trustedProxies: ""
   resources:
     requests:
       cpu: 100m
@@ -83,12 +94,15 @@ oidc:
   # A CIDR list rather than a hostname is a limit of k3s' policy controller,
   # not a shortcut: the embedded kube-router netpol controller has no FQDN or
   # L7 rules, so `auth.struble.app` cannot be expressed at all. The default
-  # is every address on 443, which is a real exfil path from a PHP pod and is
-  # written down as such. Tighten it to the IdP's address (or the LAN
-  # segment) once plans/canonical-cluster-urls gives the issuer a stable
-  # private answer.
+  # is the private segment the issuer answers on: Pocket ID runs on roque,
+  # and roque advertises 10.0.0.0/24 to the tailnet
+  # (nix/services/homelab/homelab.nix, --advertise-routes), so the least
+  # isolated container in the cluster reaches the IdP and nothing else on
+  # 443. 0.0.0.0/0 is no longer the default; it remains available as an
+  # explicit override — a real exfil path from a PHP pod, so widening it
+  # back must be a decision a diff records, not an inherited default.
   egressCidrs:
-    - 0.0.0.0/0
+    - 10.0.0.0/24
 
 persistence:
   # One local PV, two mounts: the database's data dir AND BookStack's

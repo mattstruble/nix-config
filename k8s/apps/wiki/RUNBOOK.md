@@ -246,3 +246,10 @@ treat them as first-run unknowns rather than as things that work:
 - **The tunnel.** `wiki.struble.app` is not published by anything in this
   directory. Until the Pangolin connector lands the wiki is reachable only
   in-cluster: `kubectl -n wiki port-forward svc/wiki-bookstack 8080:80`.
+  The connector PR carries one wiki-side acceptance item beyond
+  reachability: set `bookstack.trustedProxies` (rendered as `APP_PROXIES`)
+  to the connector's pod network. Left empty, BookStack trusts no proxy, so
+  login throttling and the audit log key on the connector's own address —
+  one person's failed logins would lock out the whole household and every
+  audit line would record the same source IP. Pocket ID sets `TRUST_PROXY`
+  for the same reason.

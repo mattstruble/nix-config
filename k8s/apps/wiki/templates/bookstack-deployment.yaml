@@ -27,8 +27,8 @@
 # The trade is deliberate and it is bounded by the network policies, not by
 # the container: a PHP application on the public internet, patched by a
 # digest bump, running as root at init, contained by the fact that it can
-# only reach its own database, DNS and 443, and can only be reached through
-# one connector pod.
+# only reach its own database, DNS and 443 to the IdP's private segment, and
+# can only be reached through one connector pod.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -128,6 +128,35 @@ spec:
                 secretKeyRef:
                   name: {{ .Values.secretName }}
                   key: DB_PASSWORD
+            # ── Trusted proxies ──────────────────────────────────────────
+            # APP_PROXIES is the name this pinned version reads: the
+            # `proxies` key in app/Config/app.php, consumed by
+            # app/Http/Middleware/TrustProxies.php. Empty trusts no proxy —
+            # correct only while nothing proxies to this pod. The Pangolin
+            # connector PR must set bookstack.trustedProxies to the
+            # connector's pod/network, or throttling and the audit log key
+            # on the connector's address (see RUNBOOK.md's tunnel note).
+            - name: APP_PROXIES
+              value: {{ .Values.bookstack.trustedProxies | quote }}
+            # ── Third-party services kept off ────────────────────────────
+            # Without this BookStack renders every member's avatar as
+            # gravatar.com/avatar/<md5(email)>: a household email hash
+            # leaves the cluster per member, and a gravatar profile lookup
+            # confirms the addresses. Verified against the pinned image
+            # (v26.09.2): app/Config/services.php reads
+            # DISABLE_EXTERNAL_SERVICES into `disable_services`, which
+            # app/Uploads/UserAvatars.php consults before the gravatar URL;
+            # the legacy DISABLE_GRAVATAR name no longer exists in this
+            # version. The same switch also turns off the draw.io
+            # integration — another third-party fetch, off on purpose here.
+            - name: DISABLE_EXTERNAL_SERVICES
+              value: "true"
+            # No update-check variable is set because the pinned version has
+            # none to set: v26.09.2 ships no update checker at all — no
+            # APP_UPDATE_CHECK or UPDATE_CHECK key in app/Config, the
+            # image's .env.example.complete, the routes, or the settings
+            # code — so there is no server-side version report to disable
+            # and no variable to wire. Do not add a dead one here.
             # ── Authentication ───────────────────────────────────────────
             # OIDC is the ONLY auth method: there is no password form to
             # brute force, and no local account to hand over.
