@@ -845,31 +845,62 @@
                 && apply_pruned "$SEL_DEFAULT" "default" "$T/default.yaml" \
                 && apply_pruned "$SEL_MONITORING" "monitoring" "$T/monitoring.yaml" \
                 && apply_pruned "$SEL_GPU" "gpu" "$T/gpu-charts.json" \
-                && { if [ "$WIKI_DEPLOY" = "1" ]; then
-                      # Secret first: the chart's pods read it at start, and
-                      # applying the workloads a moment earlier only buys a
-                      # CreateContainerConfigError that resolves itself.
-                      # Values come from the printf'd 0600 temp files above,
-                      # never straight from the sops paths: --from-file on a
-                      # sops file would ship whatever trailing newline the
-                      # materialisation happens to have, and OIDC_CLIENT_SECRET
-                      # must byte-match the secret registered in Pocket ID.
-                      $KCTL create secret generic bookstack \
-                          --namespace wiki \
-                          --from-file=APP_KEY="$T/secret-wiki-app-key" \
-                          --from-file=DB_PASSWORD="$T/secret-wiki-db-password" \
-                          --from-file=OIDC_CLIENT_ID="$T/secret-wiki-oidc-client-id" \
-                          --from-file=OIDC_CLIENT_SECRET="$T/secret-wiki-oidc-client-secret" \
-                          --dry-run=client -o yaml | label_all wiki "true" > "$T/wiki-secret.json" \
-                      && cat "$T/wiki-secret.json" "$T/wiki-chart.json" > "$T/wiki.yaml" \
-                      && apply_pruned "$SEL_WIKI" "wiki" "$T/wiki.yaml"
-                    else
-                      echo "wiki: OIDC client values are still the 'unset' sentinel; skipping the wiki pass. Create the Pocket ID client, put its id and secret into nix/services/homelab/homelab-wiki-secrets.yaml, and re-activate."
-                    fi
-                  } \
                 && apply_pruned "$SEL_KUBE_SYSTEM" "kube-system" "$T/kube-system.yaml" \
                 && $KCTL label configmap mjolnir-dashboards --namespace monitoring grafana_dashboard=1 --overwrite \
                 && register_metrics_key \
+                && {
+                      # The wiki pass runs last, and it is the one apply pass
+                      # whose failure does NOT abort the activation: a broken
+                      # optional service must not cost the monitoring stack
+                      # that sits behind it in the chain. It used to run
+                      # mid-chain, so with && joining every step a first-run
+                      # wiki failure skipped register_metrics_key too — the
+                      # step whose own comment records the 2026-10-05
+                      # dashboards outage.
+                      #
+                      # Non-fatal, not retried-to-death: the realistic wiki
+                      # failure is not transient. Raising persistence.size
+                      # (which k8s/apps/wiki/templates/pvc.yaml invites, and
+                      # nothing ties it to the PV capacity) makes the existing
+                      # claim mismatch its own immutable spec, kubectl answers
+                      # "field is immutable", and apply_pruned is not
+                      # idempotent under that — so the retry loop this pass
+                      # lives in would hammer the same rejection 150 times
+                      # over 5min and then fail
+                      # the whole activation.
+                      #
+                      # What it needs, all of it above: the wiki namespace and
+                      # its PSS label (top of each loop iteration), the 0600
+                      # secret value files and $T/wiki-chart.json (render
+                      # section, before the loop), and the cluster-scoped wiki
+                      # PV that k3s' manifest auto-loader applies before this
+                      # script runs. Its own Secret is created first, here:
+                      # the chart's pods read it at start, and applying the
+                      # workloads a moment earlier only buys a
+                      # CreateContainerConfigError that resolves itself.
+                      if [ "$WIKI_DEPLOY" = "1" ]; then
+                        # Values come from the printf'd 0600 temp files above,
+                        # never straight from the sops paths: --from-file on a
+                        # sops file would ship whatever trailing newline the
+                        # materialisation happens to have, and OIDC_CLIENT_SECRET
+                        # must byte-match the secret registered in Pocket ID.
+                        if ! {
+                          $KCTL create secret generic bookstack \
+                              --namespace wiki \
+                              --from-file=APP_KEY="$T/secret-wiki-app-key" \
+                              --from-file=DB_PASSWORD="$T/secret-wiki-db-password" \
+                              --from-file=OIDC_CLIENT_ID="$T/secret-wiki-oidc-client-id" \
+                              --from-file=OIDC_CLIENT_SECRET="$T/secret-wiki-oidc-client-secret" \
+                              --dry-run=client -o yaml | label_all wiki "true" > "$T/wiki-secret.json" \
+                          && cat "$T/wiki-secret.json" "$T/wiki-chart.json" > "$T/wiki.yaml" \
+                          && apply_pruned "$SEL_WIKI" "wiki" "$T/wiki.yaml"
+                        }; then
+                          echo "error: wiki apply pass failed (see kubectl output above); the wiki stays at its previous state and the rest of the activation continues" >&2
+                        fi
+                      else
+                        echo "wiki: OIDC client values are still the 'unset' sentinel; skipping the wiki pass. Create the Pocket ID client, put its id and secret into nix/services/homelab/homelab-wiki-secrets.yaml, and re-activate."
+                      fi
+                    } \
                 && { if [ "$CRDS_NEW" -eq 1 ]; then
                     $KCTL rollout restart deploy/kps-kube-prometheus-stack-operator --namespace monitoring
                   fi
