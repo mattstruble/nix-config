@@ -137,17 +137,42 @@ oidc:
   #
   # A CIDR list rather than a hostname is a limit of k3s' policy controller,
   # not a shortcut: the embedded kube-router netpol controller has no FQDN or
-  # L7 rules, so `auth.struble.app` cannot be expressed at all. The default
-  # is the private segment the issuer answers on: Pocket ID runs on roque,
-  # and roque advertises 10.0.0.0/24 to the tailnet
-  # (nix/services/homelab/homelab.nix, --advertise-routes).
+  # L7 rules, so `auth.struble.app` cannot be expressed at all. That limit is
+  # what makes this list easy to get wrong, because the name and the address
+  # it resolves to are not on the same network:
+  #
+  #   - 10.0.0.0/24 — Pocket ID runs on roque, and roque advertises this
+  #     segment to the tailnet (nix/services/homelab/homelab.nix,
+  #     --advertise-routes). This covers a pod that reaches the IdP by LAN.
+  #   - the edge /32 — but the pod resolves `auth.struble.app` through public
+  #     DNS, which answers with the Pangolin edge, not with roque. The fetch
+  #     therefore leaves the cluster for the edge address and tunnels back.
+  #     With only the /24 above, the discovery request is dropped and no login
+  #     ever completes, while every pod reports Healthy.
+  #
+  # The edge address is a public IP this file cannot observe, so the
+  # `wiki-issuer-egress-covered` job in .github/workflows/k8s-manifest-diff.yml
+  # resolves oidc.issuer and fails when no entry here covers the answer. That
+  # is the point of listing it: a VPS migration turns into a red check naming
+  # the address, instead of a wiki that silently refuses to authenticate.
+  # Canonical-URLs phase 0 (CoreDNS views) is the real fix — it makes the name
+  # resolve on-LAN, at which point the /32 can go away.
+  #
+  # 0.0.0.0/0 is not the default and should not become one: it is a real exfil
+  # path from a PHP pod, so widening it must be a decision a diff records.
   #
   # An empty list is a WILDCARD, not a refusal. `to` holds peers, and a
   # NetworkPolicy egress rule with no peer matches every destination, so
-  # emptying this list would open TCP/443 from the bookstack pod to the whole
-  # internet. The chart fails the render on an empty or missing list.
+  # emptying this list — the intuitive way to turn the rule off while
+  # debugging — would open TCP/443 from the bookstack pod to the whole
+  # internet. The chart therefore fails the render on an empty or missing
+  # list; to actually close the traffic, delete the rule from
+  # templates/networkpolicy.yaml.
   egressCidrs:
     - 10.0.0.0/24
+    # The Pangolin edge, as observed resolving auth.struble.app. Not recorded
+    # anywhere else in this repo; the CI job above is what keeps it honest.
+    - 66.63.168.18/32
 
 persistence:
   # One local PV, two mounts: the database's data dir AND BookStack's

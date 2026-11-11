@@ -294,6 +294,19 @@ treat them as first-run unknowns rather than as things that work:
   is a redirect that comes back around. The egress rule allowing it is in
   `templates/networkpolicy.yaml`, and it is a CIDR because k3s' policy
   controller has no FQDN rules.
+
+
+  This one is now measured rather than assumed, and it is not the shape the
+  chart originally assumed: Pocket ID runs on roque, but the pod resolves
+  `auth.struble.app` through public DNS, which answers with the Pangolin edge —
+  a public address, not a `10.0.0.x` one. So the discovery request leaves the
+  cluster for the edge and tunnels back, and an egress list holding only the
+  private segment drops it while every pod still reports Ready. That is why
+  `oidc.egressCidrs` carries the edge `/32` alongside `10.0.0.0/24`. The edge
+  address is not recorded anywhere else in this repo, so if the VPS moves this
+  breaks and nothing here will tell you why until you read this paragraph —
+  canonical-URLs phase 0 (CoreDNS views) is the fix that makes the name resolve
+  on-LAN and lets the `/32` go away.
 - **The LAN route, and what it is not.** The wiki is served at
   `https://wiki.mjolnir` through traefik, which resolves to the node from LAN
   DNS (outside this repo, the same way `grafana.mjolnir` does). Two consequences
