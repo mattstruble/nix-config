@@ -660,16 +660,28 @@
               # Ask the running database directly. The password rides stdin
               # into MYSQL_PWD so it never lands in any argv — the oneshot's
               # children are visible in the node-wide process list.
+              #
+              # `entities` is the content table, and that choice is
+              # version-specific in a way that has already bitten once. This
+              # check was written against `pages` and `shelves`; BookStack
+              # v26.09.2 folds pages, books, chapters and bookshelves into one
+              # `entities` table discriminated by a `type` column, and drops
+              # `bookshelves` entirely (only the `bookshelves_books` join table
+              # survives). The old query therefore errored, stderr was
+              # discarded, stdout came back empty, and empty was read as
+              # "inconclusive" — a guard that cannot fire, reporting success.
+              # That is the worst shape a check can have, because it is trusted.
+              # Hence the failure branch below names schema drift as the first
+              # suspect instead of hiding behind one word.
               counts="$(printf '%s' "$WIKI_DB_PASSWORD" | $KCTL exec -i -n wiki deploy/wiki-mariadb -- \
-                  sh -c 'MYSQL_PWD=$(cat) mariadb -u bookstack -N -B bookstack -e "SELECT (SELECT COUNT(*) FROM pages)=0 AND (SELECT COUNT(*) FROM shelves)=0"' 2>/dev/null)"
+                  sh -c 'MYSQL_PWD=$(cat) mariadb -u bookstack -N -B bookstack -e "SELECT COUNT(*)=0 FROM entities"' 2>/dev/null)"
               if [ "$counts" = "1" ]; then
-                echo "error: WIKI EMPTY-DATABASE ALARM: a Ready BookStack pod coexists with zero pages and zero shelves rows — the MariaDB datadir was (re)initialised empty and the wiki is serving a freshly migrated instance with stock default roles at its real URL. Restore the database (Standing notes, k8s/apps/wiki/RUNBOOK.md) or accept the loss; the unit stays red until content exists again." >&2
+                echo "error: WIKI EMPTY-DATABASE ALARM: a Ready BookStack pod coexists with zero rows in \`entities\` — the MariaDB datadir was (re)initialised empty and the wiki is serving a freshly migrated instance with stock default roles at its real URL. Restore the database (Standing notes, k8s/apps/wiki/RUNBOOK.md) or accept the loss; the unit stays red until content exists again." >&2
                 exit 1
               fi
-              # Empty output means the query itself failed (mariadb pod gone,
-              # tables not there yet) — indeterminate, not healthy; the
-              # pod-level signals cover that case.
-              [ "$counts" = "0" ] || echo "wiki: empty-database check inconclusive (row-count query returned: $counts)" >&2
+              if [ "$counts" != "0" ]; then
+                echo "wiki: empty-database check INCONCLUSIVE (query returned: ''${counts}). First suspect is a BookStack schema change: this counts rows in \`entities\`, and the pinned image has already renamed the content tables once (pages/shelves -> entities at v26.09.2). If the image was just bumped, update this query and the manual query in k8s/apps/wiki/RUNBOOK.md — a dead alarm is worse than no alarm. Left non-fatal on purpose: a renamed table must not block an unrelated deploy." >&2
+              fi
               return 0
             }
 

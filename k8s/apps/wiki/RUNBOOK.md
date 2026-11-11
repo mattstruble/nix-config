@@ -312,25 +312,40 @@ can be correct while the direct fetch is not.
   default roles at the real URL; readiness, probes and the pod-level
   monitoring alerts all stay green. There is no metrics path for row counts,
   so the alarm is an activation-time check at the end of `ai-chart-apply`: a
-  Ready BookStack pod coexisting with zero rows in `pages` **and** `shelves`
-  fails the unit with a `WIKI EMPTY-DATABASE ALARM` line in the journal, and
-  it stays failed until a restore brings the rows back or content exists
-  again. Its limits: it observes only when that unit runs (a deploy that
-  changes the charts, or a boot), it abstains while no BookStack pod is Ready,
-  and a first-ever activation fires it by construction — a brand-new wiki and
-  a wiped one are the same rows, so the expected first-run sequence is alarm,
-  restore (or start writing), green. Checking by hand:
+  Ready BookStack pod coexisting with zero rows in `entities` fails the unit
+  with a `WIKI EMPTY-DATABASE ALARM` line in the journal, and it stays failed
+  until a restore brings the rows back or content exists again. Its limits: it
+  observes only when that unit runs (a deploy that changes the charts, or a
+  boot), it abstains while no BookStack pod is Ready, and a first-ever
+  activation fires it by construction — a brand-new wiki and a wiped one are
+  the same rows, so the expected first-run sequence is alarm, restore (or start
+  writing), green.
+
+  **Why `entities`, and why this note is here.** The check originally counted
+  `pages` and `shelves`. BookStack v26.09.2 has neither: pages, books, chapters
+  and bookshelves were folded into one `entities` table discriminated by a
+  `type` column, and `bookshelves` disappeared outright — only the
+  `bookshelves_books` join table remains. The old query therefore errored,
+  stderr was discarded, stdout came back empty, and empty was read as
+  "inconclusive". The alarm reported success for a check that could not fire.
+  That is the failure mode to watch for on every image bump: a renamed table
+  does not break the deploy, it silently disarms the guard that was supposed to
+  notice a wiped database. If you bump the BookStack image, re-run the query
+  below by hand and confirm it still resolves.
+
+  Checking by hand:
 
   ```
   kubectl -n wiki exec deploy/wiki-mariadb -- \
     mariadb -u bookstack -p bookstack -N -B \
-    -e "select (select count(*) from pages) as pages, (select count(*) from shelves) as shelves"
+    -e "select count(*) as entities from entities"
   ```
 
   (`-p` prompts; the password is `DB_PASSWORD` in the `bookstack` Secret, see
-  `SECRETS.md`.) Recovery is the rehearsed restore from the note above; with
-  no backup, the empty instance is the state of the world and the alarm
-  clears once content exists again.
+  `SECRETS.md`.) To see what the rows actually are, `select type, count(*) from
+  entities group by type`. Recovery is the rehearsed restore from the note
+  above; with no backup, the empty instance is the state of the world and the
+  alarm clears once content exists again.
 - **A role rename strips membership** unless the role has an Authentication ID.
   When you create a role, give it one if any Pocket ID group maps to it. The
   exception is deliberate and it is in 6.2: the `no-access` default role stays
