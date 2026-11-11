@@ -63,9 +63,9 @@ only, which is the point of it not being `homelab-secrets.yaml`.
 
 ## 4. Deploy
 
-Add the LAN DNS record first — `wiki.mjolnir` → `10.0.0.4`. The `.mjolnir`
-zone is per-host, not a wildcard, so it does not arrive on its own the way
-`grafana.mjolnir` already has.
+Confirm the LAN DNS record resolves before deploying — `dig +short A
+wiki.mjolnir @10.0.0.1` should print `10.0.0.4`. The `.mjolnir` zone is
+per-host, not a wildcard, so the record does not arrive on its own.
 
 ```
 just deploy mjolnir
@@ -314,13 +314,31 @@ treat them as first-run unknowns rather than as things that work:
   on-LAN and lets the `/32` go away.
 - **The LAN route, and what it is not.** The wiki is served at
   `https://wiki.mjolnir` through traefik. That name needs a record in LAN DNS
-  pointing at the node (10.0.0.4), and it is **not** there yet: the `.mjolnir`
-  zone is per-host rather than a wildcard, verified on the node where
-  `grafana.mjolnir` resolves and `wiki.mjolnir` does not. Add the record before
-  concluding anything from a failed load — an Ingress that is correctly wired
-  and correctly permitted still produces a browser that never gets an answer,
-  which is indistinguishable from the NetworkPolicy rule being missing. DNS
-  first, then the policy, then the app.
+  pointing at the node (10.0.0.4), and the record is outside this repo. The
+  `.mjolnir` zone is per-host rather than a wildcard — `nope-9x7z.mjolnir`
+  resolves to nothing — so verify instead of assuming:
+
+  ```
+  dig +short A wiki.mjolnir @10.0.0.1
+  ```
+
+  A missing record does not announce itself. A correctly rendered Ingress with
+  a correctly permitted NetworkPolicy still gives a browser that never receives
+  an answer, indistinguishable from the policy rule being missing. DNS first,
+  then the policy, then the app.
+
+  **Why `wiki.mjolnir` and not `wiki.struble.app`, which already resolves here
+  too.** The LAN resolver answers `wiki.struble.app` with 10.0.0.4 already, so
+  routing to it is not the missing piece — the certificate is. `struble.app` is
+  on the browser HSTS preload list (inherited through the `.app` TLD), and a
+  preloaded domain gets **no "proceed anyway" button**: a self-signed
+  certificate is a hard failure with no click-through, not a warning. Serving
+  `wiki.struble.app` therefore requires a real certificate, which is
+  canonical-URLs phase 0.1 (cert-manager + the `*.struble.app` wildcard). That
+  phase is a prerequisite rather than a nicety, and when it lands this hostname
+  should be retired in favour of `wiki.struble.app` — the redirect URIs in
+  section 1 and `bookstack.appUrl` change together, and BookStack's stored
+  absolute URLs need `php artisan bookstack:update-url`.
 
   Two consequences worth knowing before you rely on it:
 
