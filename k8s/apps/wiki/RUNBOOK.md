@@ -357,6 +357,23 @@ treat them as first-run unknowns rather than as things that work:
   suspect is the ingress-from-traefik rule in `templates/networkpolicy.yaml` —
   the namespace is default-deny, so an Ingress without that rule produces a
   valid object, a Ready pod, and a timeout.
+
+  Before suspecting either: **`ss -tln` shows nothing on 80/443 and that is
+  correct.** Traefik is a `LoadBalancer` Service with `EXTERNAL-IP 10.0.0.4`
+  (the node), and k3s reaches it with an nftables DNAT — `tcp dport 32443`
+  and `31407` translated to the traefik pod — rather than a bound socket, so
+  no process ever listens on those ports. Verify with `nft -a list table ip
+  nat | grep traefik`, or just ask the endpoint what it serves:
+
+  ```
+  curl -skv https://grafana.mjolnir/ 2>&1 | grep -E "subject:|< HTTP"
+  ```
+
+  A self-signed `CN=grafana.mjolnir` and a 302 mean the whole LAN path —
+  DNAT, traefik, SNI routing, TLS termination — is working for some other app,
+  which is the cheapest possible proof that it will work for this one. Same
+  DNAT-bypasses-INPUT behaviour the host firewall note in `nix/services/k3s.nix`
+  records for the gateway's hostPort 8000.
 - **The tunnel.** `wiki.struble.app` is still not published by anything in this
   directory. Until the Pangolin connector lands, the only paths to BookStack are
   the LAN Ingress above and, for debugging, `kubectl -n wiki port-forward
