@@ -1,0 +1,78 @@
+{{- /*
+The LAN path in.
+
+This chart deliberately has no other ingress surface: no hostPort, no
+NodePort, no second Ingress. The wiki plan (wiki plan
+plans/mjolnir-cluster-wiki.md) puts the
+published entry point behind the Pangolin connector, and until that exists
+this Ingress is the only way anyone reaches BookStack — from the LAN, at
+https://wiki.mjolnir, with a self-signed certificate.
+
+Three things have to agree on one hostname and nothing in Kubernetes checks
+it, which is the actual reason this file is worth reading:
+
+  1. bookstack.appUrl — BookStack builds its OIDC redirect_uri from it, so a
+     wrong value is an invalid_redirect_uri rejection at the IdP.
+  2. ingress.host here — what traefik matches on the Host header.
+  3. the certificate CN/SAN — not written down anywhere. nix/services/k3s.nix
+     reads it out of this rendered object, so it cannot disagree by
+     construction.
+
+The first two are separate values that a human edits, so the render checks
+them below and refuses rather than shipping a wiki that cannot log anyone in.
+That is deliberate over a CI job: it fires on `just k8s-render`, on the
+activation's own render, and on any `helm template`, not only on a push.
+
+And the rule that makes this work at all is not in this file: it is the
+ingress-from-traefik entry in templates/networkpolicy.yaml. The namespace is
+default-deny, so an Ingress applied without that rule produces a valid
+object, a Ready pod, a green `kubectl describe ingress`, and a browser that
+times out. Traefik is a normal CNI pod (verified: no hostNetwork), so the
+policy sees the traefik pod as the source, not the node.
+
+Helm applies this after NetworkPolicy (its install order puts Ingress last),
+so there is no window where the route exists before the traffic is allowed.
+*/ -}}
+{{- if .Values.ingress.enabled -}}
+{{- /*
+  APP_URL and the Ingress host must be the same hostname. BookStack derives
+  the OIDC redirect_uri from APP_URL while traefik routes on the Host header,
+  so a mismatch produces a login that dies at the IdP with invalid_redirect_uri
+  — a remote error, with nothing in the pod's logs pointing here. Caught at
+  render because both values live in one file and only a human can fix it.
+*/ -}}
+{{- $appHost := (urlParse .Values.bookstack.appUrl).host -}}
+{{- if ne $appHost .Values.ingress.host -}}
+  {{- fail (printf "bookstack.appUrl (%s) and ingress.host (%s) name different hosts. BookStack sends the OIDC redirect_uri built from APP_URL, and Pocket ID only accepts the URIs registered for the client, so a mismatch fails every login at the IdP. Point both at the same hostname, then register https://<that>/oidc/callback plus the logout URIs in RUNBOOK.md section 1." .Values.bookstack.appUrl .Values.ingress.host) -}}
+{{- end -}}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: wiki-bookstack
+  labels:
+    app.kubernetes.io/part-of: wiki
+    app.kubernetes.io/component: bookstack
+spec:
+  ingressClassName: {{ .Values.ingress.className }}
+  tls:
+    # Terminated at traefik; the upstream hop to the pod is plain HTTP on
+    # bookstack.port, which is why the pod needs no server certificate of its
+    # own and why APP_PROXIES matters for anything behind this.
+    - hosts:
+        - {{ .Values.ingress.host | quote }}
+      secretName: {{ .Values.ingress.tlsSecret }}
+  rules:
+    - host: {{ .Values.ingress.host | quote }}
+      http:
+        paths:
+          # Prefix on / rather than an Exact path: BookStack owns the whole
+          # path space (/login, /oidc/callback, /uploads/..., /api/...) and
+          # adding a page must not require editing this object.
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: wiki-bookstack
+                port:
+                  number: {{ .Values.bookstack.port }}
+{{- end }}

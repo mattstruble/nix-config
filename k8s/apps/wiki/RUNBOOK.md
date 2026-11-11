@@ -16,16 +16,29 @@ mistake.
 
 Administration → OIDC Clients → Add OIDC Client.
 
+Use the **LAN** hostname below. It is `wiki.mjolnir` today because that is the
+only name the wiki is served on (the Ingress in `templates/ingress.yaml`);
+`wiki.struble.app` does not resolve to this cluster yet. BookStack builds the
+redirect URI from `bookstack.appUrl`, so these strings have to match that value
+character for character — the render refuses if `appUrl` and the Ingress host
+disagree, but nothing can stop the Pocket ID client from being wrong.
+
 | field | value |
 |---|---|
 | Name | `BookStack` |
-| Redirect URI | `https://wiki.struble.app/oidc/callback` |
-| Redirect URIs (logout) | `https://wiki.struble.app/`<br>`https://wiki.struble.app/login`<br>`https://wiki.struble.app/login?prevent_auto_init=true` |
+| Redirect URI | `https://wiki.mjolnir/oidc/callback` |
+| Redirect URIs (logout) | `https://wiki.mjolnir/`<br>`https://wiki.mjolnir/login`<br>`https://wiki.mjolnir/login?prevent_auto_init=true` |
 | General → PKCE | **on** — stated as a BookStack requirement since v24.02; stated, not measured (no changelog entry is cited here and nothing in this repo exercises the PKCE path) |
 
 All three logout URIs, not just the callback: BookStack picks one depending on
 where you were standing when you logged out, and a mismatch looks like a logout
 that silently fails. Copy the client ID and secret — the secret is shown once.
+
+The browser will warn: the certificate is self-signed and regenerated at every
+activation, so expect to re-accept it after a redeploy. That is the accepted
+cost of serving a LAN name before cert-manager exists; canonical-URLs phase 0
+replaces it with one real wildcard. When that happens, re-register these URIs
+with the new hostname in the same sitting as the `appUrl` change.
 
 ## 2. Create the groups
 
@@ -281,13 +294,36 @@ treat them as first-run unknowns rather than as things that work:
   is a redirect that comes back around. The egress rule allowing it is in
   `templates/networkpolicy.yaml`, and it is a CIDR because k3s' policy
   controller has no FQDN rules.
-- **The tunnel.** `wiki.struble.app` is not published by anything in this
-  directory. Until the Pangolin connector lands the wiki is reachable only
-  in-cluster: `kubectl -n wiki port-forward svc/wiki-bookstack 8080:80`.
+- **The LAN route, and what it is not.** The wiki is served at
+  `https://wiki.mjolnir` through traefik, which resolves to the node from LAN
+  DNS (outside this repo, the same way `grafana.mjolnir` does). Two consequences
+  worth knowing before you rely on it:
+
+  - It is **LAN-only by construction, not by policy.** Nothing listens for the
+    wiki on a public interface; the published path still requires the Pangolin
+    connector. Turning `ingress.enabled` off removes the route and its
+    NetworkPolicy rule in the same apply, so the two cannot drift apart.
+  - **Encrypted-DNS devices will not find it.** Android Private DNS and iOS
+    encrypted DNS ignore the DHCP-assigned resolver and ask a public resolver,
+    which has never heard of `wiki.mjolnir`. Those devices show a wiki that
+    looks broken from the same couch as a laptop that works fine. The family
+    answer is the LAN-only sibling question in the wiki plan, not a DNS entry.
+
+  Verifying it from the node, without a browser: `curl -sk https://wiki.mjolnir/login`
+  should return BookStack's login page. If it hangs instead, the first thing to
+  suspect is the ingress-from-traefik rule in `templates/networkpolicy.yaml` —
+  the namespace is default-deny, so an Ingress without that rule produces a
+  valid object, a Ready pod, and a timeout.
+- **The tunnel.** `wiki.struble.app` is still not published by anything in this
+  directory. Until the Pangolin connector lands, the only paths to BookStack are
+  the LAN Ingress above and, for debugging, `kubectl -n wiki port-forward
+  svc/wiki-bookstack 8080:80`.
   The connector PR carries one wiki-side acceptance item beyond
   reachability: set `bookstack.trustedProxies` (rendered as `APP_PROXIES`)
-  to the connector's pod network. Left empty, BookStack trusts no proxy, so
-  login throttling and the audit log key on the connector's own address —
-  one person's failed logins would lock out the whole household and every
-  audit line would record the same source IP. Pocket ID sets `TRUST_PROXY`
-  for the same reason.
+  to the connector's pod network. It is no longer empty — the LAN Ingress
+  already proxies this pod, so it names the pod CIDR — but the connector
+  arrives from wherever it arrives, and that value has to cover it too. Left
+  short, BookStack trusts no proxy for that source, so login throttling and the
+  audit log key on the connector's own address — one person's failed logins
+  would lock out the whole household and every audit line would record the same
+  source IP. Pocket ID sets `TRUST_PROXY` for the same reason.

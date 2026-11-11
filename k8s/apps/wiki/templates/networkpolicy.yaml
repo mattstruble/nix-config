@@ -16,15 +16,27 @@ in document order — so the deny lands first.
 
 Three policies, and the set is closed: anything not written here is dropped.
   1. deny everything, both directions, for every pod in the namespace
-  2. bookstack: in from the edge connector; out to DNS, the database, 443
+  2. bookstack: in from the LAN Ingress and the edge connector; out to DNS,
+     the database, and 443 to the OIDC issuer
   3. mariadb:   in from bookstack only; no egress at all
 
-The ingress rule names the `edge` namespace and a connector pod label that do
-not exist yet — the Pangolin connector is a separate change. Until they do
-this matches nothing, which is the correct reading: the wiki is unreachable
-from outside the cluster, and reachable from nowhere else once the connector
-lands. Nothing about the wiki's exposure is decided by anything outside this
-file.
+Two ingress paths reach BookStack, and each is a separate rule because they
+carry different trust:
+
+  - traefik, for the LAN Ingress (templates/ingress.yaml). Traefik is a pod
+    in kube-system, not hostNetwork, so the source is the pod and the
+    namespace+pod selector below is what matches it. Naming traefik rather
+    than the pod CIDR keeps every other pod in the cluster out; allowing the
+    CIDR would let any pod in the cluster reach BookStack directly and skip
+    whatever the edge eventually decides.
+  - the Pangolin connector, for the published path. It names the `edge`
+    namespace and a connector pod label that do not exist yet, so that rule
+    matches nothing today — the correct reading until the connector lands,
+    not a mistake to fix in advance.
+
+Nothing about the wiki's exposure is decided by anything outside this file.
+Setting ingress.enabled false removes the traefik rule in the same apply,
+so the route and its permission cannot drift apart.
 
 oidc.egressCidrs is guarded rather than ranged bare, and the reason is the
 shape of the bug it prevents: `to` is a list of peers, and a rule whose peer
@@ -64,9 +76,25 @@ spec:
     - Ingress
     - Egress
   ingress:
-    # The only path in. There is no Ingress object and no hostPort: the wiki
-    # is published by the Pangolin connector, so "who may reach BookStack"
-    # and "who may reach the tunnel" collapse into one rule.
+    # The LAN path: traefik, and only traefik. This rule is the difference
+    # between an Ingress that works and an Ingress that looks healthy while
+    # every request is dropped, because the namespace default-deny above
+    # otherwise swallows the proxied connection.
+    {{- if .Values.ingress.enabled }}
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: traefik
+      ports:
+        - protocol: TCP
+          port: {{ .Values.bookstack.port }}
+    {{- end }}
+    # The published path, once the Pangolin connector exists. Kept now so the
+    # connector's only job is to arrive with the right labels, not to edit a
+    # policy that guards a login page.
     - from:
         - namespaceSelector:
             matchLabels:

@@ -20,7 +20,20 @@ bookstack:
   # What users type, what BookStack puts in every redirect and in the
   # absolute URLs it stores for images. Changing it later needs
   # `php artisan bookstack:update-url`, not just a value bump.
-  appUrl: https://wiki.struble.app
+  #
+  # This is the LAN name, not the canonical one, and it is load-bearing in a
+  # way a hostname usually is not: BookStack derives its OIDC redirect_uri
+  # from APP_URL, so the Pocket ID client must list https://<this>/oidc/callback
+  # or every login dies with an invalid_redirect_uri error. It has to equal
+  # `ingress.host` below, and the render refuses when the two differ
+  # (templates/ingress.yaml); the serving certificate is read out of the
+  # rendered Ingress at activation, so it cannot drift from either.
+  #
+  # Canonical-URLs phase 0 (cert-manager + CoreDNS views, wiki plan
+  # plans/canonical-cluster-urls.md) replaces this with wiki.struble.app and a
+  # real certificate. At that cutover three things move together: this value,
+  # `ingress.host`, and the redirect URIs registered in Pocket ID.
+  appUrl: https://wiki.mjolnir
   # The unprivileged user the app actually runs as after s6 init. 983 is
   # unassigned on mjolnir; the host directory is pre-owned by it (the
   # systemd.tmpfiles rules in nix/services/k3s.nix, on the directory
@@ -39,13 +52,42 @@ bookstack:
   # line would record the same source IP. The connector PR must set this to
   # the connector's pod/network — named as an acceptance item in RUNBOOK.md's
   # tunnel note; Pocket ID sets TRUST_PROXY for the same reason.
-  trustedProxies: ""
+  #
+  # It is no longer empty because the LAN Ingress already proxies this pod:
+  # traefik runs as a pod inside the cluster CIDR and sends X-Forwarded-For,
+  # so with no trusted proxy every request would arrive bearing traefik's own
+  # address. Laravel would then apply one bucket to the whole household — one
+  # person's failed logins would lock everyone out, and every audit line would
+  # name traefik as the client. Scoped to the pod CIDR rather than traefik's
+  # pod IP because that IP is reassigned on every restart; it is the same
+  # `clusterCidr` the host firewall scopes its probe rule to. Widening it
+  # further would let any pod in the cluster forge a client address.
+  trustedProxies: "10.42.0.0/16"
   resources:
     requests:
       cpu: 100m
       memory: 256Mi
     limits:
       memory: 768Mi
+
+ingress:
+  # The LAN path in. Traefik (kept in k3s for exactly this, see the
+  # `disable` list in nix/services/k3s.nix) terminates TLS on mjolnir:80/443
+  # and proxies to the pod over the CNI network, which is why
+  # templates/networkpolicy.yaml carries a matching ingress-from-traefik rule
+  # — without that rule the Ingress object is valid, the pod reports Ready,
+  # and every request is dropped in silence.
+  #
+  # `wiki.mjolnir` resolves to the node (10.0.0.4) from LAN DNS, which lives
+  # outside this repo, the same way `grafana.mjolnir` does.
+  enabled: true
+  className: traefik
+  # Must equal bookstack.appUrl's host; the render fails when it does not.
+  host: wiki.mjolnir
+  # Self-signed at activation, 10 years, regenerated every pass so it stays
+  # inside the prune scope — the grafana-tls precedent, including its
+  # accepted wart: the browser warns on first use and on every regeneration.
+  tlsSecret: wiki-tls # pragma: allowlist secret (a Kubernetes Secret name, not a credential)
 
 database:
   image: mariadb:11@sha256:c4124d1afa875e47f2892edf26b482fa54f796e2f342d3717a04ca091a22a9bd
@@ -98,19 +140,12 @@ oidc:
   # L7 rules, so `auth.struble.app` cannot be expressed at all. The default
   # is the private segment the issuer answers on: Pocket ID runs on roque,
   # and roque advertises 10.0.0.0/24 to the tailnet
-  # (nix/services/homelab/homelab.nix, --advertise-routes), so the least
-  # isolated container in the cluster reaches the IdP and nothing else on
-  # 443. 0.0.0.0/0 is no longer the default; it remains available as an
-  # explicit override — a real exfil path from a PHP pod, so widening it
-  # back must be a decision a diff records, not an inherited default.
+  # (nix/services/homelab/homelab.nix, --advertise-routes).
   #
   # An empty list is a WILDCARD, not a refusal. `to` holds peers, and a
   # NetworkPolicy egress rule with no peer matches every destination, so
-  # emptying this list — the intuitive way to turn the rule off while
-  # debugging — would open TCP/443 from the bookstack pod to the whole
-  # internet. The chart therefore fails the render on an empty or missing
-  # list; to actually close the traffic, delete the rule from
-  # templates/networkpolicy.yaml.
+  # emptying this list would open TCP/443 from the bookstack pod to the whole
+  # internet. The chart fails the render on an empty or missing list.
   egressCidrs:
     - 10.0.0.0/24
 

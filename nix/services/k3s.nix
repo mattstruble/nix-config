@@ -1000,6 +1000,39 @@
                             exit 1
                           fi
                         fi
+                        # The LAN Ingress terminates TLS at traefik, which
+                        # needs a certificate for the host being served. The
+                        # hostname and the Secret name are read out of the
+                        # rendered chart rather than repeated here, so
+                        # values.yaml stays the only place they are written and
+                        # the certificate cannot disagree with the route. When
+                        # the Ingress is disabled the extraction yields nothing
+                        # and no certificate is built — the manifest list keeps
+                        # an empty file so the same `cat` works either way.
+                        #
+                        # Self-signed and regenerated every pass, following the
+                        # grafana-tls precedent: the browser warns on a
+                        # self-signed name regardless, the LAN is trusted, and
+                        # regenerating keeps the Secret inside this pass's
+                        # prune scope so it is never orphaned. cert-manager and
+                        # a real wildcard certificate are canonical-URLs
+                        # phase 0.
+                        WIKI_TLS_HOST="$($YQ -r 'select(.kind == "Ingress") | .spec.tls[0].hosts[0] // empty' "$T/wiki-chart.json" 2>/dev/null | head -1)"
+                        WIKI_TLS_SECRET="$($YQ -r 'select(.kind == "Ingress") | .spec.tls[0].secretName // empty' "$T/wiki-chart.json" 2>/dev/null | head -1)"
+                        : > "$T/wiki-tls.json"
+                        if [ -n "$WIKI_TLS_HOST" ] && [ -n "$WIKI_TLS_SECRET" ]; then
+                          $OPENSSL req -x509 -newkey rsa:2048 -nodes \
+                              -keyout "$T/wiki-tls.key" \
+                              -out "$T/wiki-tls.crt" \
+                              -days 3650 \
+                              -subj "/CN=$WIKI_TLS_HOST" \
+                              -addext "subjectAltName=DNS:$WIKI_TLS_HOST"
+                          $KCTL create secret tls "$WIKI_TLS_SECRET" \
+                              --namespace wiki \
+                              --cert="$T/wiki-tls.crt" \
+                              --key="$T/wiki-tls.key" \
+                              --dry-run=client -o yaml | label_all wiki "true" > "$T/wiki-tls.json"
+                        fi
                         # Values come from the printf'd 0600 temp files above,
                         # never straight from the sops paths: --from-file on a
                         # sops file would ship whatever trailing newline the
@@ -1013,7 +1046,7 @@
                               --from-file=OIDC_CLIENT_ID="$T/secret-wiki-oidc-client-id" \
                               --from-file=OIDC_CLIENT_SECRET="$T/secret-wiki-oidc-client-secret" \
                               --dry-run=client -o yaml | label_all wiki "true" > "$T/wiki-secret.json" \
-                          && cat "$T/wiki-secret.json" "$T/wiki-chart.json" > "$T/wiki.yaml" \
+                          && cat "$T/wiki-secret.json" "$T/wiki-tls.json" "$T/wiki-chart.json" > "$T/wiki.yaml" \
                           && apply_pruned "$SEL_WIKI" "wiki" "$T/wiki.yaml"
                         }; then
                           echo "error: wiki apply pass failed (see kubectl output above); the wiki stays at its previous state and the rest of the activation continues" >&2
