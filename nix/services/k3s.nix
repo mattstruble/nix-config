@@ -468,10 +468,6 @@
             WIKI_OIDC_CLIENT_ID="$(cat ${config.sops.secrets."services/wiki/oidc-client-id".path})"
             WIKI_OIDC_CLIENT_SECRET="$(cat ${config.sops.secrets."services/wiki/oidc-client-secret".path})"
             WIKI_DEPLOY=1
-            # Set when the wiki apply pass succeeds; gates the post-apply
-            # empty-database check (a failed apply leaves the previous state
-            # in the cluster, so a verdict on it would be meaningless).
-            WIKI_APPLIED=0
             for wv in "$WIKI_APP_KEY" "$WIKI_DB_PASSWORD" "$WIKI_OIDC_CLIENT_ID" "$WIKI_OIDC_CLIENT_SECRET"; do
               [ -n "$wv" ] || { echo "error: a services/wiki sops secret is empty" >&2; exit 1; }
               [ "$wv" = "unset" ] && WIKI_DEPLOY=0
@@ -602,88 +598,26 @@
               return 0
             }
 
-            # Empty-database alarm for the wiki (the failure mode is written
-            # up in the Standing notes of k8s/apps/wiki/RUNBOOK.md). A wiped
-            # /var/lib/wiki/mysql makes the MariaDB image run initdb, the
-            # BookStack container's startup `artisan migrate --force` builds
-            # a fresh empty schema, and the /status readiness probe answers
-            # 200 — its database check is a migrations-row count, which a
-            # freshly migrated schema passes. Every signal this stack ships
-            # then reads healthy while the wiki serves an empty instance
-            # with BookStack's stock default roles at the real URL.
+            # No empty-database alarm here, deliberately — see the Standing
+            # notes in k8s/apps/wiki/RUNBOOK.md. One existed and was removed,
+            # and the reason is worth keeping in mind before writing the next
+            # one. It polled for a Ready BookStack pod, counted content rows,
+            # and exited 1 when they were zero. Wrong mechanism: a oneshot that
+            # exits 1 during activation does not merely mark itself red,
+            # deploy-rs treats the whole activation as failed and rolls the
+            # entire system generation back. So a wiki with no content takes
+            # down every unrelated change riding in the same generation — the
+            # ai chart, k3s config, everything — which is exactly what happened
+            # on the wiki's first deploy, because a brand-new wiki and a wiped
+            # one are the same rows and no row count can tell them apart. A
+            # data-loss indicator that blocks deployments is not an indicator,
+            # it is an outage.
             #
-            # Why an activation check and not a PrometheusRule like the ai
-            # ones: there is no metrics path for row counts. Nothing in the
-            # wiki namespace is scraped (no mysqld-exporter, no BookStack
-            # metrics endpoint; /status is a probe target, not a metrics
-            # source), so a rule could not express the condition without
-            # introducing a whole new scrape surface — exporter, RBAC and
-            # NetworkPolicy openings — for one gauge. The checks that cannot
-            # be Prometheus already fail the apply here (podCIDR divergence,
-            # empty renders, empty sops values); this joins them.
-            #
-            # The condition: a Ready BookStack pod coexisting with zero rows
-            # in BOTH pages and shelves. Either count alone can be
-            # legitimately zero on a young wiki; both zero under a Ready pod
-            # is the freshly migrated empty schema. Fatal on purpose — the
-            # failure mode is precisely one that hides behind a green deploy,
-            # so the unit goes red and stays red (the oneshot re-runs on
-            # every boot) until a restore brings the rows back or content
-            # exists again.
-            #
-            # Known limits, stated rather than papered over: it observes only
-            # when the oneshot runs (a deploy that changes it, or a boot),
-            # and it abstains when the pod never reaches Ready inside the
-            # wait window — an unready pod is already visible in its own pod
-            # status, while a guessed verdict would be noise. A first-ever
-            # activation fires it by construction: a brand-new wiki and a
-            # wiped one are the same rows.
-            check_wiki_not_empty() {
-              local w ready counts
-              # The pod applied moments ago cannot be Ready yet on a first
-              # run (image pull + artisan migrate); 90 x 2s covers it.
-              ready=""
-              for w in $(seq 1 90); do
-                ready="$($KCTL get pods -n wiki \
-                    -l app.kubernetes.io/component=bookstack,app.kubernetes.io/part-of=wiki \
-                    -o jsonpath='{.items[*].status.conditions[?(@.type=="Ready")].status}' 2>/dev/null)"
-                case "$ready" in *True*) break ;; esac
-                sleep 2
-              done
-              case "$ready" in
-                *True*) ;;
-                *)
-                  echo "wiki: empty-database check skipped (no Ready bookstack pod within 3min); that failure is already visible in the pod's own status" >&2
-                  return 0
-                  ;;
-              esac
-              # Ask the running database directly. The password rides stdin
-              # into MYSQL_PWD so it never lands in any argv — the oneshot's
-              # children are visible in the node-wide process list.
-              #
-              # `entities` is the content table, and that choice is
-              # version-specific in a way that has already bitten once. This
-              # check was written against `pages` and `shelves`; BookStack
-              # v26.09.2 folds pages, books, chapters and bookshelves into one
-              # `entities` table discriminated by a `type` column, and drops
-              # `bookshelves` entirely (only the `bookshelves_books` join table
-              # survives). The old query therefore errored, stderr was
-              # discarded, stdout came back empty, and empty was read as
-              # "inconclusive" — a guard that cannot fire, reporting success.
-              # That is the worst shape a check can have, because it is trusted.
-              # Hence the failure branch below names schema drift as the first
-              # suspect instead of hiding behind one word.
-              counts="$(printf '%s' "$WIKI_DB_PASSWORD" | $KCTL exec -i -n wiki deploy/wiki-mariadb -- \
-                  sh -c 'MYSQL_PWD=$(cat) mariadb -u bookstack -N -B bookstack -e "SELECT COUNT(*)=0 FROM entities"' 2>/dev/null)"
-              if [ "$counts" = "1" ]; then
-                echo "error: WIKI EMPTY-DATABASE ALARM: a Ready BookStack pod coexists with zero rows in \`entities\` — the MariaDB datadir was (re)initialised empty and the wiki is serving a freshly migrated instance with stock default roles at its real URL. Restore the database (Standing notes, k8s/apps/wiki/RUNBOOK.md) or accept the loss; the unit stays red until content exists again." >&2
-                exit 1
-              fi
-              if [ "$counts" != "0" ]; then
-                echo "wiki: empty-database check INCONCLUSIVE (query returned: ''${counts}). First suspect is a BookStack schema change: this counts rows in \`entities\`, and the pinned image has already renamed the content tables once (pages/shelves -> entities at v26.09.2). If the image was just bumped, update this query and the manual query in k8s/apps/wiki/RUNBOOK.md — a dead alarm is worse than no alarm. Left non-fatal on purpose: a renamed table must not block an unrelated deploy." >&2
-              fi
-              return 0
-            }
+            # The failure mode it guarded against is real and now unguarded;
+            # it is cheaper to notice by looking than to have it fail a deploy.
+            # If the wiki one day gets an exporter the check belongs in a
+            # PrometheusRule, where a verdict is an alert instead of a
+            # rollback.
 
             # Fill the sops placeholders in the values, render kps, and build the
             # grafana admin Secret. Done in a temp dir so nothing leaks to the store.
@@ -1062,8 +996,6 @@
                           && apply_pruned "$SEL_WIKI" "wiki" "$T/wiki.yaml"
                         }; then
                           echo "error: wiki apply pass failed (see kubectl output above); the wiki stays at its previous state and the rest of the activation continues" >&2
-                        else
-                          WIKI_APPLIED=1
                         fi
                       else
                         echo "wiki: OIDC client values are still the 'unset' sentinel; skipping the wiki pass. Create the Pocket ID client, put its id and secret into nix/services/homelab/homelab-wiki-secrets.yaml, and re-activate."
@@ -1071,13 +1003,6 @@
                     } \
                 && { if [ "$CRDS_NEW" -eq 1 ]; then
                     $KCTL rollout restart deploy/kps-kube-prometheus-stack-operator --namespace monitoring
-                  fi
-                  # Runs only after every apply pass succeeded, so a red
-                  # verdict here is the alarm, not noise from a half-applied
-                  # deploy. check_wiki_not_empty exits the script itself on
-                  # alarm; the CRD restart above already happened.
-                  if [ "$WIKI_APPLIED" = "1" ]; then
-                    check_wiki_not_empty
                   fi
                   exit 0
                 }

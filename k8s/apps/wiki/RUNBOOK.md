@@ -301,37 +301,46 @@ can be correct while the direct fetch is not.
   redoing section 6 from memory. When the backup work is filed, the acceptance
   criterion that matters is a rehearsed restore, not a timer that might be
   firing.
-- **An empty database reads as healthy — until the activation check says
-  otherwise.** If `/var/lib/wiki/mysql` is ever gone — wiped host directory,
-  replaced NVMe, the PV recreated against a fresh tmpfiles directory, or a
-  partial restore that brought back the uploads tree but not the mysql tree —
-  the MariaDB image runs initdb, BookStack's startup `artisan migrate --force`
-  builds a fresh empty schema, and `/status` answers 200 because its database
-  check is a migrations-row count, which a freshly migrated schema passes.
-  The pod reports Ready and serves an empty instance with BookStack's stock
-  default roles at the real URL; readiness, probes and the pod-level
-  monitoring alerts all stay green. There is no metrics path for row counts,
-  so the alarm is an activation-time check at the end of `ai-chart-apply`: a
-  Ready BookStack pod coexisting with zero rows in `entities` fails the unit
-  with a `WIKI EMPTY-DATABASE ALARM` line in the journal, and it stays failed
-  until a restore brings the rows back or content exists again. Its limits: it
-  observes only when that unit runs (a deploy that changes the charts, or a
-  boot), it abstains while no BookStack pod is Ready, and a first-ever
-  activation fires it by construction — a brand-new wiki and a wiped one are
-  the same rows, so the expected first-run sequence is alarm, restore (or start
-  writing), green.
+- **An empty database reads as healthy, and nothing will tell you.** If
+  `/var/lib/wiki/mysql` is ever gone — wiped host directory, replaced NVMe,
+  the PV recreated against a fresh tmpfiles directory, or a partial restore
+  that brought back the uploads tree but not the mysql tree — the MariaDB
+  image runs initdb, BookStack's startup `artisan migrate --force` builds a
+  fresh empty schema, and `/status` answers 200 because its database check is
+  a migrations-row count, which a freshly migrated schema passes. The pod
+  reports Ready and serves an empty instance with BookStack's stock default
+  roles at the real URL; readiness, probes and the pod-level monitoring
+  alerts all stay green.
 
-  **Why `entities`, and why this note is here.** The check originally counted
-  `pages` and `shelves`. BookStack v26.09.2 has neither: pages, books, chapters
-  and bookshelves were folded into one `entities` table discriminated by a
-  `type` column, and `bookshelves` disappeared outright — only the
-  `bookshelves_books` join table remains. The old query therefore errored,
-  stderr was discarded, stdout came back empty, and empty was read as
-  "inconclusive". The alarm reported success for a check that could not fire.
-  That is the failure mode to watch for on every image bump: a renamed table
-  does not break the deploy, it silently disarms the guard that was supposed to
-  notice a wiped database. If you bump the BookStack image, re-run the query
-  below by hand and confirm it still resolves.
+  **There is no automated alarm for this, on purpose.** One was built, and it
+  fired on the wiki's first deploy. It polled for a Ready BookStack pod,
+  counted content rows, and exited 1 when they were zero. That is the wrong
+  mechanism twice over. A oneshot that exits 1 during activation does not
+  merely mark itself red: deploy-rs treats the whole activation as failed and
+  rolls the entire system generation back, so a wiki with no content took
+  down the generation that deployed it along with every unrelated change
+  riding inside. And the check could not tell a wiped wiki from a brand-new
+  one, because they are the same rows — so beyond being disproportionate it
+  was frequently wrong. A data-loss indicator that blocks deployments is not
+  an indicator, it is an outage. If the wiki ever grows a metrics endpoint,
+  the check belongs in a PrometheusRule, where a verdict is an alert a human
+  can dismiss rather than a rollback.
+
+  **What to watch instead.** The condition is one query away, and the honest
+  trigger is a change of expectation rather than a row count: zero rows is
+  correct the day the wiki is installed and alarming the day after it had
+  hundreds. Only you know which day it is — which is the deeper reason no
+  automated check can own this one.
+
+  **Why `entities`.** BookStack v26.09.2 has no `pages`, `books`, `chapters`
+  or `bookshelves` tables. Those entities were folded into a single `entities`
+  table discriminated by a `type` column, and only the `bookshelves_books`
+  join table survives from the shelf side. The removed check was written
+  against the old names, so its query errored on a missing table; stderr was
+  discarded, stdout came back empty, and empty was read as "inconclusive". It
+  reported success for a check that could not fire. That is the failure mode
+  to look for on every image bump: a renamed table does not break the deploy,
+  it silently disarms the guard that was supposed to notice a wiped database.
 
   Checking by hand:
 
@@ -342,10 +351,9 @@ can be correct while the direct fetch is not.
   ```
 
   (`-p` prompts; the password is `DB_PASSWORD` in the `bookstack` Secret, see
-  `SECRETS.md`.) To see what the rows actually are, `select type, count(*) from
+  `SECRETS.md`.) To see what the rows are, `select type, count(*) from
   entities group by type`. Recovery is the rehearsed restore from the note
-  above; with no backup, the empty instance is the state of the world and the
-  alarm clears once content exists again.
+  above; with no backup, the empty instance is simply the state of the world.
 - **A role rename strips membership** unless the role has an Authentication ID.
   When you create a role, give it one if any Pocket ID group maps to it. The
   exception is deliberate and it is in 6.2: the `no-access` default role stays
