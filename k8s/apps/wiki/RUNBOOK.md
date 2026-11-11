@@ -63,10 +63,15 @@ only, which is the point of it not being `homelab-secrets.yaml`.
 
 ## 4. Deploy
 
+Add the LAN DNS record first — `wiki.mjolnir` → `10.0.0.4`. The `.mjolnir`
+zone is per-host, not a wildcard, so it does not arrive on its own the way
+`grafana.mjolnir` already has.
+
 ```
 just deploy mjolnir
 journalctl -u ai-chart-apply -b | grep -i wiki
 kubectl -n wiki get pods
+kubectl -n wiki get ingress    # HOSTS should read wiki.mjolnir
 ```
 
 BookStack should be `Running` and `1/1 ready`. Its readiness probe is `/status`,
@@ -308,9 +313,16 @@ treat them as first-run unknowns rather than as things that work:
   canonical-URLs phase 0 (CoreDNS views) is the fix that makes the name resolve
   on-LAN and lets the `/32` go away.
 - **The LAN route, and what it is not.** The wiki is served at
-  `https://wiki.mjolnir` through traefik, which resolves to the node from LAN
-  DNS (outside this repo, the same way `grafana.mjolnir` does). Two consequences
-  worth knowing before you rely on it:
+  `https://wiki.mjolnir` through traefik. That name needs a record in LAN DNS
+  pointing at the node (10.0.0.4), and it is **not** there yet: the `.mjolnir`
+  zone is per-host rather than a wildcard, verified on the node where
+  `grafana.mjolnir` resolves and `wiki.mjolnir` does not. Add the record before
+  concluding anything from a failed load — an Ingress that is correctly wired
+  and correctly permitted still produces a browser that never gets an answer,
+  which is indistinguishable from the NetworkPolicy rule being missing. DNS
+  first, then the policy, then the app.
+
+  Two consequences worth knowing before you rely on it:
 
   - It is **LAN-only by construction, not by policy.** Nothing listens for the
     wiki on a public interface; the published path still requires the Pangolin

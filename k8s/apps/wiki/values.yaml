@@ -78,8 +78,12 @@ ingress:
   # — without that rule the Ingress object is valid, the pod reports Ready,
   # and every request is dropped in silence.
   #
-  # `wiki.mjolnir` resolves to the node (10.0.0.4) from LAN DNS, which lives
-  # outside this repo, the same way `grafana.mjolnir` does.
+  # `wiki.mjolnir` must resolve to the node (10.0.0.4) in LAN DNS. It is NOT
+  # automatic: the `.mjolnir` zone is per-host, not a wildcard — verified on
+  # the node, where grafana.mjolnir resolves and wiki.mjolnir does not. Until
+  # that record is added the Ingress is live and unreachable, which from
+  # outside looks identical to the NetworkPolicy rule being missing: a browser
+  # that never gets an answer. Check DNS first.
   enabled: true
   className: traefik
   # Must equal bookstack.appUrl's host; the render fails when it does not.
