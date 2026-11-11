@@ -14,25 +14,80 @@ mistake.
 
 ## 1. Create the OIDC client in Pocket ID
 
-Administration → OIDC Clients → Add OIDC Client.
+Pocket ID 2.18.0 on roque, `APP_URL = https://auth.struble.app`
+(`nix/services/homelab/homelab.nix`). Verified against its live discovery
+ document, which is what makes the values below safe rather than hopeful:
 
-Use the **LAN** hostname below. It is `wiki.mjolnir` today because that is the
-only name the wiki is served on (the Ingress in `templates/ingress.yaml`);
-`wiki.struble.app` does not resolve to this cluster yet. BookStack builds the
-redirect URI from `bookstack.appUrl`, so these strings have to match that value
-character for character — the render refuses if `appUrl` and the Ingress host
-disagree, but nothing can stop the Pocket ID client from being wrong.
+- `issuer` is exactly `https://auth.struble.app` — the same string as
+  `oidc.issuer`, which is the pairing the `oidc-issuer-linked` CI job guards.
+- `scopes_supported` includes `groups`, and `claims_supported` lists `groups`.
+  The chart requests it via `OIDC_ADDITIONAL_SCOPES`; without that the claim is
+  simply absent and every user loses their roles at their next login.
+- `code_challenge_methods_supported` includes `S256`, so PKCE genuinely works
+  here. (BookStack has required it since v24.02; that used to be a citation in
+  this file, and it is now a measurement.)
+- `id_token_signing_alg_values_supported` is `RS256`, the only algorithm
+  BookStack implements.
+- `end_session_endpoint` is published, which is what makes
+  `OIDC_END_SESSION_ENDPOINT=true` resolve to a real URL. In BookStack that
+  variable is tri-state — `false` disables RP-initiated logout, `true` takes the
+  URL from discovery, a string is used verbatim.
 
-| field | value |
-|---|---|
-| Name | `BookStack` |
-| Redirect URI | `https://wiki.mjolnir/oidc/callback` |
-| Redirect URIs (logout) | `https://wiki.mjolnir/`<br>`https://wiki.mjolnir/login`<br>`https://wiki.mjolnir/login?prevent_auto_init=true` |
-| General → PKCE | **on** — stated as a BookStack requirement since v24.02; stated, not measured (no changelog entry is cited here and nothing in this repo exercises the PKCE path) |
+### The client
 
-All three logout URIs, not just the callback: BookStack picks one depending on
-where you were standing when you logged out, and a mismatch looks like a logout
-that silently fails. Copy the client ID and secret — the secret is shown once.
+Use the **LAN** hostname. It is `wiki.mjolnir` today because that is the only
+name the wiki is served on (see the HSTS note under "What this runbook cannot
+check for you"). BookStack builds its redirect URI from `bookstack.appUrl`, so
+these strings must match that value character for character — the render refuses
+when `appUrl` and the Ingress host disagree, but nothing here can stop the
+Pocket ID client from being wrong.
+
+1. **Administration → OIDC Clients → Add OIDC Client.** Name `BookStack`,
+   client type **confidential** — BookStack has a backend and can hold a secret.
+   Callback URL:
+
+   ```
+   https://wiki.mjolnir/oidc/callback
+   ```
+
+2. **Create**, then copy the **Client ID** and **Client secret**. The secret is
+   shown once.
+
+3. On the client's **General** tab, turn on **PKCE** and **Save** — it is a
+   toggle applied after creation, not a field in the create form.
+
+4. Still on **General**, turn on **Skip Consent Screen**.
+
+   This one is easy to skip and hard to diagnose. Pocket ID shows a consent
+   screen on first sign-in to any client, listing the email, profile and
+   **groups** it is about to release. Decline that, or have a second user who
+   reads the screen more carefully than expected, and the `groups` claim never
+   arrives: logins succeed, roles never sync, and nothing on either side logs an
+   error. BookStack is this cluster's own app, so it is a trusted client.
+
+5. On the client's **Access** tab, set **Allowed User Groups** to *Selected user
+   groups* and tick `wiki-admin`, `family`, `plex-users` — created in section 2.
+   A new client admits **nobody** until this is set; everyone else gets "You are
+   not allowed to access this service", which reads as a Pocket ID fault rather
+   than an unconfigured client.
+
+### Logout callback URLs
+
+Pocket ID keeps **Logout Callback URLs** as a separate list from the callback
+URL, and matches both **exactly** unless a URL contains a wildcard — it no
+longer remembers the first redirect URI an app sends. Register all three:
+
+```
+https://wiki.mjolnir/
+https://wiki.mjolnir/login
+https://wiki.mjolnir/login?prevent_auto_init=true
+```
+
+BookStack picks one depending on where you were standing when you logged out, so
+a missing entry looks like a logout that silently does nothing. Wildcards are
+available if this becomes tedious, but they do not help much here: a globstar
+(`**`) covers path segments only, so it cannot reach the `?prevent_auto_init`
+query string that distinguishes the third entry.
 
 The browser will warn: the certificate is self-signed and regenerated at every
 activation, so expect to re-accept it after a redeploy. That is the accepted
@@ -46,10 +101,10 @@ Administration → User Groups. The **Name** field is what matters: Pocket ID
 emits group names (not friendly names) in the `groups` claim, and BookStack
 matches them lower-cased with spaces turned into hyphens.
 
-Create `wiki-admin`, `family`, `plex-users`. Then on the **client's** Access
-tab, add them to **Allowed User Groups**. A group that exists but is not allowed
-on the client cannot sign in at all — this is the step that is easy to miss and
-produces "my wife got access denied from Pocket ID".
+Create `wiki-admin`, `family`, `plex-users`. Then finish the client's **Access**
+tab from section 1 step 5 — a group that exists but is not allowed on the client
+cannot sign in at all, which is the step that gets missed and produces "my wife
+got access denied from Pocket ID".
 
 ## 3. Put the values where mjolnir can read them
 
