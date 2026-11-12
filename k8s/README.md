@@ -111,3 +111,4 @@ access; the config validates and extracts without it, but nothing files a PR.
 - **Resource limits on every pod.**
 - Fork-binary models (`nixBinary: true`) hardcode a `/nix/store/<hash>` path — update it when the fork is rebuilt.
 - `k8s/manifests/` is auto-applied by k3s at node start; keep it node-agnostic (per-node files go in `manifests/<node>/` if that day comes).
+- **What a document may contain** is written once, in [AGENTS.md](../AGENTS.md), which governs this file too.
