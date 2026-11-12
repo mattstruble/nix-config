@@ -35,15 +35,22 @@ so there is no window where the route exists before the traffic is allowed.
 */ -}}
 {{- if .Values.ingress.enabled -}}
 {{- /*
-  APP_URL and the Ingress host must be the same hostname. BookStack derives
-  the OIDC redirect_uri from APP_URL while traefik routes on the Host header,
-  so a mismatch produces a login that dies at the IdP with invalid_redirect_uri
-  — a remote error, with nothing in the pod's logs pointing here. Caught at
-  render because both values live in one file and only a human can fix it.
+  APP_URL and the Ingress host must be the same hostname, and APP_URL must be
+  https. BookStack derives the OIDC redirect_uri from APP_URL while traefik
+  routes on the Host header, so a mismatch produces a login that dies at the
+  IdP with invalid_redirect_uri — a remote error, with nothing in the pod's
+  logs pointing here. The scheme is checked for the same reason: Pocket ID has
+  only the https URI registered for the client, so an http APP_URL fails every
+  login at the IdP too. Both are caught at render because the values live in
+  one file and only a human can fix them.
 */ -}}
 {{- $appHost := (urlParse .Values.bookstack.appUrl).host -}}
 {{- if ne $appHost .Values.ingress.host -}}
   {{- fail (printf "bookstack.appUrl (%s) and ingress.host (%s) name different hosts. BookStack sends the OIDC redirect_uri built from APP_URL, and Pocket ID only accepts the URIs registered for the client, so a mismatch fails every login at the IdP. Point both at the same hostname, then register https://<that>/oidc/callback plus the logout URIs in RUNBOOK.md section 1." .Values.bookstack.appUrl .Values.ingress.host) -}}
+{{- end -}}
+{{- $appScheme := (urlParse .Values.bookstack.appUrl).scheme -}}
+{{- if ne $appScheme "https" -}}
+  {{- fail (printf "bookstack.appUrl (%s) is not https. BookStack builds the OIDC redirect_uri from APP_URL, and Pocket ID has only the https URI registered for the client, so a non-https appUrl fails every login at the IdP with invalid_redirect_uri. Make bookstack.appUrl an https:// URL." .Values.bookstack.appUrl) -}}
 {{- end -}}
 apiVersion: networking.k8s.io/v1
 kind: Ingress
