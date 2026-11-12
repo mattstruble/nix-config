@@ -48,7 +48,7 @@ checks it and refuses to render.
 */ -}}
 {{- $egressCidrs := .Values.oidc.egressCidrs -}}
 {{- if not $egressCidrs -}}
-  {{- fail "oidc.egressCidrs must list at least one CIDR. An empty list is not a refusal: it renders the TCP/443 egress rule with no `to` peer, and a NetworkPolicy rule with no peer matches EVERY destination — so emptying it opens 443 from the bookstack pod to the whole internet. List the IdP's segment (the default, 10.0.0.0/24), or delete the rule from templates/networkpolicy.yaml to actually close it." -}}
+  {{- fail "oidc.egressCidrs must list at least one CIDR. An empty list is not a refusal: it renders the TCP/443 egress rule with no `to` peer, and a NetworkPolicy rule with no peer matches EVERY destination — so emptying it opens 443 from the bookstack pod to the whole internet. List the IdP address as a /32 — values.yaml records the measured one under oidc.egressCidrs — or delete the rule from templates/networkpolicy.yaml to actually close it." -}}
 {{- end -}}
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy

@@ -150,14 +150,17 @@ oidc:
   # what makes this list easy to get wrong, because the name and the address
   # it resolves to are not on the same network:
   #
-  #   - 10.0.0.0/24 — Pocket ID runs on roque, and roque advertises this
-  #     segment to the tailnet (nix/services/homelab/homelab.nix,
-  #     --advertise-routes). This covers a pod that reaches the IdP by LAN.
-  #   - the edge /32 — but the pod resolves `auth.struble.app` through public
-  #     DNS, which answers with the Pangolin edge, not with roque. The fetch
-  #     therefore leaves the cluster for the edge address and tunnels back.
-  #     With only the /24 above, the discovery request is dropped and no login
-  #     ever completes, while every pod reports Healthy.
+  #   - the edge /32 — the pod resolves `auth.struble.app` through public DNS,
+  #     which answers with the Pangolin edge, not with roque. The fetch leaves
+  #     the cluster for that address and tunnels back.
+  #
+  # The LAN segment is deliberately absent. It was listed on the theory that a
+  # pod might reach Pocket ID on roque over the LAN; measured 2026-11-12 that
+  # never happens, and the segment cost far more than it bought. It contains
+  # the node itself, where traefik answers for every SNI route in the cluster —
+  # from this pod, `https://10.0.0.4` with SNI `grafana.mjolnir` returned 302 —
+  # plus the router's admin interface (200) and the NAS (200). roque is reached
+  # over the tailnet at 100.110.196.68, which is not in this segment.
   #
   # The edge address is a public IP this file cannot observe and nothing in
   # this repo records it, so nothing checks it either: if the VPS moves, this
@@ -181,7 +184,6 @@ oidc:
   # list; to actually close the traffic, delete the rule from
   # templates/networkpolicy.yaml.
   egressCidrs:
-    - 10.0.0.0/24
     # The Pangolin edge, as observed resolving auth.struble.app. Not recorded
     # anywhere else in this repo and unchecked here; if it goes stale, nothing
     # fails — see the note on oidc.egressCidrs above.

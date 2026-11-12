@@ -385,7 +385,7 @@ treat them as first-run unknowns rather than as things that work:
   a public address, not a `10.0.0.x` one. So the discovery request leaves the
   cluster for the edge and tunnels back, and an egress list holding only the
   private segment drops it while every pod still reports Ready. That is why
-  `oidc.egressCidrs` carries the edge `/32` alongside `10.0.0.0/24`. The edge
+  `oidc.egressCidrs` carries the edge `/32`. The edge
   address is not recorded anywhere else in this repo, so if the VPS moves this
   breaks and nothing here will tell you why until you read this paragraph —
   canonical-URLs phase 0 (CoreDNS views) is the fix that makes the name resolve
