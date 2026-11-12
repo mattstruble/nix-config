@@ -36,6 +36,25 @@ jobs:
         run: |
           set -uo pipefail
           FILES=(k8s/apps/ai/values.yaml k8s/apps/ai/values/*.yaml k8s/apps/wiki/values.yaml)
+          # The ratio below can only compare what the globs matched: a missing
+          # or renamed file lowers both counts and the equality still holds, so
+          # the file list rotting is precisely what it cannot notice. Assert
+          # the expected files are present and non-empty first, naming what is
+          # missing, so a shrunken list fails loudly instead of passing. A glob
+          # that matches nothing stays a literal pattern in the array (no
+          # nullglob), so the -f test catches it and names the pattern.
+          missing=""
+          for f in "${FILES[@]}"; do
+            if [ ! -f "$f" ]; then
+              missing="$missing $f"
+            elif [ ! -s "$f" ]; then
+              missing="$missing $f (empty)"
+            fi
+          done
+          if [ -n "$missing" ]; then
+            echo "::error::expected values files missing or empty:$missing - the digest check would run on a shrunken file list and pass vacuously"
+            exit 1
+          fi
           # Same shape Renovate reads (renovate.json customManagers): any key ending
           # in image:/Image:, not just a literal `image:`, and any whitespace after it.
           # A literal `image: ` pattern matches 9 of the 11 pins — it misses the two
