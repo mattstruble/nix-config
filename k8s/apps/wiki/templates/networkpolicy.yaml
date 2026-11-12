@@ -16,12 +16,11 @@ in document order — so the deny lands first.
 
 Three policies, and the set is closed: anything not written here is dropped.
   1. deny everything, both directions, for every pod in the namespace
-  2. bookstack: in from the LAN Ingress and the edge connector; out to DNS,
+  2. bookstack: in from the LAN Ingress; out to DNS,
      the database, and 443 to the OIDC issuer
   3. mariadb:   in from bookstack only; no egress at all
 
-Two ingress paths reach BookStack, and each is a separate rule because they
-carry different trust:
+One ingress path reaches BookStack:
 
   - traefik, for the LAN Ingress (templates/ingress.yaml). Traefik is a pod
     in kube-system, not hostNetwork, so the source is the pod and the
@@ -29,10 +28,6 @@ carry different trust:
     than the pod CIDR keeps every other pod in the cluster out; allowing the
     CIDR would let any pod in the cluster reach BookStack directly and skip
     whatever the edge eventually decides.
-  - the Pangolin connector, for the published path. It names the `edge`
-    namespace and a connector pod label that do not exist yet, so that rule
-    matches nothing today — the correct reading until the connector lands,
-    not a mistake to fix in advance.
 
 Nothing about the wiki's exposure is decided by anything outside this file.
 Setting ingress.enabled false removes the traefik rule in the same apply,
@@ -79,7 +74,12 @@ spec:
     # The LAN path: traefik, and only traefik. This rule is the difference
     # between an Ingress that works and an Ingress that looks healthy while
     # every request is dropped, because the namespace default-deny above
-    # otherwise swallows the proxied connection.
+    # otherwise swallows the proxied connection. It is also what
+    # bookstack.trustedProxies in values.yaml depends on: it trusts
+    # X-Forwarded-* from the whole pod CIDR only because this is the only
+    # ingress peer, so add a peer here without narrowing it and login
+    # throttling collapses onto one bucket and every audit line records the
+    # forged source IP.
     {{- if .Values.ingress.enabled }}
     - from:
         - namespaceSelector:
@@ -92,19 +92,6 @@ spec:
         - protocol: TCP
           port: {{ .Values.bookstack.port }}
     {{- end }}
-    # The published path, once the Pangolin connector exists. Kept now so the
-    # connector's only job is to arrive with the right labels, not to edit a
-    # policy that guards a login page.
-    - from:
-        - namespaceSelector:
-            matchLabels:
-              kubernetes.io/metadata.name: edge
-          podSelector:
-            matchLabels:
-              app.kubernetes.io/component: connector
-      ports:
-        - protocol: TCP
-          port: {{ .Values.bookstack.port }}
   egress:
     # Service discovery for `mariadb`. Without this the pod cannot even
     # resolve its own database, which is the failure mode a default-deny-egress

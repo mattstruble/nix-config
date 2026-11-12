@@ -62,6 +62,15 @@ bookstack:
   # pod IP because that IP is reassigned on every restart; it is the same
   # `clusterCidr` the host firewall scopes its probe rule to. Widening it
   # further would let any pod in the cluster forge a client address.
+  #
+  # It is safe only because the bookstack NetworkPolicy admits nothing to
+  # this pod except traefik: any pod in the cluster can assert a client IP,
+  # which is fine while the only thing that can reach port 80 is the
+  # ingress, and stops being fine the moment any other ingress rule is
+  # added. If that happens without narrowing this value, login throttling
+  # collapses onto one bucket and every audit line records the forged
+  # source IP — the same consequence as the empty case above, through a
+  # wider door.
   trustedProxies: "10.42.0.0/16"
   resources:
     requests:

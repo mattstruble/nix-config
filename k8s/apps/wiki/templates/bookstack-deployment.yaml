@@ -29,9 +29,8 @@
 # at init, whose egress is limited to its own database, DNS, and TCP/443 to
 # the one public Pangolin /32 that oidc.egressCidrs still holds — values.yaml
 # records why the LAN segment was measured away rather than kept. The
-# bookstack NetworkPolicy admits two peers: the LAN, which matches and does
-# reach this pod, and a connector rule naming an `edge` namespace and pod
-# label that do not exist yet, so that second rule matches nothing today.
+# bookstack NetworkPolicy admits one peer: the LAN, which matches and does
+# reach this pod.
 # What keeps this pod off the internet is therefore not the policy but the
 # absence of a publisher — nothing publishes wiki.mjolnir to the edge
 # (RUNBOOK.md, "What this runbook cannot check for you" — the tunnel). The
