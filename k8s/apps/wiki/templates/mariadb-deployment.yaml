@@ -159,7 +159,16 @@ spec:
         - name: data
           persistentVolumeClaim:
             claimName: wiki-data
+        # Both scratch volumes carry a sizeLimit. An emptyDir with no limit is
+        # charged to the node's root filesystem with no ceiling, and on this
+        # single node that is the partition holding the Nix store and the
+        # container images. `run` holds only the socket and pidfile; 1Gi on
+        # `tmp` is generous for a wiki-sized database's temp tables, and
+        # exceeding it evicts this pod rather than filling the root — the
+        # failure is visible and self-limiting instead of taking the node.
         - name: run
-          emptyDir: {}
+          emptyDir:
+            sizeLimit: 32Mi
         - name: tmp
-          emptyDir: {}
+          emptyDir:
+            sizeLimit: 1Gi

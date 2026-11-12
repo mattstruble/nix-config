@@ -194,6 +194,13 @@ persistence:
   # /config (which holds storage/ and public/uploads/). A DB-only volume
   # would lose every uploaded image on a pod delete, silently, because the
   # volume is node-pinned and reschedules are rare enough to never notice.
+  #
+  # What `size` does NOT do: enforce anything at runtime. This is a statically
+  # created local PV (k8s/manifests/wiki-local-pv.yaml), so the number is used
+  # only to match the claim to the volume at admission. Nothing stops the
+  # database and the uploads from writing past 10Gi — the real ceiling is the
+  # NVMe partition under the PV's host path, and filling it is a node-level
+  # failure, not a pod-level one. The number here is a label, not a guard.
   size: 10Gi
   # The storage class and the host directory are deliberately NOT values:
   # the claim hardcodes storageClassName: wiki-data (templates/pvc.yaml) to
