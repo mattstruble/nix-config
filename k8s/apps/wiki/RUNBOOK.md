@@ -372,6 +372,25 @@ can be correct while the direct fetch is not.
   `SECRETS.md`.) To see what the rows are, `select type, count(*) from
   entities group by type`. Recovery is the rehearsed restore from the note
   above; with no backup, the empty instance is simply the state of the world.
+- **A Retain PV does not rebind after its claim is deleted.** The PV is
+  `persistentVolumeReclaimPolicy: Retain` and pre-bound to `wiki-data`
+  (k8s/manifests/wiki-local-pv.yaml). Delete the claim and the PV goes to
+  `Released`, not `Available`, and the PV controller binds only `Available`
+  and `Failed` volumes. So the ordinary restore sequence — delete the PVC,
+  re-apply the manifest, let it rebind — leaves the new claim `Pending`
+  forever, with `kubectl describe pv wiki-data` still naming the claim and no
+  event naming the cause. The fix is to clear the stale `claimRef` so the
+  volume returns to `Available`:
+
+  ```
+  kubectl patch pv wiki-data -p '{"spec":{"claimRef":null}}'
+  ```
+
+  Order matters. Clear the `claimRef` only after the new claim exists: with
+  the volume `Available` and no claim in the wiki namespace, any claim in any
+  namespace asking for this storage class can win it — the exact thing the
+  pre-binding exists to prevent. Delete the PVC, re-apply the manifest, then
+  patch.
 - **A role rename strips membership** unless the role has an Authentication ID.
   When you create a role, give it one if any Pocket ID group maps to it. The
   exception is deliberate and it is in 6.2: the `no-access` default role stays
