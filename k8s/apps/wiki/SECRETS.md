@@ -111,7 +111,7 @@ live connections break at step 1:
    (the old password at the prompt, so it stays out of any argv), then
    `SET PASSWORD = '<the new password>';` — an account can always change its
    own password, and the bookstack account is the only one here that needs
-   changing (the root password died with the initdb pod's stdout).
+   changing — the root password is not needed for the rotation at all.
 2. `k3s kubectl delete secret bookstack -n wiki` — that Secret is the guard's
    memory; deleting it is the statement that the database now agrees with
    sops.

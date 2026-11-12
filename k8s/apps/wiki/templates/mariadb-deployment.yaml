@@ -83,11 +83,18 @@ spec:
             # known root credential — BookStack connects as the application
             # user above — so the password is random. It applies only to
             # root@localhost (see MARIADB_ROOT_HOST below) and is printed to
-            # this container's stdout once, by the pod that runs initdb; the
-            # monitoring pipeline redacts it before Loki. If that pod's log is
-            # gone, recovery is to start a server against this data dir with
-            # --skip-grant-tables and SET PASSWORD for root@localhost. Ignored
-            # once the data dir exists, so it is inert after initdb.
+            # this container's stdout once, by the pod that runs initdb. The
+            # kubelet persists that stdout to a log file on the node, so the
+            # password stays recoverable via `kubectl logs` for as long as that
+            # log file exists. The monitoring pipeline redacts it before Loki —
+            # Loki only; the host log file and `kubectl logs` still carry the
+            # full line. The redaction is at read time and Loki receives lines
+            # only through Alloy, so there is no window where the line reaches
+            # Loki unredacted, on a fresh install or otherwise. If the log file
+            # is gone, recovery is to start a server against this data dir with
+            # --skip-grant-tables and SET PASSWORD for root@localhost — the last
+            # resort, after `kubectl logs`. Ignored once the data dir exists, so
+            # it is inert after initdb.
             - name: MARIADB_RANDOM_ROOT_PASSWORD
               value: "1"
             # The entrypoint defaults this to '%' and, during initdb, creates
