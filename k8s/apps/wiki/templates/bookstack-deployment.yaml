@@ -26,12 +26,16 @@
 #
 # The trade is deliberate and it is bounded by the network policies, not by
 # the container: a PHP application, patched by a digest bump, running as root
-# at init, whose egress is limited to its own database, DNS and 443 to the
-# IdP's private segment. What bounds the ingress side today is not a policy
-# but the absence of a path: the single ingress rule names an `edge` namespace
-# and a connector pod label that do not exist, so nothing outside the cluster
-# can reach this pod and the wiki is published by nothing (RUNBOOK.md, "What
-# this runbook cannot check for you" — the tunnel). The exception is written
+# at init, whose egress is limited to its own database, DNS, and TCP/443 to
+# the one public Pangolin /32 that oidc.egressCidrs still holds — values.yaml
+# records why the LAN segment was measured away rather than kept. The
+# bookstack NetworkPolicy admits two peers: the LAN, which matches and does
+# reach this pod, and a connector rule naming an `edge` namespace and pod
+# label that do not exist yet, so that second rule matches nothing today.
+# What keeps this pod off the internet is therefore not the policy but the
+# absence of a publisher — nothing publishes wiki.mjolnir to the edge
+# (RUNBOOK.md, "What this runbook cannot check for you" — the tunnel). The
+# exception is written
 # against the state after the connector lands, where it becomes a public PHP
 # app reachable through exactly one connector pod; that is the blast radius
 # being accepted here, not today's.

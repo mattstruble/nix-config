@@ -899,10 +899,11 @@
                       # nothing ties it to the PV capacity) makes the existing
                       # claim mismatch its own immutable spec, kubectl answers
                       # "field is immutable", and apply_pruned is not
-                      # idempotent under that — so the retry loop this pass
-                      # lives in would hammer the same rejection 150 times
-                      # over 5min and then fail
-                      # the whole activation.
+                      # idempotent under that. The pass runs once, because it
+                      # sits in the && chain that ends in exit 0, so the
+                      # rejection is seen once and the activation continues;
+                      # it is not retried because retrying cannot fix an
+                      # immutable-spec rejection.
                       #
                       # What it needs, all of it above: the wiki namespace and
                       # its PSS label (top of each loop iteration), the 0600

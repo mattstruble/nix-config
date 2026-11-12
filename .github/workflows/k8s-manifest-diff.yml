@@ -145,10 +145,15 @@ jobs:
           # the argument is --from-file=KEY="$T/..." and only the key half is
           # stable. The block runs from the bookstack command to the first
           # line that ends the shell command - no trailing backslash, or a
-          # line STARTING a new command (&& / ;), checked before extraction
-          # so a later command's --from-file cannot leak into the created
-          # set - thus neither the presence of --dry-run nor the order of the
-          # remaining flags is load-bearing.
+          # line containing && or ; anywhere (the awk matches both mid-line,
+          # not just at the start), checked before extraction so a later
+          # command's --from-file cannot leak into the created set - thus
+          # neither the presence of --dry-run nor the order of the remaining
+          # flags is load-bearing. The match is content-blind: a ; inside a
+          # quoted --from-file value would end the block early, and the
+          # created set would lose a key. That is loud, not silent: the
+          # comparison below requires every key the chart uses to be in
+          # created, so a missing key fails the job.
           created=$(awk '
                       $0 ~ /create secret generic bookstack/ { inblock = 1; start = 1 }
                       inblock {
