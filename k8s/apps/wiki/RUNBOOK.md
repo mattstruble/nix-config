@@ -66,10 +66,11 @@ Pocket ID client from being wrong.
    error. BookStack is this cluster's own app, so it is a trusted client.
 
 5. On the client's **Access** tab, set **Allowed User Groups** to *Selected user
-   groups* and tick `wiki-admin`, `family`, `plex-users` — created in section 2.
-   A new client admits **nobody** until this is set; everyone else gets "You are
-   not allowed to access this service", which reads as a Pocket ID fault rather
-   than an unconfigured client.
+   groups* and tick `wiki-admin`, `family`, `plex-users` — created in section 2,
+   so this step shows no wiki groups to tick until section 2 is done, and that
+   is expected, not a broken setup. A new client admits **nobody** until this is
+   set; everyone else gets "You are not allowed to access this service", which
+   reads as a Pocket ID fault rather than an unconfigured client.
 
 ### Logout callback URLs
 
@@ -118,12 +119,21 @@ only, which is the point of it not being `homelab-secrets.yaml`.
 
 ## 4. Deploy
 
-Confirm the LAN DNS record resolves before deploying — `dig +short A
-wiki.mjolnir @10.0.0.1` should print `10.0.0.4`. The `.mjolnir` zone is
-per-host, not a wildcard, so the record does not arrive on its own.
+Confirm the LAN DNS record resolves before deploying — from any machine on the
+LAN, `dig +short A wiki.mjolnir @10.0.0.1` should print `10.0.0.4`. The
+`.mjolnir` zone is per-host, not a wildcard, so the record does not arrive on
+its own.
+
+On the laptop (the machine with this repo's checkout):
 
 ```
 just deploy mjolnir
+```
+
+On mjolnir — the wiki is applied by the same oneshot as the ai chart, so its
+logs live in the ai-chart-apply unit, not a wiki-named one:
+
+```
 journalctl -u ai-chart-apply -b | grep -i wiki
 kubectl -n wiki get pods
 kubectl -n wiki get ingress    # HOSTS should read wiki.mjolnir
@@ -174,6 +184,26 @@ one and you never use it. This is the whole reason to use the CLI rather than
 the login form: `AUTH_AUTO_INITIATE=true` sends the login page straight to
 Pocket ID, so there is a window where you have a wiki and no way into it.
 
+Confirm it took before moving on. The users table is the record, and this is
+the same connection used later in this runbook (`-p` prompts; see section 6.6):
+
+```
+kubectl -n wiki exec -it deploy/wiki-mariadb -- \
+  mariadb -u bookstack -p bookstack \
+  -e "select id, name, email, external_auth_id from users"
+```
+
+Your row must be there, and its `external_auth_id` must hold the Pocket ID
+`sub` you passed. That column is the whole link: OIDC login matches on it, and
+nothing else. An empty or mistyped value produces the same outcome as omitting
+`--external-auth-id` — your next Pocket ID login matches no existing row, so
+BookStack creates a different user, and the admin you just made is a second
+account that login will never reach. Section 6 then hands roles to whichever
+user the login actually became, which is not the one you are looking at.
+
+There is no `bookstack:list-users` command; `php artisan list` shows what this
+image ships. Read the table.
+
 ## 6. Configure the model
 
 Log in through OIDC. Everything below is Settings → Roles and the permissions
@@ -196,8 +226,8 @@ default, silently, to people you have never met.
 |---|---|---|
 | `no-access` | *(empty)* | none |
 | `wiki-admin` | `wiki-admin` | leave the built-in **Admin** role alone; give it the Authentication ID `wiki-admin` rather than creating a second admin role |
-| `family` | `family` | see 6.3 |
-| `plex-users` | `plex-users` | see 6.3 |
+| `family` | `family` | see section 6.3 |
+| `plex-users` | `plex-users` | see section 6.3 |
 
 Authentication ID is what Pocket ID group sync matches against. Without it
 BookStack falls back to the role's display name, so **renaming a role in the UI
@@ -278,7 +308,7 @@ lands on the login page and comes back through Pocket ID with the new groups.
 
 ```
 kubectl -n wiki exec -it deploy/wiki-mariadb -- \
-  mysql -u bookstack -p bookstack \
+  mariadb -u bookstack -p bookstack \
   -e "delete from sessions where user_id = <id>"
 ```
 
@@ -427,20 +457,16 @@ treat them as first-run unknowns rather than as things that work:
   is unreachable from the cluster network, login never completes and the symptom
   is a redirect that comes back around. The egress rule allowing it is in
   `templates/networkpolicy.yaml`, and it is a CIDR because k3s' policy
-  controller has no FQDN rules.
-
-
-  This one is now measured rather than assumed, and it is not the shape the
-  chart originally assumed: Pocket ID runs on roque, but the pod resolves
-  `auth.struble.app` through public DNS, which answers with the Pangolin edge —
-  a public address, not a `10.0.0.x` one. So the discovery request leaves the
-  cluster for the edge and tunnels back, and an egress list holding only the
-  private segment drops it while every pod still reports Ready. That is why
-  `oidc.egressCidrs` carries the edge `/32`. The edge
-  address is not recorded anywhere else in this repo, so if the VPS moves this
-  breaks and nothing here will tell you why until you read this paragraph —
-  canonical-URLs phase 0 (CoreDNS views) is the fix that makes the name resolve
-  on-LAN and lets the `/32` go away.
+  controller has no FQDN rules. The CIDR it carries is the edge, not roque:
+  Pocket ID runs on roque, but the pod resolves `auth.struble.app` through
+  public DNS, which answers with the Pangolin edge — a public address, not a
+  `10.0.0.x` one. So the discovery request leaves the cluster for the edge and
+  tunnels back, and an egress list holding only the private segment drops it
+  while every pod still reports Ready. That is why `oidc.egressCidrs` carries
+  the edge `/32`. The edge address is not recorded anywhere else in this repo,
+  so if the VPS moves this breaks and nothing here will tell you why until you
+  read this paragraph — canonical-URLs phase 0 (CoreDNS views) is the fix that
+  makes the name resolve on-LAN and lets the `/32` go away.
 - **The LAN route, and what it is not.** The wiki is served at
   `https://wiki.mjolnir` through traefik. That name needs a record in LAN DNS
   pointing at the node (10.0.0.4), and the record is outside this repo. The
