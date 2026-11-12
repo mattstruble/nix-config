@@ -1,84 +1,43 @@
 # The `wiki/bookstack` Secret
 
-This chart **references** a Secret named `bookstack` and never creates one.
-There is no Secret in any rendered manifest of this chart, and no value here
-takes a secret value. The workloads name it and fail to start if it is absent —
-that is the behaviour, not a suggestion.
+This chart **references** a Secret named `bookstack` and never creates one. The
+workloads name it and fail to start if it is absent — that is the behaviour, not
+a suggestion.
 
-This file is documentation. It is not a Secret, and nothing in it is applied.
-It is deliberately not named `secrets.yaml`: that name is reserved in this repo
-for sops-encrypted files, and two pre-commit hooks enforce the difference —
-`detect-secrets` skips `secrets.yaml` on the assumption it is encrypted, and
-`sops-encryption` fails the commit if it is not. A plaintext file with that name
-cannot exist here, which is the right property for a repo that holds real keys.
-
-## Who creates it
-
-`nix/services/k3s.nix`, in the wiki pass of the chart apply, from sops material
-at `/run/secrets` — the same route that already creates `litellm-keys`,
-`monitoring-secrets` and `grafana-tls`.
-
-That is a deliberate reading of "the chart never creates a Secret": the chart
-does not, the activation script does, and nothing is ever typed into a terminal
-by hand. A Secret typed in by hand is invisible to a restore — and since the
-permission model now lives only in the database, the restore is the one thing
-that has to be able to bring the credentials and the configuration back
-together.
+`nix/services/k3s.nix` creates it, in the wiki pass of the chart apply, from
+sops material at `/run/secrets`. That is a deliberate reading of "the chart never
+creates a Secret": the chart does not, the activation does, and nothing is ever
+typed into a terminal by hand. A Secret typed in by hand is invisible to a
+restore — and since the permission model now lives only in the database, the
+restore is the one thing that has to be able to bring the credentials and the
+configuration back together.
 
 The values come from `nix/services/homelab/homelab-wiki-secrets.yaml`, whose
-recipients are the human and mjolnir — **not roque**. That recipient list is
-plaintext sops metadata, so the boundary is auditable from a diff.
+recipients are the human and mjolnir — **not roque**, which holds the IdP, the
+NAS mount and n8n's credential store. That recipient list is plaintext sops
+metadata, so the boundary is auditable from a diff.
 
-## Keys
+## What a bad value does
 
-Key names are the container's own environment variable names. Not dotted
-lowercase, not camelCase: the pod reads these as env vars, and a name that
-matches on both sides is one less mapping to get wrong in a manifest diff.
+The two OIDC values are the literal string `unset` until the Pocket ID client
+exists (RUNBOOK.md section 1). That sentinel is a configuration, not an error:
+starting BookStack against a client that does not exist produces a login
+redirect to an error page, which reads as a broken wiki rather than an
+unconfigured one. An empty value is a mistake rather than a state of the world.
 
-| key | what it is |
-|---|---|
-| `APP_KEY` | Laravel's application key, `base64:<32 bytes>`. Encrypts session cookies and the like. Rotating it invalidates every session; it does not touch content. |
-| `DB_PASSWORD` | the BookStack role's password in MariaDB. **Not rotatable** through sops — see Rotation below |
-| `OIDC_CLIENT_ID` | from the Pocket ID client, which only a human can create |
-| `OIDC_CLIENT_SECRET` | ditto; shown once, at client creation |
-
-The two OIDC values are the literal string `unset` until that client exists.
-Activation reads all four keys and judges each on two separate states, and the
-two fail differently: the `unset` sentinel skips the wiki pass — loudly, and
-everything else still applies — because starting BookStack against a client
-that does not exist produces a login redirect to an error page, which reads as
-a broken wiki rather than an unconfigured one; an empty value fails the
-activation outright, because an empty key is a mistake rather than a
-temporarily unconfigured system.
-
-## Shape
-
-```yaml
-apiVersion: v1
-kind: Secret
-metadata:
-  name: bookstack
-  namespace: wiki
-type: Opaque
-stringData:
-  APP_KEY: base64:<32 bytes>
-  DB_PASSWORD: <generated>
-  OIDC_CLIENT_ID: <pocket id client id>
-  OIDC_CLIENT_SECRET: <pocket id client secret>
-```
-
-Activation builds it with `--from-file=<key>=<tempfile>` rather than
-`--from-literal`, so no value ever appears in kubectl's argv, where any local
-process could read it out of `/proc/*/cmdline` during activation. The tempfile is
-not the sops file: activation reads each secret with `$(cat …)` and rewrites it
-with `printf '%s'` into a `0600` temp dir first, which is what strips the
-trailing newline that would otherwise end up inside `OIDC_CLIENT_SECRET`.
+The two are judged apart and they fail the same way: either one skips the wiki
+pass, loudly, and lets the rest of the generation land. Neither fails the
+activation, so the unit stays green and the deploy says nothing about the wiki.
+The four-key comparison in RUNBOOK.md section 4 is what tells you whether the
+cluster moved: the pass writes all four keys in one `create secret generic`, so
+any key that differs means it applied none of them — including a key you edited
+that was not the reason it skipped.
 
 ## Rotation
 
-`APP_KEY` can be changed in sops and re-deployed (it invalidates every
-session, and nothing else). `DB_PASSWORD` cannot, and activation refuses the
-attempt rather than half-applying it.
+`APP_KEY` can be changed in sops and re-deployed (it invalidates every session,
+and nothing else). `DB_PASSWORD` cannot, and activation refuses the attempt
+rather than half-applying it.
 
 The reason is the MariaDB image: it reads `MARIADB_USER` and `MARIADB_PASSWORD`
 only while the data directory is empty. From then on the account's password
@@ -96,12 +55,18 @@ it is the machinery this file's own argument is against: the restore, not a
 controller, is what is supposed to bring credentials and configuration back
 together.
 
-The guard: before creating the Secret, activation reads `DB_PASSWORD` back
-from the cluster's `wiki/bookstack` Secret — the record of what was last
-applied — and compares. Same value, or no Secret yet, and the pass proceeds.
-A different value fails the activation with the procedure below in its
-message, and the Secret is left alone, so the wiki stays in its previous,
-consistent state.
+The guard: before creating the Secret, activation reads `DB_PASSWORD` back from
+the cluster's `wiki/bookstack` Secret — the record of what was last applied — and
+compares. Same value, or no Secret yet, and the pass proceeds. A different value
+skips the wiki pass and leaves the Secret alone, so the wiki stays in its
+previous, consistent state. **The wiki pass is skipped and the unit stays
+green**: from deploy-rs and from `systemctl`, the deploy that refused a rotation
+looks like the deploy that applied one. Two things say otherwise. The refusal is on
+stderr in the journal of the run that made it, and the Secret keeps the old
+`DB_PASSWORD` while the host now reads the new one, so the four-key comparison in
+RUNBOOK.md section 4 prints `DB_PASSWORD DIFFERS` — the three keys nobody edited
+read `same`, because the pass that would have written them never ran. That is the
+price of not rolling a generation back over a password.
 
 If a rotation is ever genuinely needed — a leaked password, or a restore from
 a dump made with a different one — do it in one sitting, because BookStack's
