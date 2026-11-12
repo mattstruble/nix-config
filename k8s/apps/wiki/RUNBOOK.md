@@ -373,6 +373,19 @@ can be correct while the direct fetch is not.
   `SECRETS.md`.) To see what the rows are, `select type, count(*) from
   entities group by type`. Recovery is the rehearsed restore from the note
   above; with no backup, the empty instance is simply the state of the world.
+
+  The activation now reports this specific combination — the `bookstack`
+  Secret present (a wiki was installed here) with the datadir marker
+  `/var/lib/wiki/mysql/mysql` absent (initdb has not run) — with one line,
+  findable with the same `wiki:` grep as section 4:
+
+  ```
+  wiki: the wiki/bookstack Secret exists but the MariaDB datadir marker /var/lib/wiki/mysql/mysql is absent — a wiki was installed here before and its database is gone; the apply continues (the loss already happened), see the "An empty database reads as healthy" standing note in k8s/apps/wiki/RUNBOOK.md
+  ```
+
+  It is a notice, not a gate: the apply still proceeds, because the loss
+  already happened and the value is in knowing at deploy time rather than at
+  the next backup restore.
 - **A Retain PV does not rebind after its claim is deleted.** The PV is
   `persistentVolumeReclaimPolicy: Retain` and pre-bound to `wiki-data`
   (k8s/manifests/wiki-local-pv.yaml). Delete the claim and the PV goes to

@@ -921,6 +921,44 @@
                       # workloads a moment earlier only buys a
                       # CreateContainerConfigError that resolves itself.
                       if [ "$WIKI_DEPLOY" = "1" ]; then
+                        # Empty-datadir-behind-an-installed-wiki check: the
+                        # one signal in this stack that can tell a wiped wiki
+                        # from a fresh one. The tmpfiles rule above
+                        # pre-creates /var/lib/wiki/mysql at every boot, so
+                        # "is the directory there" is the wrong question —
+                        # the directory is always there; the question is
+                        # whether initdb has already run in it. Marker:
+                        # /var/lib/wiki/mysql/mysql, the system schema
+                        # directory the mariadb:11 image's initdb creates —
+                        # engine-independent (aria_log_control and ibdata1
+                        # are Aria/InnoDB artifacts), and a directory, so
+                        # test -d is exact. Failure mode: a future image that
+                        # reorganised the datadir layout would make this fire
+                        # on a FRESH install — a false alarm, not a false
+                        # silence; the dangerous direction (a wiped wiki
+                        # reading as new) is unreachable, because the Secret
+                        # half of the test is what this check is for.
+                        #
+                        # "Was installed before" is the wiki/bookstack
+                        # Secret, read the same way the rotation guard below
+                        # reads it: this activation creates it, so its
+                        # presence means a wiki was installed here. No
+                        # Secret + no marker = first install, say nothing.
+                        # Secret + no marker = the database is gone and the
+                        # cluster is about to serve an empty wiki at the real
+                        # URL with every probe green (k8s/apps/wiki/RUNBOOK.md,
+                        # standing note "An empty database reads as healthy")
+                        # — data loss, currently silent, so say it.
+                        #
+                        # Non-fatal on purpose, per the decision at the top
+                        # of the wiki pass: the data is already gone by the
+                        # time this runs, so refusing to apply would punish
+                        # the operator twice (generation rolled back AND wiki
+                        # lost) and save nothing. The line reports; the apply
+                        # proceeds.
+                        if $KCTL get secret bookstack -n wiki >/dev/null 2>&1 && [ ! -d /var/lib/wiki/mysql/mysql ]; then
+                          echo "wiki: the wiki/bookstack Secret exists but the MariaDB datadir marker /var/lib/wiki/mysql/mysql is absent — a wiki was installed here before and its database is gone; the apply continues (the loss already happened), see the \"An empty database reads as healthy\" standing note in k8s/apps/wiki/RUNBOOK.md" >&2
+                        fi
                         # DB_PASSWORD rotation guard. The MariaDB image
                         # honours MARIADB_USER/MARIADB_PASSWORD only while the
                         # data directory is empty; from then on the bookstack
