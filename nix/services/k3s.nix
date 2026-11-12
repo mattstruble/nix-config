@@ -538,6 +538,15 @@
                 $KCTL apply --prune -l "$sel" "''${pargs[@]}" "''${fargs[@]}"
               fi
             }
+            # $1 = file, $2 = the step that should have filled it. The wiki
+            # pass is non-fatal, so a failure here must name its step: for an
+            # empty document there is nothing in the output above — every
+            # command in the pipeline can exit 0 on empty input, so the
+            # generic guard line is the only signal an operator gets.
+            nonempty() {
+              local f="$1" step="$2"
+              [ -s "$f" ] || { echo "error: $step left $f empty" >&2; return 1; }
+            }
 
             # Idempotently ensure the gateway's key store knows the dedicated
             # metrics key. The litellm ServiceMonitor presents the sops
@@ -963,39 +972,95 @@
                         # prune scope so it is never orphaned. cert-manager and
                         # a real wildcard certificate are canonical-URLs
                         # phase 0.
-                        WIKI_TLS_HOST="$($YQ -r 'select(.kind == "Ingress") | .spec.tls[0].hosts[0] // empty' "$T/wiki-chart.json" 2>/dev/null | head -1)"
-                        WIKI_TLS_SECRET="$($YQ -r 'select(.kind == "Ingress") | .spec.tls[0].secretName // empty' "$T/wiki-chart.json" 2>/dev/null | head -1)"
+                        #
+                        # Single-Ingress assumption: head -1 collapses the
+                        # render to the first Ingress's (host, secretName)
+                        # pair and the certificate gets exactly one SAN.
+                        # Today's render has one Ingress with one host. Do not
+                        # add a second Ingress: it would not get a certificate
+                        # here, and its tls secretName would be pruned by this
+                        # pass like any Secret the apply does not carry.
                         : > "$T/wiki-tls.json"
-                        if [ -n "$WIKI_TLS_HOST" ] && [ -n "$WIKI_TLS_SECRET" ]; then
-                          $OPENSSL req -x509 -newkey rsa:2048 -nodes \
-                              -keyout "$T/wiki-tls.key" \
-                              -out "$T/wiki-tls.crt" \
-                              -days 3650 \
-                              -subj "/CN=$WIKI_TLS_HOST" \
-                              -addext "subjectAltName=DNS:$WIKI_TLS_HOST"
-                          $KCTL create secret tls "$WIKI_TLS_SECRET" \
-                              --namespace wiki \
-                              --cert="$T/wiki-tls.crt" \
-                              --key="$T/wiki-tls.key" \
-                              --dry-run=client -o yaml | label_all wiki "true" > "$T/wiki-tls.json"
-                        fi
                         # Values come from the printf'd 0600 temp files above,
                         # never straight from the sops paths: --from-file on a
                         # sops file would ship whatever trailing newline the
                         # materialisation happens to have, and OIDC_CLIENT_SECRET
                         # must byte-match the secret registered in Pocket ID.
+                        #
+                        # The whole pass — TLS extraction, certificate,
+                        # bookstack Secret, final apply — is one guard.
+                        # core/v1/Secret is in PRUNE_ALLOWLIST and both
+                        # Secrets carry the wiki selector, so an apply whose
+                        # Secret document is missing (a failed yq, openssl or
+                        # kubectl, or an empty render) would prune the live
+                        # Secrets while the activation exits 0, and the
+                        # rotation guard above would lose its record of the
+                        # last applied value. The extractions are the first
+                        # steps of the chain: with set +e a bare
+                        # WIKI_TLS_HOST="$(...)" would discard yq's exit
+                        # status, and a failed extraction (a render whose
+                        # shape yq cannot read — .spec.tls a map, hosts
+                        # dropped) would read as "no Ingress" and skip the
+                        # certificate; splicing the assignments into the chain
+                        # makes that status load-bearing. nonempty() makes an
+                        # empty document a failure in its own right, and the
+                        # if/else below fails the guard on a half-populated
+                        # (host, secretName) pair — the render declared TLS,
+                        # so it is a broken render, not a disabled Ingress.
+                        #
+                        # Fail-closed trade-off: widening the guard means a
+                        # transient openssl failure now applies nothing in
+                        # this pass, and the pass is never retried — it sits
+                        # in the && chain that ends in exit 0, so the 150x2s
+                        # loop is short-circuited — with no red unit. The
+                        # wiki stays at its previous state until the next
+                        # activation; that is the accepted cost of not
+                        # pruning live Secrets.
                         if ! {
-                          $KCTL create secret generic bookstack \
+                          WIKI_TLS_HOST="$($YQ -r 'select(.kind == "Ingress") | .spec.tls[0].hosts[0] // empty' "$T/wiki-chart.json" | head -1)" \
+                          && WIKI_TLS_SECRET="$($YQ -r 'select(.kind == "Ingress") | .spec.tls[0].secretName // empty' "$T/wiki-chart.json" | head -1)" \
+                          && {
+                             # The disabled-Ingress path must end in status 0
+                             # (the echo): the if is spliced into the && chain,
+                             # so a bare [ -n "$WIKI_TLS_HOST" ] && [ -n
+                             # "$WIKI_TLS_SECRET" ] && openssl ... would return
+                             # 1 on a valid disabled-Ingress config and fail the
+                             # pass. The \ after fi is what joins the if to the
+                             # chain.
+                             if [ -n "$WIKI_TLS_HOST" ] && [ -n "$WIKI_TLS_SECRET" ]; then
+                               $OPENSSL req -x509 -newkey rsa:2048 -nodes \
+                                   -keyout "$T/wiki-tls.key" \
+                                   -out "$T/wiki-tls.crt" \
+                                   -days 3650 \
+                                   -subj "/CN=$WIKI_TLS_HOST" \
+                                   -addext "subjectAltName=DNS:$WIKI_TLS_HOST" \
+                                 && $KCTL create secret tls "$WIKI_TLS_SECRET" \
+                                     --namespace wiki \
+                                     --cert="$T/wiki-tls.crt" \
+                                     --key="$T/wiki-tls.key" \
+                                     --dry-run=client -o yaml | label_all wiki "true" > "$T/wiki-tls.json" \
+                                 && nonempty "$T/wiki-tls.json" "create secret tls"
+                             else
+                               # Both empty: ingress disabled — the wiki-tls
+                               # Secret is outside this apply and will be
+                               # pruned. Exactly one empty: a broken render,
+                               # and the guard must fail.
+                               [ -z "$WIKI_TLS_HOST" ] && [ -z "$WIKI_TLS_SECRET" ] && \
+                                 echo "wiki: ingress disabled — the wiki-tls Secret is outside this apply and will be pruned"
+                             fi
+                           } \
+                          && $KCTL create secret generic bookstack \
                               --namespace wiki \
                               --from-file=APP_KEY="$T/secret-wiki-app-key" \
                               --from-file=DB_PASSWORD="$T/secret-wiki-db-password" \
                               --from-file=OIDC_CLIENT_ID="$T/secret-wiki-oidc-client-id" \
                               --from-file=OIDC_CLIENT_SECRET="$T/secret-wiki-oidc-client-secret" \
                               --dry-run=client -o yaml | label_all wiki "true" > "$T/wiki-secret.json" \
+                          && nonempty "$T/wiki-secret.json" "create secret generic" \
                           && cat "$T/wiki-secret.json" "$T/wiki-tls.json" "$T/wiki-chart.json" > "$T/wiki.yaml" \
                           && apply_pruned "$SEL_WIKI" "wiki" "$T/wiki.yaml"
                         }; then
-                          echo "error: wiki apply pass failed (see kubectl output above); the wiki stays at its previous state and the rest of the activation continues" >&2
+                          echo "error: wiki apply pass failed (see output above); the wiki stays at its previous state and the rest of the activation continues" >&2
                         fi
                       else
                         echo "wiki: OIDC client values are still the 'unset' sentinel; skipping the wiki pass. Create the Pocket ID client, put its id and secret into nix/services/homelab/homelab-wiki-secrets.yaml, and re-activate."
