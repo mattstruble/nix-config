@@ -2,9 +2,26 @@
 # on one volume is data corruption, not high availability).
 #
 # Runs as the image's own mysql user, non-root, all capabilities dropped,
-# nothing writable but the data directory. That is the whole point of putting
-# the wiki's database in its own pod: the application above it is a root-at-
-# init PHP container, and this one is not.
+# readOnlyRootFilesystem, nothing writable but the data directory.
+#
+# What the pod split is and is not. It is a process boundary: the two
+# containers' init systems cannot interfere, and a crash of one does not take
+# the other. It is not a security boundary. Both pods mount the same
+# wiki-data claim (subPath mysql here, subPath bookstack there), and the
+# BookStack container runs runAsUser 0 with DAC_OVERRIDE
+# (bookstack-deployment.yaml), which bypasses the 0750 999:999 mode on the
+# datadir — so the app container can read and overwrite the InnoDB files.
+#
+# Accepted risk, considered and declined. Splitting the datadir onto a second
+# volume would close it, and was declined: both directories live under one
+# host path (spec.local.path /var/lib/wiki in
+# k8s/manifests/wiki-local-pv.yaml), so a split buys nothing against the
+# failure that actually matters here — filling or corrupting the single NVMe
+# partition — while costing the one-directory backup story. The residual risk
+# is integrity, not confidentiality: a bug or a compromised BookStack can
+# corrupt the database. The control that closes it is the backup, not the pod
+# boundary; there is no backup job in this repo yet, so the risk is currently
+# unmitigated.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
