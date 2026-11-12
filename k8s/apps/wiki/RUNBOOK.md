@@ -265,10 +265,11 @@ Step 2 is not a formality. BookStack runs the group → role sync inside the
 login flow and never revisits a session that is already live, so what step 1
 changes is picked up at that user's **next login** and not before; until then
 the roles they were issued stand, and the shelves they should no longer read
-stay readable. The session keys in `templates/bookstack-deployment.yaml`
-(`SESSION_ACTIVITY_LIMIT`, `SESSION_TOKEN_TIME`) bound how long an *unattended*
-session lives, which caps what forgetting step 2 costs but does not perform it:
-a member who keeps the page open refreshes the session and is never aged out.
+stay readable. The session lifetime in
+`templates/bookstack-deployment.yaml` (`SESSION_LIFETIME`, 120 minutes of
+inactivity, refreshed by use) bounds how long an *unattended* session lives,
+which caps what forgetting step 2 costs but does not perform it: a member who
+keeps the page open refreshes the session and is never aged out.
 
 How to end it. The session driver is the image default, `database`, so the rows
 in BookStack's `sessions` table are the sessions, and deleting the ones for that

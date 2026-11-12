@@ -78,6 +78,14 @@ bookstack:
       memory: 256Mi
     limits:
       memory: 768Mi
+  # Three things that look like deploy-time config are not: who can create an
+  # account, what role a new account gets, and whether the API is reachable
+  # are database-backed admin settings edited in BookStack's admin UI. No env
+  # var exists for them (none is in the image's .env.example.complete), so
+  # they are invisible to a diff and unenforceable from this repo, and the
+  # only gate on account creation today is the Pocket ID client's Access
+  # list, which is manual and lives outside this repo. Do not wire env vars
+  # for them.
 
 ingress:
   # The LAN path in. Traefik (kept in k3s for exactly this, see the

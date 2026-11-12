@@ -160,6 +160,11 @@ spec:
             # integration — another third-party fetch, off on purpose here.
             - name: DISABLE_EXTERNAL_SERVICES
               value: "true"
+            # BookStack's docs warn debug mode can expose configuration
+            # credentials to visitors, and a default that happens to be safe
+            # is not a decision.
+            - name: APP_DEBUG
+              value: "false"
             # No update-check variable is set because the pinned version has
             # none to set: v26.09.2 ships no update checker at all — no
             # APP_UPDATE_CHECK or UPDATE_CHECK key in app/Config, the
@@ -240,31 +245,31 @@ spec:
             - name: OIDC_REMOVE_FROM_GROUPS
               value: "true"
             # ── Session lifetime ─────────────────────────────────────────
-            # Because group → role sync happens at login only (see
-            # OIDC_REMOVE_FROM_GROUPS), the lifetime of a BookStack session is
-            # exactly the window in which a removed member keeps the roles
-            # they were issued. Left alone, that window is whatever the image
-            # ships; setting both keys here makes it a recorded decision that a
-            # diff can change and a reviewer can object to.
+            # Group → role sync happens at login only (see
+            # OIDC_REMOVE_FROM_GROUPS), so a BookStack session's lifetime is
+            # exactly the window in which a removed member keeps the roles they
+            # were issued. SESSION_LIFETIME is the minutes of inactivity after
+            # which BookStack expires that session, and it is the only session
+            # expiry this image reads — app/Config/session.php consults
+            # SESSION_LIFETIME, SESSION_DRIVER, SESSION_COOKIE_NAME,
+            # SESSION_DOMAIN and SESSION_SECURE_COOKIE, and nothing else.
             #
-            # What each one bounds: SESSION_ACTIVITY_LIMIT is the minutes of
-            # inactivity after which BookStack logs a user out;
-            # SESSION_TOKEN_TIME is the minutes a session token stays valid
-            # before the session stops being accepted. The shorter of the two
-            # is the ceiling on an unattended session — 120 minutes here, so a
-            # laptop left open costs at most two hours of stale roles.
+            # 120 is BookStack's own default, so pinning it changes nothing
+            # today; it makes the window a recorded decision a diff can change
+            # and a reviewer can object to, which is the reason it is here
+            # rather than an image default nobody chose.
             #
-            # What neither one bounds: a member who keeps using the app
-            # refreshes both, so these settings revoke nobody. They cap what
-            # forgetting to act costs; the revocation itself stays explicit
-            # (RUNBOOK.md, Revoke). SESSION_TOKEN_TIME is deliberately kept
-            # above the image's refresh threshold (SESSION_TOKEN_TIME_REFRESH,
-            # left at its default): below it a token would expire before it
-            # could ever be refreshed, and every login would die on the first
-            # idle interval.
-            - name: SESSION_ACTIVITY_LIMIT
-              value: "240"
-            - name: SESSION_TOKEN_TIME
+            # What it does not do: revoke anybody. A member who keeps using the
+            # app refreshes the session indefinitely, so this bounds only what
+            # forgetting to act costs. The revocation itself stays explicit
+            # (RUNBOOK.md, Revoke).
+            #
+            # SESSION_ACTIVITY_LIMIT and SESSION_TOKEN_TIME used to be set
+            # here, with a comment explaining how they bounded an unattended
+            # session. Neither is a BookStack option — they are pre-Laravel
+            # names the image ignores — so that control was fiction and the
+            # real value was an unchosen default. Do not reintroduce them.
+            - name: SESSION_LIFETIME
               value: "120"
           ports:
             - name: http
