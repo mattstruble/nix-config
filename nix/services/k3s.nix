@@ -51,7 +51,7 @@
           bundle: ${cfg.aiChart.headEndBundle}
       '';
       # Render the ai chart (helm from nixpkgs) into one manifest file; the
-      # post-activation hook below applies it, so `just deploy mjolnir` ships
+      # ai-chart-apply oneshot below applies it, so `just deploy mjolnir` ships
       # host config + cluster manifests in one generation. ponytail: one chart
       # hardcoded — generalize to a chart list when a second app lands.
       # NOTE (h1j.1, 2026-09-24): we deliberately do NOT use

@@ -93,8 +93,9 @@ access; the config validates and extracts without it, but nothing files a PR.
 
 ## Deploy
 
-- `just deploy mjolnir` — nix build + post-activation hook renders the chart and
-  `kubectl apply`s it (one generation covers host config + cluster manifests).
+- `just deploy mjolnir` — nix build renders the chart and the ai-chart-apply
+  oneshot `kubectl apply`s it after k3s is up (one generation covers host
+  config + cluster manifests).
 - `just k8s-render` — render every app chart to stdout. There is no
   render-and-apply recipe; a manual apply is `helm template … | ssh mjolnir
   kubectl apply -f -`, and the next `just deploy` reconciles whatever it did.

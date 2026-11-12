@@ -380,8 +380,9 @@ These hard limits shaped every decision:
 - **Kernel/NVIDIA driver bumps:** cannot activate in place — use `nix run .#deploy-rs -- --boot .#mjolnir` then `ssh mjolnir 'sudo reboot'`. In-place `nixos-rebuild switch` leaves the old kernel module loaded, CDI generator hits 'Driver/library version mismatch', and containers exit 125 with auto-rollback.
 - **Model storage:** `/var/lib/llama-models/` (GGUF files)
 - **Which model runs where:** the helm chart in `k8s/apps/ai/` — one
-  values file per model (`enable`, `gpu`, `port`, flags), rendered and applied
-  by `just k8s-deploy`. A swap edits the values files; the pod restarts and
+  values file per model (`enable`, `gpu`, `port`, flags), rendered at build
+  and applied by the ai-chart-apply oneshot on `just deploy mjolnir`. A swap
+  edits the values files; the pod restarts and
   the model reloads from page cache (~90s).
 - **New files must be `git add`ed before deploying:** deploy-rs runs
   `nix flake check`, which evaluates the git tree and skips untracked files —

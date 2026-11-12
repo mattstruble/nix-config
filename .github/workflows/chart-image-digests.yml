@@ -38,7 +38,8 @@ jobs:
           FILES=(k8s/apps/ai/values.yaml k8s/apps/ai/values/*.yaml k8s/apps/wiki/values.yaml)
           # Same shape Renovate reads (renovate.json customManagers): any key ending
           # in image:/Image:, not just a literal `image:`, and any whitespace after it.
-          # A literal `image: ` pattern matches 1 of the 9 pins, which is how this repo
+          # A literal `image: ` pattern matches 9 of the 11 pins — it misses the two
+          # camelCase keys (`postgresImage:`, `toolsImage:`), and that is how this repo
           # nearly shipped it. Scoped globs, not a recursive walk, because the deploy
           # loads exactly this set (nix/services/k3s.nix: apps/ai/values.yaml,
           # apps/ai/values/*.yaml, apps/wiki/values.yaml).

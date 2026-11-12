@@ -29,8 +29,8 @@ bookstack:
   # (templates/ingress.yaml); the serving certificate is read out of the
   # rendered Ingress at activation, so it cannot drift from either.
   #
-  # Canonical-URLs phase 0 (cert-manager + CoreDNS views, wiki plan
-  # plans/canonical-cluster-urls.md) replaces this with wiki.struble.app and a
+  # Canonical-URLs phase 0 (cert-manager + CoreDNS views, the
+  # canonical-cluster-urls plan) replaces this with wiki.struble.app and a
   # real certificate. At that cutover three things move together: this value,
   # `ingress.host`, and the redirect URIs registered in Pocket ID.
   appUrl: https://wiki.mjolnir

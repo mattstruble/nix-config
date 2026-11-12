@@ -1,6 +1,6 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
-  "description": "Keeps the k3s cluster's images current. Depends on the convention in k8s/README.md: every image is `repository:tag@digest` and resolves from a values file, never a chart template. Validated by running Renovate against this repo: the image manager extracts 9 of 9 pins. The chart-image-digests workflow fails CI if a pin drifts from its tag, so a reference that stops matching this config is loud rather than silent.",
+  "description": "Keeps the k3s cluster's images current. Depends on the convention in k8s/README.md: every image is `repository:tag@digest` and resolves from a values file, never a chart template. Validated by running Renovate against this repo: the image manager extracts 11 of 11 pins. The chart-image-digests workflow fails CI if a pin drifts from its tag, so a reference that stops matching this config is loud rather than silent.",
   "extends": [
     "config:recommended",
     ":semanticCommits",

@@ -38,8 +38,9 @@ means piping a render at the node yourself, and it leaves the next `just deploy`
 to reconcile whatever you applied by hand.
 - `just lint` — pre-commit (nixfmt, etc.).
 
-`just deploy mjolnir` also applies `k8s/manifests/` and renders the ai chart via
-the k3s.nix post-activation hook, so one deploy covers host config + cluster.
+`just deploy mjolnir` also applies `k8s/manifests/` and ships the ai chart: nix
+renders it at build time and the ai-chart-apply oneshot applies it after k3s is
+up, so one deploy covers host config + cluster.
 
 ## Runbook: add a new NixOS host
 
@@ -90,8 +91,8 @@ mjolnir` — the activation applies it.
 
 **New app domain**: create `k8s/apps/<domain>/` as a standalone Helm chart
 (`Chart.yaml`, `templates/`, `values.yaml`). Render it with `helm template`, then
-ship it via `k8s/manifests/` (auto-applied at node start) or a post-activation
-hook like `nix/services/k3s.nix`.
+ship it via `k8s/manifests/` (auto-applied at node start) or a systemd oneshot
+like the ai-chart-apply service in `nix/services/k3s.nix`.
 
 ## References
 

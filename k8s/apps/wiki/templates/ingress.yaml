@@ -2,8 +2,7 @@
 The LAN path in.
 
 This chart deliberately has no other ingress surface: no hostPort, no
-NodePort, no second Ingress. The wiki plan (wiki plan
-plans/mjolnir-cluster-wiki.md) puts the
+NodePort, no second Ingress. The mjolnir-cluster-wiki plan puts the
 published entry point behind the Pangolin connector, and until that exists
 this Ingress is the only way anyone reaches BookStack — from the LAN, at
 https://wiki.mjolnir, with a self-signed certificate.

@@ -99,8 +99,9 @@
 
       # ── k3s (LLM fleet as k8s pods) ────────────────────────────────────
       # Server + nvidia runtime + local PVs: nix/services/k3s.nix (keyed
-      # off this flag). Model pods + LiteLLM gateway: k8s/apps/ai chart
-      # (`just k8s-deploy`).
+      # off this flag). Model pods + LiteLLM gateway: k8s/apps/ai chart,
+      # rendered at build and applied by the ai-chart-apply oneshot on
+      # `just deploy mjolnir`.
       services.k3s.enable = true;
 
       # Required by the k3s nvidia runtime (k3s.nix), which is CDI-mode: it
