@@ -176,15 +176,26 @@ spec:
             # brute force, and no local account to hand over.
             - name: AUTH_METHOD
               value: oidc
-            # With a single auth method this skips the intermediate "Login
-            # with Pocket ID" click. Without it the first thing a non-
-            # technical user sees is a button they have never been told about.
+            # The two variables below are presentation, not policy, and
+            # they are the only place this chart configures how the app
+            # looks. They are kept because the image's own defaults are
+            # worse for this deployment, not because the defaults are wrong:
+            # app/Config/auth.php defaults auto_initiate to false, so
+            # dropping it reinstates an intermediate provider screen for
+            # every login, and app/Config/oidc.php defaults the provider
+            # name to "SSO" — a word nobody here uses, on the one screen a
+            # non-technical family member has to get right unaided. Both
+            # cost a confused first login and neither buys any security.
+            # Everything else in this container is wiring or security.
+            #
+            # OIDC_DISPLAY_NAME_CLAIMS used to be pinned here to `name`,
+            # which is already app/Config/oidc.php's default. It restated a
+            # value nobody had chosen, so it is gone; if the claim ever
+            # needs changing, add it back with a reason.
             - name: AUTH_AUTO_INITIATE
               value: "true"
             - name: OIDC_NAME
               value: Pocket ID
-            - name: OIDC_DISPLAY_NAME_CLAIMS
-              value: name
             - name: OIDC_ISSUER
               value: {{ .Values.oidc.issuer | quote }}
             - name: OIDC_ISSUER_DISCOVER
