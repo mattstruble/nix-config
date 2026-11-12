@@ -159,11 +159,14 @@ oidc:
   #     With only the /24 above, the discovery request is dropped and no login
   #     ever completes, while every pod reports Healthy.
   #
-  # The edge address is a public IP this file cannot observe, so the
-  # `wiki-issuer-egress-covered` job in .github/workflows/k8s-manifest-diff.yml
-  # resolves oidc.issuer and fails when no entry here covers the answer. That
-  # is the point of listing it: a VPS migration turns into a red check naming
-  # the address, instead of a wiki that silently refuses to authenticate.
+  # The edge address is a public IP this file cannot observe and nothing in
+  # this repo records it, so nothing checks it either: if the VPS moves, this
+  # entry goes stale, the pod's discovery request is dropped, no login ever
+  # completes, and every pod still reports Ready. Re-resolve it by hand when
+  # the edge moves — `dig +short auth.struble.app` from OUTSIDE the cluster,
+  # since a LAN client's resolver may answer differently.
+  # Measured 2026-11-12 from inside the bookstack pod: auth.struble.app
+  # resolves to 66.63.168.18, so the /32 below is the live path today.
   # Canonical-URLs phase 0 (CoreDNS views) is the real fix — it makes the name
   # resolve on-LAN, at which point the /32 can go away.
   #
@@ -180,7 +183,8 @@ oidc:
   egressCidrs:
     - 10.0.0.0/24
     # The Pangolin edge, as observed resolving auth.struble.app. Not recorded
-    # anywhere else in this repo; the CI job above is what keeps it honest.
+    # anywhere else in this repo and unchecked here; if it goes stale, nothing
+    # fails — see the note on oidc.egressCidrs above.
     - 66.63.168.18/32
 
 persistence:
