@@ -1,9 +1,12 @@
 # Values for the wiki chart (BookStack + MariaDB).
 #
-# The namespace is not a value here: it comes from the render/apply
-# invocation (`--namespace wiki` in nix/services/k3s.nix) as
-# `.Release.Namespace`, the precedent the ai chart follows — a key nothing
-# reads can only drift.
+# The namespace is not a value here, and no template in this chart emits
+# `metadata.namespace`: it is fixed by the `-n wiki` on the apply in
+# nix/services/k3s.nix, not by anything Helm resolves. The one place a
+# namespace is written into a manifest as a literal is the
+# `claimRef.namespace` in k8s/manifests/wiki-local-pv.yaml — the one that
+# silently breaks PV binding when it disagrees: a PV whose `claimRef` names a
+# namespace the PVC is not in stays `Available` forever with no error anywhere.
 # Images follow the repo-wide `repository:tag@digest` convention
 # (k8s/README.md); Renovate bumps the tag and the digest job rehashes it, so
 # a BookStack security release is a one-line diff rather than an SSH session.

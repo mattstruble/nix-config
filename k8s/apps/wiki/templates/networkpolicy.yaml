@@ -40,6 +40,23 @@ mean "no egress" — it means the opposite of what the operator reaching for it
 intended, on the one port (443) that reaches the rest of the network. A bare
 range cannot tell "narrowed" from "widened to everything", so the template
 checks it and refuses to render.
+
+Two names changed: `bookstack` is now `wiki-bookstack` and `mariadb` is now
+`wiki-mariadb`, so all three policies carry the `wiki-` prefix the Deployment,
+Service and deny policy already use. A rename applied to a live cluster is a
+delete plus a create: the wiki pass runs `kubectl apply --prune` scoped to
+`mjolnir/prune-group=wiki` (nix/services/k3s.nix), and the old object still
+carries that label, so the same pass that creates the new name deletes the old
+one. Nothing in the activation reports the rename — there is no journal line
+for it, and the pass succeeding is not evidence the rename happened. The check
+is the object list itself: after an activation carrying this change,
+`k3s kubectl get networkpolicy -n wiki` must show exactly three policies, all
+`wiki-`prefixed, with no bare `bookstack` or `mariadb` left. A policy missing
+from that list with no `wiki-` counterpart is not a rename.
+
+Between the old policy being pruned and the new one being programmed by the
+CNI there is a window in which the old policy's enforcement is gone — one
+apply, not an outage, but not instantaneous.
 */ -}}
 {{- $egressCidrs := .Values.oidc.egressCidrs -}}
 {{- if not $egressCidrs -}}
@@ -60,7 +77,7 @@ spec:
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
-  name: bookstack
+  name: wiki-bookstack
   labels:
     app.kubernetes.io/part-of: wiki
 spec:
@@ -130,7 +147,7 @@ spec:
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
-  name: mariadb
+  name: wiki-mariadb
   labels:
     app.kubernetes.io/part-of: wiki
 spec:

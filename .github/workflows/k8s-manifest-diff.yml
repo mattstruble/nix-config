@@ -62,10 +62,7 @@ jobs:
           # and `^[^"]*` keeps a quoted word in a trailing comment from
           # shifting the match (a greedy `.*"` would swallow up to the last
           # quote on the line).
-          # `|| true` on each pipeline: with `set -o pipefail`, a grep that
-          # finds nothing would otherwise kill the script at the assignment
-          # and make the explicit ::error:: checks below unreachable; the
-          # empty result must reach them so the failure names its reason.
+          # `|| true` on each pipeline: see the fuller rationale in the wiki-secret-keys-created job below.
           idp=$(grep -E '^[[:space:]]*APP_URL = ' nix/services/homelab/homelab.nix | head -n1 | sed -E 's/^[^=]*=[[:space:]]*"([^"]*)".*/\1/' || true)
           wiki=$(grep -E '^[[:space:]]*issuer: ' k8s/apps/wiki/values.yaml | head -n1 | sed -E 's/^[[:space:]]*issuer:[[:space:]]*//' || true)
           if [ -z "$idp" ]; then
