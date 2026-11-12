@@ -133,6 +133,24 @@ BookStack should be `Running` and `1/1 ready`. Its readiness probe is `/status`,
 which reports database, cache and session separately, so a pod that is up but
 cannot reach MariaDB stays unready instead of serving errors.
 
+A green deploy does not mean the wiki was applied. The wiki pass is non-fatal:
+an empty sops secret, a refused db-password rotation, an `unset` OIDC
+sentinel, a rendered chart that comes out empty (this points at the chart,
+not at sops), or a failed apply pass each skip the wiki and let the rest of
+the generation land, so the unit exits 0. Every one
+of those outcomes logs a line prefixed `wiki:` at error priority. The
+`ai-chart-apply` unit only re-runs when the rendered charts change, so an
+empty result below means "no wiki error recorded since boot" — not "the wiki
+applied on this deploy". Check for it (same command as the deploy block
+above):
+
+```
+journalctl -u ai-chart-apply -b -p err | grep -i wiki
+```
+
+No `wiki:` line means no wiki error was recorded since boot; any line means
+the wiki did not apply — read it.
+
 ## 5. Bootstrap the admin, bound to your Pocket ID identity
 
 Find your `sub` claim: it is in the Pocket ID user list, or dump it with

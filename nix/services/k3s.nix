@@ -461,16 +461,19 @@
             # applies — deploying BookStack against a client that does not
             # exist produces a login redirect to an error page, which reads as
             # a broken wiki rather than an unconfigured one. An empty value is
-            # never allowed: it fails the activation, because an empty secret
-            # is a mistake and not a state of the world.
+            # never allowed either: it skips the wiki pass loudly (below) and
+            # lets the rest of the generation land — the unit exits 0 — because
+            # an empty secret is a mistake and not a state of the world.
             WIKI_APP_KEY="$(cat ${config.sops.secrets."services/wiki/app-key".path})"
             WIKI_DB_PASSWORD="$(cat ${config.sops.secrets."services/wiki/db-password".path})"
             WIKI_OIDC_CLIENT_ID="$(cat ${config.sops.secrets."services/wiki/oidc-client-id".path})"
             WIKI_OIDC_CLIENT_SECRET="$(cat ${config.sops.secrets."services/wiki/oidc-client-secret".path})"
             WIKI_DEPLOY=1
-            for wv in "$WIKI_APP_KEY" "$WIKI_DB_PASSWORD" "$WIKI_OIDC_CLIENT_ID" "$WIKI_OIDC_CLIENT_SECRET"; do
-              [ -n "$wv" ] || { echo "error: a services/wiki sops secret is empty" >&2; exit 1; }
-              [ "$wv" = "unset" ] && WIKI_DEPLOY=0
+            WIKI_SKIP_REASON=""
+            WIKI_UNSET_SEEN=0
+            for wv in "app-key:$WIKI_APP_KEY" "db-password:$WIKI_DB_PASSWORD" "oidc-client-id:$WIKI_OIDC_CLIENT_ID" "oidc-client-secret:$WIKI_OIDC_CLIENT_SECRET"; do
+              [ -n "''${wv#*:}" ] || { echo "wiki: error: services/wiki sops secret ''${wv%%:*} is empty; skipping the wiki pass" >&2; WIKI_DEPLOY=0; WIKI_SKIP_REASON="''${WIKI_SKIP_REASON:+''$WIKI_SKIP_REASON; }sops secret ''${wv%%:*} is empty"; }
+              [ "''${wv#*:}" = "unset" ] && [ "$WIKI_UNSET_SEEN" = "0" ] && { WIKI_DEPLOY=0; WIKI_UNSET_SEEN=1; WIKI_SKIP_REASON="''${WIKI_SKIP_REASON:+''$WIKI_SKIP_REASON; }OIDC client values are still the 'unset' sentinel; create the Pocket ID client, put its id and secret into nix/services/homelab/homelab-wiki-secrets.yaml, and re-activate"; }
             done
 
             # Every resource this script applies carries the managed-by label,
@@ -700,7 +703,8 @@
             [ -s "$T/kube-system.yaml" ] || { echo "error: rendered kube-system.yaml is empty" >&2; exit 1; }
             [ -s "$T/default-ai.json" ] || { echo "error: rendered default-ai.json is empty" >&2; exit 1; }
             [ -s "$T/gpu-charts.json" ] || { echo "error: rendered gpu-charts.json is empty" >&2; exit 1; }
-            [ -s "$T/wiki-chart.json" ] || { echo "error: rendered wiki-chart.json is empty" >&2; exit 1; }
+            # wiki check differs from its five siblings on purpose: a wiki failure must not fail the generation, so it skips the wiki pass and continues (siblings stay fatal — they are not wiki).
+            [ -s "$T/wiki-chart.json" ] || { echo "wiki: error: rendered wiki-chart.json is empty; skipping the wiki pass" >&2; WIKI_DEPLOY=0; WIKI_SKIP_REASON="''${WIKI_SKIP_REASON:+''$WIKI_SKIP_REASON; }rendered wiki-chart.json is empty"; }
             set +e
 
             # CIDR containment: is $2 (net/prefix) a subnet of $1? The node's
@@ -886,8 +890,10 @@
                       # The wiki pass runs last, and it is the one apply pass
                       # whose failure does NOT abort the activation: a broken
                       # optional service must not cost the monitoring stack
-                      # that sits behind it in the chain (the DB_PASSWORD
-                      # rotation guard below is the one deliberate exception). It used to run
+                      # that sits behind it in the chain. Every wiki failure —
+                      # including the DB_PASSWORD rotation guard below — is loud
+                      # in the journal and lets the rest of the generation land;
+                      # the unit exits 0. It used to run
                       # mid-chain, so with && joining every step a first-run
                       # wiki failure skipped register_metrics_key too — the
                       # step whose own comment records the 2026-10-05
@@ -938,22 +944,28 @@
                         # apply below fails too, and this pass's own error
                         # handling covers it): proceed.
                         #
-                        # Fatal, unlike everything else in this pass, on
-                        # purpose: the non-fatal rule exists for failures that
-                        # leave the cluster consistent and the deploy
-                        # meaningful (an immutable-PVC rejection). The
-                        # alternative here is a green activation that silently
-                        # drops the rotation the operator just performed. The
-                        # monitoring stack has already been applied by the
-                        # time this runs, so nothing else is lost, and the
-                        # unit stays red until the rotation is carried out by
-                        # hand or the sops value is reverted.
+                        # Refusing is right; failing the generation is not.
+                        # The old version of this guard exited 1, which made
+                        # deploy-rs roll the whole system generation back —
+                        # while the cluster kept the five apply passes that
+                        # had already landed (cluster, default, monitoring,
+                        # gpu, kube-system). The nix-declared state and the
+                        # cluster state then diverged until a human noticed,
+                        # which is the outage the non-fatal rule exists to
+                        # prevent. So a refusal now sets WIKI_ROTATE_OK=0,
+                        # which gates the apply chain below: no apply, no
+                        # prune, no exit. The refusal is loud in the journal
+                        # (the two error lines below) and the unit stays
+                        # green; the wiki stays at its previous, consistent
+                        # state until the rotation is carried out by hand.
+                        WIKI_ROTATE_OK=1
                         if APPLIED_DB_B64="$($KCTL get secret bookstack -n wiki -o jsonpath='{.data.DB_PASSWORD}' 2>/dev/null)"; then
                           APPLIED_DB_PASSWORD="$(printf '%s' "$APPLIED_DB_B64" | base64 -d 2>/dev/null)"
                           if [ -n "$APPLIED_DB_PASSWORD" ] && [ "$APPLIED_DB_PASSWORD" != "$WIKI_DB_PASSWORD" ]; then
+                            WIKI_ROTATE_OK=0; WIKI_SKIP_REASON="''${WIKI_SKIP_REASON:+''$WIKI_SKIP_REASON; }db-password rotation refused"
+                            echo "wiki: rotation refused — the wiki pass is skipped; the unit stays green" >&2
                             echo "error: wiki db-password rotation refused: services/wiki/db-password no longer matches the DB_PASSWORD last applied to the wiki/bookstack Secret, and this stack cannot rotate it. The MariaDB image sets the bookstack account's password only while the data directory is empty, so applying the new value would update the Secret and BookStack's environment while the database account keeps the old password; the mismatch would surface as Access denied at the next BookStack start. The Secret is NOT updated and the wiki stays at its previous, consistent state." >&2
                             echo "error: to change the password anyway (in one sitting — BookStack's live connections break at step 1): (1) k3s kubectl exec -it -n wiki deploy/wiki-mariadb -- mariadb -u bookstack -p  (old password at the prompt, so it stays out of any argv), then SET PASSWORD = '<the new password>';  (2) k3s kubectl delete secret bookstack -n wiki  — that Secret is this guard's memory of the last applied value;  (3) re-activate, which recreates the Secret from sops;  (4) k3s kubectl rollout restart deploy/wiki-bookstack -n wiki. Reasoning and the full version of these steps: k8s/apps/wiki/SECRETS.md." >&2
-                            exit 1
                           fi
                         fi
                         # The LAN Ingress terminates TLS at traefik, which
@@ -1017,54 +1029,65 @@
                         # wiki stays at its previous state until the next
                         # activation; that is the accepted cost of not
                         # pruning live Secrets.
-                        if ! {
-                          WIKI_TLS_HOST="$($YQ -r 'select(.kind == "Ingress") | .spec.tls[0].hosts[0] // empty' "$T/wiki-chart.json" | head -1)" \
-                          && WIKI_TLS_SECRET="$($YQ -r 'select(.kind == "Ingress") | .spec.tls[0].secretName // empty' "$T/wiki-chart.json" | head -1)" \
-                          && {
-                             # The disabled-Ingress path must end in status 0
-                             # (the echo): the if is spliced into the && chain,
-                             # so a bare [ -n "$WIKI_TLS_HOST" ] && [ -n
-                             # "$WIKI_TLS_SECRET" ] && openssl ... would return
-                             # 1 on a valid disabled-Ingress config and fail the
-                             # pass. The \ after fi is what joins the if to the
-                             # chain.
-                             if [ -n "$WIKI_TLS_HOST" ] && [ -n "$WIKI_TLS_SECRET" ]; then
-                               $OPENSSL req -x509 -newkey rsa:2048 -nodes \
-                                   -keyout "$T/wiki-tls.key" \
-                                   -out "$T/wiki-tls.crt" \
-                                   -days 3650 \
-                                   -subj "/CN=$WIKI_TLS_HOST" \
-                                   -addext "subjectAltName=DNS:$WIKI_TLS_HOST" \
-                                 && $KCTL create secret tls "$WIKI_TLS_SECRET" \
-                                     --namespace wiki \
-                                     --cert="$T/wiki-tls.crt" \
-                                     --key="$T/wiki-tls.key" \
-                                     --dry-run=client -o yaml | label_all wiki "true" > "$T/wiki-tls.json" \
-                                 && nonempty "$T/wiki-tls.json" "create secret tls"
-                             else
-                               # Both empty: ingress disabled — the wiki-tls
-                               # Secret is outside this apply and will be
-                               # pruned. Exactly one empty: a broken render,
-                               # and the guard must fail.
-                               [ -z "$WIKI_TLS_HOST" ] && [ -z "$WIKI_TLS_SECRET" ] && \
-                                 echo "wiki: ingress disabled — the wiki-tls Secret is outside this apply and will be pruned"
-                             fi
-                           } \
-                          && $KCTL create secret generic bookstack \
-                              --namespace wiki \
-                              --from-file=APP_KEY="$T/secret-wiki-app-key" \
-                              --from-file=DB_PASSWORD="$T/secret-wiki-db-password" \
-                              --from-file=OIDC_CLIENT_ID="$T/secret-wiki-oidc-client-id" \
-                              --from-file=OIDC_CLIENT_SECRET="$T/secret-wiki-oidc-client-secret" \
-                              --dry-run=client -o yaml | label_all wiki "true" > "$T/wiki-secret.json" \
-                          && nonempty "$T/wiki-secret.json" "create secret generic" \
-                          && cat "$T/wiki-secret.json" "$T/wiki-tls.json" "$T/wiki-chart.json" > "$T/wiki.yaml" \
-                          && apply_pruned "$SEL_WIKI" "wiki" "$T/wiki.yaml"
-                        }; then
-                          echo "error: wiki apply pass failed (see output above); the wiki stays at its previous state and the rest of the activation continues" >&2
+                        # The refusal gate wraps the whole pass: `if <false>; then ...; fi`
+                        # yields status 0, so a refusal leaves the enclosing && chain unbroken
+                        # and the pass still exits 0. Second load-bearing use of that property.
+                        if [ "$WIKI_ROTATE_OK" = "1" ]; then
+                          if ! {
+                            WIKI_TLS_HOST="$($YQ -r 'select(.kind == "Ingress") | .spec.tls[0].hosts[0] // empty' "$T/wiki-chart.json" | head -1)" \
+                            && WIKI_TLS_SECRET="$($YQ -r 'select(.kind == "Ingress") | .spec.tls[0].secretName // empty' "$T/wiki-chart.json" | head -1)" \
+                            && {
+                               # The disabled-Ingress path must end in status 0
+                               # (the echo): the if is spliced into the && chain,
+                               # so a bare [ -n "$WIKI_TLS_HOST" ] && [ -n
+                               # "$WIKI_TLS_SECRET" ] && openssl ... would return
+                               # 1 on a valid disabled-Ingress config and fail the
+                               # pass. The \ after fi is what joins the if to the
+                               # chain.
+                               if [ -n "$WIKI_TLS_HOST" ] && [ -n "$WIKI_TLS_SECRET" ]; then
+                                 $OPENSSL req -x509 -newkey rsa:2048 -nodes \
+                                     -keyout "$T/wiki-tls.key" \
+                                     -out "$T/wiki-tls.crt" \
+                                     -days 3650 \
+                                     -subj "/CN=$WIKI_TLS_HOST" \
+                                     -addext "subjectAltName=DNS:$WIKI_TLS_HOST" \
+                                   && $KCTL create secret tls "$WIKI_TLS_SECRET" \
+                                       --namespace wiki \
+                                       --cert="$T/wiki-tls.crt" \
+                                       --key="$T/wiki-tls.key" \
+                                       --dry-run=client -o yaml | label_all wiki "true" > "$T/wiki-tls.json" \
+                                   && nonempty "$T/wiki-tls.json" "create secret tls"
+                               else
+                                 # Both empty: ingress disabled — the wiki-tls
+                                 # Secret is outside this apply and will be
+                                 # pruned. Exactly one empty: a broken render,
+                                 # and the guard must fail.
+                                 [ -z "$WIKI_TLS_HOST" ] && [ -z "$WIKI_TLS_SECRET" ] && \
+                                   echo "note: ingress disabled — the wiki-tls Secret is outside this apply and will be pruned"
+                               fi
+                             } \
+                            && $KCTL create secret generic bookstack \
+                                --namespace wiki \
+                                --from-file=APP_KEY="$T/secret-wiki-app-key" \
+                                --from-file=DB_PASSWORD="$T/secret-wiki-db-password" \
+                                --from-file=OIDC_CLIENT_ID="$T/secret-wiki-oidc-client-id" \
+                                --from-file=OIDC_CLIENT_SECRET="$T/secret-wiki-oidc-client-secret" \
+                                --dry-run=client -o yaml | label_all wiki "true" > "$T/wiki-secret.json" \
+                            && nonempty "$T/wiki-secret.json" "create secret generic" \
+                            && cat "$T/wiki-secret.json" "$T/wiki-tls.json" "$T/wiki-chart.json" > "$T/wiki.yaml" \
+                            && apply_pruned "$SEL_WIKI" "wiki" "$T/wiki.yaml"
+                          }; then
+                            echo "wiki: error: wiki apply pass failed (see output above); the wiki stays at its previous state and the rest of the activation continues" >&2
+                          fi
                         fi
                       else
-                        echo "wiki: OIDC client values are still the 'unset' sentinel; skipping the wiki pass. Create the Pocket ID client, put its id and secret into nix/services/homelab/homelab-wiki-secrets.yaml, and re-activate."
+                        # Print the skip reason. If no reason was recorded
+                        # (a site forgot to set it), default to loud.
+                        if [ -n "$WIKI_SKIP_REASON" ]; then
+                          echo "wiki: $WIKI_SKIP_REASON" >&2
+                        else
+                          echo "wiki: wiki pass skipped (no reason recorded)" >&2
+                        fi
                       fi
                     } \
                 && { if [ "$CRDS_NEW" -eq 1 ]; then
