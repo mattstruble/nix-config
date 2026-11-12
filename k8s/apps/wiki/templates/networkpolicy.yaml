@@ -47,12 +47,20 @@ Service and deny policy already use. A rename applied to a live cluster is a
 delete plus a create: the wiki pass runs `kubectl apply --prune` scoped to
 `mjolnir/prune-group=wiki` (nix/services/k3s.nix), and the old object still
 carries that label, so the same pass that creates the new name deletes the old
-one. Nothing in the activation reports the rename — there is no journal line
-for it, and the pass succeeding is not evidence the rename happened. The check
-is the object list itself: after an activation carrying this change,
-`k3s kubectl get networkpolicy -n wiki` must show exactly three policies, all
-`wiki-`prefixed, with no bare `bookstack` or `mariadb` left. A policy missing
-from that list with no `wiki-` counterpart is not a rename.
+one. `kubectl apply --prune` prints a line per object it removes, so the
+journal does show it — measured on the first activation carrying this change:
+
+    networkpolicy.networking.k8s.io/bookstack pruned
+    networkpolicy.networking.k8s.io/mariadb pruned
+
+Read those lines with care. `pruned` is the word used for every removal the
+pass makes, so a rename and an accidental deletion are the same two lines, and
+neither one names its replacement. The record that the rename was intended
+lives here, in this comment, and nowhere in the activation. The check is
+therefore the object list: `k3s kubectl get networkpolicy -n wiki` must show
+exactly three policies, all `wiki-`prefixed, with no bare `bookstack` or
+`mariadb` left. A policy missing from that list with no `wiki-` counterpart is
+not a rename.
 
 Between the old policy being pruned and the new one being programmed by the
 CNI there is a window in which the old policy's enforcement is gone — one
