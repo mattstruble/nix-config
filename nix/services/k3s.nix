@@ -725,6 +725,11 @@
               [ $(( $(ip_to_int "$outer_ip") & mask )) -eq $(( $(ip_to_int "$inner_ip") & mask )) ]
             }
 
+            # The datadir check reports at most once per activation: the retry
+            # loop below can run 150 times and the line it prints does not
+            # change between iterations.
+            WIKI_DATADIR_CHECKED=0
+
             # 150 x 2s = 5min: the API server can take well over 60s to be
             # ready after a fresh boot (large etcd, slow disk). A failed
             # apply persists until the next chart-changing activation, so
@@ -733,6 +738,57 @@
               $KCTL get namespace monitoring >/dev/null 2>&1 || $KCTL create namespace monitoring
               $KCTL get namespace gpu >/dev/null 2>&1 || $KCTL create namespace gpu
               $KCTL get namespace wiki >/dev/null 2>&1 || $KCTL create namespace wiki
+              # Empty-datadir-behind-an-installed-wiki check: the
+              # one signal in this stack that can tell a wiped wiki
+              # from a fresh one. The tmpfiles rule above
+              # pre-creates /var/lib/wiki/mysql at every boot, so
+              # "is the directory there" is the wrong question —
+              # the directory is always there; the question is
+              # whether initdb has already run in it. Marker:
+              # /var/lib/wiki/mysql/mysql, the system schema
+              # directory the mariadb:11 image's initdb creates —
+              # engine-independent (aria_log_control and ibdata1
+              # are Aria/InnoDB artifacts), and a directory, so
+              # test -d is exact. Failure mode: a future image that
+              # reorganised the datadir layout would make this fire
+              # on a FRESH install — a false alarm, not a false
+              # silence; the dangerous direction (a wiped wiki
+              # reading as new) is unreachable, because the Secret
+              # half of the test is what this check is for.
+              #
+              # "Was installed before" is the wiki/bookstack
+              # Secret, read the same way the rotation guard below
+              # reads it: this activation creates it, so its
+              # presence means a wiki was installed here. No
+              # Secret + no marker = first install, say nothing.
+              # Secret + no marker = the database is gone and the
+              # cluster is about to serve an empty wiki at the real
+              # URL with every probe green (k8s/apps/wiki/RUNBOOK.md,
+              # standing note "An empty database reads as healthy")
+              # — data loss, currently silent, so say it.
+              #
+              # Non-fatal on purpose, per the decision at the top
+              # of the wiki pass: the data is already gone by the
+              # time this runs, so refusing to apply would punish
+              # the operator twice (generation rolled back AND wiki
+              # lost) and save nothing. The line reports; the apply
+              # proceeds.
+              # kubectl exits non-zero both when the Secret does not exist and
+              # when the API server is not answering, and only the first is an
+              # answer: NotFound latches the check silently, a transport error
+              # leaves it armed so the next iteration reads again.
+              if [ "$WIKI_DATADIR_CHECKED" = 0 ]; then
+                if WIKI_SECRET_ERR="$($KCTL get secret bookstack -n wiki 2>&1 >/dev/null)"; then
+                  WIKI_DATADIR_CHECKED=1
+                  if [ ! -d /var/lib/wiki/mysql/mysql ]; then
+                    echo "wiki: the wiki/bookstack Secret exists but the MariaDB datadir marker /var/lib/wiki/mysql/mysql is absent — a wiki was installed here before and its database is gone; the apply continues (the loss already happened), see the \"An empty database reads as healthy\" standing note in k8s/apps/wiki/RUNBOOK.md" >&2
+                  fi
+                else
+                  case "$WIKI_SECRET_ERR" in
+                    *NotFound*|*'not found'*) WIKI_DATADIR_CHECKED=1 ;;
+                  esac
+                fi
+              fi
               # Divergence check: the nftables rule for 9100/10250 is scoped
               # to $CLUSTER_CIDR (k3s' default; the nix k3s module exposes no
               # cluster-cidr option). The node's podCIDR is a /24 slice of the
@@ -921,44 +977,6 @@
                       # workloads a moment earlier only buys a
                       # CreateContainerConfigError that resolves itself.
                       if [ "$WIKI_DEPLOY" = "1" ]; then
-                        # Empty-datadir-behind-an-installed-wiki check: the
-                        # one signal in this stack that can tell a wiped wiki
-                        # from a fresh one. The tmpfiles rule above
-                        # pre-creates /var/lib/wiki/mysql at every boot, so
-                        # "is the directory there" is the wrong question —
-                        # the directory is always there; the question is
-                        # whether initdb has already run in it. Marker:
-                        # /var/lib/wiki/mysql/mysql, the system schema
-                        # directory the mariadb:11 image's initdb creates —
-                        # engine-independent (aria_log_control and ibdata1
-                        # are Aria/InnoDB artifacts), and a directory, so
-                        # test -d is exact. Failure mode: a future image that
-                        # reorganised the datadir layout would make this fire
-                        # on a FRESH install — a false alarm, not a false
-                        # silence; the dangerous direction (a wiped wiki
-                        # reading as new) is unreachable, because the Secret
-                        # half of the test is what this check is for.
-                        #
-                        # "Was installed before" is the wiki/bookstack
-                        # Secret, read the same way the rotation guard below
-                        # reads it: this activation creates it, so its
-                        # presence means a wiki was installed here. No
-                        # Secret + no marker = first install, say nothing.
-                        # Secret + no marker = the database is gone and the
-                        # cluster is about to serve an empty wiki at the real
-                        # URL with every probe green (k8s/apps/wiki/RUNBOOK.md,
-                        # standing note "An empty database reads as healthy")
-                        # — data loss, currently silent, so say it.
-                        #
-                        # Non-fatal on purpose, per the decision at the top
-                        # of the wiki pass: the data is already gone by the
-                        # time this runs, so refusing to apply would punish
-                        # the operator twice (generation rolled back AND wiki
-                        # lost) and save nothing. The line reports; the apply
-                        # proceeds.
-                        if $KCTL get secret bookstack -n wiki >/dev/null 2>&1 && [ ! -d /var/lib/wiki/mysql/mysql ]; then
-                          echo "wiki: the wiki/bookstack Secret exists but the MariaDB datadir marker /var/lib/wiki/mysql/mysql is absent — a wiki was installed here before and its database is gone; the apply continues (the loss already happened), see the \"An empty database reads as healthy\" standing note in k8s/apps/wiki/RUNBOOK.md" >&2
-                        fi
                         # DB_PASSWORD rotation guard. The MariaDB image
                         # honours MARIADB_USER/MARIADB_PASSWORD only while the
                         # data directory is empty; from then on the bookstack
@@ -1000,7 +1018,7 @@
                         if APPLIED_DB_B64="$($KCTL get secret bookstack -n wiki -o jsonpath='{.data.DB_PASSWORD}' 2>/dev/null)"; then
                           APPLIED_DB_PASSWORD="$(printf '%s' "$APPLIED_DB_B64" | base64 -d 2>/dev/null)"
                           if [ -n "$APPLIED_DB_PASSWORD" ] && [ "$APPLIED_DB_PASSWORD" != "$WIKI_DB_PASSWORD" ]; then
-                            WIKI_ROTATE_OK=0; WIKI_SKIP_REASON="''${WIKI_SKIP_REASON:+''$WIKI_SKIP_REASON; }db-password rotation refused"
+                            WIKI_ROTATE_OK=0
                             echo "wiki: rotation refused — the wiki pass is skipped; the unit stays green" >&2
                             echo "error: wiki db-password rotation refused: services/wiki/db-password no longer matches the DB_PASSWORD last applied to the wiki/bookstack Secret, and this stack cannot rotate it. The MariaDB image sets the bookstack account's password only while the data directory is empty, so applying the new value would update the Secret and BookStack's environment while the database account keeps the old password; the mismatch would surface as Access denied at the next BookStack start. The Secret is NOT updated and the wiki stays at its previous, consistent state." >&2
                             echo "error: to change the password anyway (in one sitting — BookStack's live connections break at step 1): (1) k3s kubectl exec -it -n wiki deploy/wiki-mariadb -- mariadb -u bookstack -p  (old password at the prompt, so it stays out of any argv), then SET PASSWORD = '<the new password>';  (2) k3s kubectl delete secret bookstack -n wiki  — that Secret is this guard's memory of the last applied value;  (3) re-activate, which recreates the Secret from sops;  (4) k3s kubectl rollout restart deploy/wiki-bookstack -n wiki. Reasoning and the full version of these steps: k8s/apps/wiki/SECRETS.md." >&2
