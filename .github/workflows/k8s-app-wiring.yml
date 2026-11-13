@@ -1,0 +1,44 @@
+name: k8s-app-wiring
+
+# A chart is discovered by `just k8s-render` the moment its directory carries a
+# Chart.yaml, while the nix render, the PR preview and renovate.json each name
+# their apps by hand. An app wired into only part of that path is not an app that
+# is merely not deployed yet: built by nothing it fails the apply at switch time,
+# missing from the preview it removes the rendered diff that is the review of it,
+# and unlisted in renovate it is never bumped. This was a checklist in
+# k8s/README.md, which restated the live state of those three files and was wrong
+# the first time any of them was refactored.
+#
+# GitHub skips a workflow entirely when no changed file matches its `paths:`, so a
+# cross-file check is only as good as a filter that covers every file it reads:
+# the refactor that breaks the invariant touches one of them by construction, and
+# a check that is never scheduled for that PR is a check that passes. Hence the
+# render step's own workflow file and the script below are listed next to the
+# three files compared. It is a separate workflow rather than a job of
+# k8s-manifest-diff.yml because that one triggers on k8s/** and nix/** only, and
+# widening it to cover renovate.json would drag the nix build and the helm render
+# onto renovate-only PRs.
+on:
+  pull_request:
+    paths:
+      - "k8s/apps/**"
+      - "nix/services/k3s.nix"
+      - "renovate.json"
+      - ".github/workflows/k8s-manifest-diff.yml"
+      - ".github/workflows/k8s-app-wiring.yml"
+      - "scripts/check-app-wiring.sh"
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  app-charts-wired:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Every app chart must be named by the nix render, the preview render and renovate
+        run: ./scripts/check-app-wiring.sh

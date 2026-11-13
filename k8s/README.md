@@ -23,37 +23,6 @@ k8s/
 └── manifests/         # cluster-level yaml auto-applied by k3s (nix/services/k3s.nix)
 ```
 
-### Adding an app
-
-A new dir under `apps/<domain>/` with its own chart (`Chart.yaml`, `templates/`,
-`values.yaml`) is the small part: `just k8s-render` picks up any directory that
-carries a `Chart.yaml`. Everything else names the apps by hand — the nix render,
-the three workflows below and renovate — so a chart nothing points at renders
-fine and is updated, diffed and applied by nothing. The wiki (PR #304) had to
-touch all of these:
-
-- `renovate.json` — add the app's values files to the image manager's
-  `managerFilePatterns`, plus a `packageRules` entry when its grouping or automerge
-  differs from the fleet's. An unlisted file is never bumped, and nothing fails.
-- `.github/workflows/renovate-config-check.yml` — the per-file extraction
-  expectation, so a pattern that stops matching the app's files goes red instead of
-  quietly extracting nothing.
-- `.github/workflows/k8s-manifest-diff.yml` — render the chart in the PR preview.
-- `.github/workflows/chart-image-digests.yml` — add the values files to `FILES`.
-- `nix/services/k3s.nix`, four places: the `pkgs.runCommand "<app>-chart-rendered"`
-  derivation; `system.build.<app>ChartRendered`, without which the render is never
-  built and the apply fails at deploy time; the `sops.secrets."services/<app>/*`
-  declarations (with their `.sops.yaml` path rule and the sops file itself); and the
-  `ai-chart-apply` oneshot, which reads the secrets, creates the Secret the chart
-  references and must not define, applies the rendered manifest, and labels it into
-  the app's namespace.
-
-An app that needs local storage adds `services.k3s.manifests.<app>-pvs` and the host
-directories that PV binds to, in `tmpfiles.rules`.
-
-Adding a model to the ai chart stays one file: `values/<model>.yaml` — the chart
-renders a Deployment + Service for it and adds it to the LiteLLM gateway model_list.
-
 ## Keeping images current
 
 `renovate.json` reads the chart values files with a regex manager, so a new model
