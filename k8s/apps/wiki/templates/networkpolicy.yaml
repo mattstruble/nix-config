@@ -3,68 +3,43 @@ Containment for the wiki namespace. k3s enforces these: its embedded
 kube-router network-policy controller is on by default (only
 --disable-network-policy turns it off, and services.k3s.disable lists just
 metrics-server), so these rules bite on stock Flannel with no Cilium or
-Calico. That is also why the egress allows below are load-bearing rather than
-decorative: k8s/manifests/ai-networkpolicies.yaml carries the correction to an
-earlier "Flannel ignores NetworkPolicy" claim, which was wrong.
+Calico.
 
 Order matters and is not accidental: a namespace with no policy selecting a
-pod is DEFAULT ALLOW, so the deny has to be applied before the workloads or
-the first apply leaves BookStack wide open until the second one. `helm
-template` emits kinds in Helm's install order, which puts NetworkPolicy
-immediately after Namespace, and the apply script feeds that file to kubectl
-in document order — so the deny lands first.
+pod is DEFAULT ALLOW, so the deny has to land before the workloads or the
+first apply leaves BookStack wide open until the second one. Helm's install
+order puts NetworkPolicy immediately after Namespace, and the apply script
+feeds the rendered file to kubectl in document order.
 
-Three policies, and the set is closed: anything not written here is dropped.
-  1. deny everything, both directions, for every pod in the namespace
-  2. bookstack: in from the LAN Ingress; out to DNS,
-     the database, and 443 to the OIDC issuer
-  3. mariadb:   in from bookstack only; no egress at all
+The traefik rule is templated on ingress.enabled so the route and its
+permission cannot drift apart: nothing outside this file decides the wiki's
+exposure. Traefik is a pod in kube-system, not hostNetwork (verified), so the
+namespace+pod selector below is what matches it — naming traefik rather than
+the pod CIDR keeps every other pod in the cluster out, which allowing the
+CIDR would not.
 
-One ingress path reaches BookStack:
+`to` is a list of peers and a rule whose peer list is empty matches every
+destination, so oidc.egressCidrs is guarded rather than ranged bare: an empty
+value means the opposite of what the operator reaching for it intended, on
+the one port (443) that reaches the rest of the network. A bare range cannot
+tell "narrowed" from "widened to everything", so the template checks it and
+refuses to render.
 
-  - traefik, for the LAN Ingress (templates/ingress.yaml). Traefik is a pod
-    in kube-system, not hostNetwork, so the source is the pod and the
-    namespace+pod selector below is what matches it. Naming traefik rather
-    than the pod CIDR keeps every other pod in the cluster out; allowing the
-    CIDR would let any pod in the cluster reach BookStack directly and skip
-    whatever the edge eventually decides.
-
-Nothing about the wiki's exposure is decided by anything outside this file.
-Setting ingress.enabled false removes the traefik rule in the same apply,
-so the route and its permission cannot drift apart.
-
-oidc.egressCidrs is guarded rather than ranged bare, and the reason is the
-shape of the bug it prevents: `to` is a list of peers, and a rule whose peer
-list is empty matches every destination. An empty value therefore does not
-mean "no egress" — it means the opposite of what the operator reaching for it
-intended, on the one port (443) that reaches the rest of the network. A bare
-range cannot tell "narrowed" from "widened to everything", so the template
-checks it and refuses to render.
-
-Two names changed: `bookstack` is now `wiki-bookstack` and `mariadb` is now
-`wiki-mariadb`, so all three policies carry the `wiki-` prefix the Deployment,
-Service and deny policy already use. A rename applied to a live cluster is a
-delete plus a create: the wiki pass runs `kubectl apply --prune` scoped to
-`mjolnir/prune-group=wiki` (nix/services/k3s.nix), and the old object still
-carries that label, so the same pass that creates the new name deletes the old
-one. `kubectl apply --prune` prints a line per object it removes, so the
-journal does show it — measured on the first activation carrying this change:
+Two names here are renames — `bookstack` is now `wiki-bookstack` and
+`mariadb` is now `wiki-mariadb`; `wiki-default-deny` was created already
+prefixed — and this comment is the only record that the change was a rename.
+The wiki pass runs `kubectl apply --prune` scoped to
+`mjolnir/prune-group=wiki` (nix/services/k3s.nix), which prints one `pruned`
+line per object it removes:
 
     networkpolicy.networking.k8s.io/bookstack pruned
     networkpolicy.networking.k8s.io/mariadb pruned
 
-Read those lines with care. `pruned` is the word used for every removal the
-pass makes, so a rename and an accidental deletion are the same two lines, and
-neither one names its replacement. The record that the rename was intended
-lives here, in this comment, and nowhere in the activation. The check is
-therefore the object list: `k3s kubectl get networkpolicy -n wiki` must show
-exactly three policies, all `wiki-`prefixed, with no bare `bookstack` or
-`mariadb` left. A policy missing from that list with no `wiki-` counterpart is
-not a rename.
-
-Between the old policy being pruned and the new one being programmed by the
-CNI there is a window in which the old policy's enforcement is gone — one
-apply, not an outage, but not instantaneous.
+`pruned` is kubectl's word for every removal that pass makes, so a rename and
+an accidental deletion print the same two lines. The check is the object list:
+`k3s kubectl get networkpolicy -n wiki` must show exactly three policies, all
+`wiki-`prefixed. Between a prune and the CNI programming the replacement there
+is a window in which the old policy's enforcement is gone.
 */ -}}
 {{- $egressCidrs := .Values.oidc.egressCidrs -}}
 {{- if not $egressCidrs -}}
@@ -96,15 +71,6 @@ spec:
     - Ingress
     - Egress
   ingress:
-    # The LAN path: traefik, and only traefik. This rule is the difference
-    # between an Ingress that works and an Ingress that looks healthy while
-    # every request is dropped, because the namespace default-deny above
-    # otherwise swallows the proxied connection. It is also what
-    # bookstack.trustedProxies in values.yaml depends on: it trusts
-    # X-Forwarded-* from the whole pod CIDR only because this is the only
-    # ingress peer, so add a peer here without narrowing it and login
-    # throttling collapses onto one bucket and every audit line records the
-    # forged source IP.
     {{- if .Values.ingress.enabled }}
     - from:
         - namespaceSelector:
@@ -118,9 +84,6 @@ spec:
           port: {{ .Values.bookstack.port }}
     {{- end }}
   egress:
-    # Service discovery for `mariadb`. Without this the pod cannot even
-    # resolve its own database, which is the failure mode a default-deny-egress
-    # policy written from the ticket text produces.
     - to:
         - namespaceSelector:
             matchLabels:
@@ -140,9 +103,6 @@ spec:
       ports:
         - protocol: TCP
           port: {{ .Values.database.port }}
-    # OIDC discovery + any future webhook. See oidc.egressCidrs for why this
-    # is a CIDR and why its default is the IdP's private segment rather than
-    # the whole internet.
     - to:
         {{- range $egressCidrs }}
         - ipBlock:
@@ -163,10 +123,9 @@ spec:
     matchLabels:
       app.kubernetes.io/component: database
   policyTypes:
-    # Ingress only, deliberately. Egress is already denied by the
-    # namespace-wide policy, and adding an Egress type here with no rules
-    # would not re-open it — but omitting it keeps the intent unambiguous:
-    # the database listens, it does not call out.
+    # Ingress only, deliberately: egress is already denied by the
+    # namespace-wide policy, and omitting the type here keeps the intent
+    # unambiguous — the database listens, it does not call out.
     - Ingress
   ingress:
     - from:

@@ -1,14 +1,9 @@
-# The BookStack database. Single replica, Recreate (the PVC is RWO — two pods
-# on one volume is data corruption, not high availability).
+# The BookStack database. Single replica, Recreate: the PVC is RWO, and two
+# pods on one volume is data corruption, not high availability.
 #
-# Runs as the image's own mysql user, non-root, all capabilities dropped,
-# readOnlyRootFilesystem, nothing writable but the data directory.
-#
-# What the pod split is and is not. It is a process boundary: the two
-# containers' init systems cannot interfere, and a crash of one does not take
-# the other. It is not a security boundary. Both pods mount the same
-# wiki-data claim (subPath mysql here, subPath bookstack there), and the
-# BookStack container runs runAsUser 0 with DAC_OVERRIDE
+# The pod split is a process boundary, not a security boundary. Both pods
+# mount the same wiki-data claim (subPath mysql here, subPath bookstack
+# there), and the BookStack container runs runAsUser 0 with DAC_OVERRIDE
 # (bookstack-deployment.yaml), which bypasses the 0750 999:999 mode on the
 # datadir — so the app container can read and overwrite the InnoDB files.
 #
@@ -18,9 +13,8 @@
 # k8s/manifests/wiki-local-pv.yaml), so a split buys nothing against the
 # failure that actually matters here — filling or corrupting the single NVMe
 # partition — while costing the one-directory backup story. The residual risk
-# is integrity, not confidentiality: a bug or a compromised BookStack can
-# corrupt the database. The control that closes it is the backup, not the pod
-# boundary; there is no backup job in this repo yet, so the risk is currently
+# is integrity, not confidentiality. The control that closes it is the backup,
+# and there is no backup job in this repo yet, so the risk is currently
 # unmitigated.
 apiVersion: apps/v1
 kind: Deployment
@@ -45,15 +39,11 @@ spec:
       securityContext:
         runAsUser: {{ .Values.database.uid }}
         runAsGroup: {{ .Values.database.gid }}
-        # No fsGroup: this pod and the BookStack pod mount the same claim
-        # (wiki-data) by different subPaths, and kubelet applies fsGroup
-        # ownership and mode reconciliation per pod at the volume root — so
-        # with a fsGroup here too, each pod start recursively chowned the
-        # other's subtree, including this datadir, and replaced the intended
-        # 0750. What replaces it: the host directory is created and owned by
-        # systemd.tmpfiles in nix/services/k3s.nix and re-asserted at every
-        # activation, and this pod runs as that uid/gid, so it writes the
-        # directory directly. Full reasoning in bookstack-deployment.yaml.
+        # No fsGroup: this pod and the BookStack pod mount the same claim by
+        # different subPaths, and kubelet reconciles fsGroup ownership and
+        # mode per pod at the volume root, so a fsGroup here would recursively
+        # chown the other's subtree, this datadir included, and replace the
+        # intended 0750. Full reasoning in bookstack-deployment.yaml.
         runAsNonRoot: true
         seccompProfile:
           type: RuntimeDefault
@@ -72,65 +62,44 @@ spec:
               value: {{ .Values.database.database }}
             - name: MARIADB_USER
               value: {{ .Values.database.username }}
+            # The image reads MARIADB_PASSWORD only while the data directory
+            # is empty; from then on the bookstack account's password lives in
+            # the database and re-applying the Secret never touches it. That
+            # is why the wiki pass in nix/services/k3s.nix refuses a rotated
+            # DB_PASSWORD instead of half-applying it.
             - name: MARIADB_PASSWORD
               valueFrom:
                 secretKeyRef:
                   name: {{ .Values.secretName }}
                   key: DB_PASSWORD
             # The entrypoint refuses to initialise an empty data dir without
-            # one of the root-password options set, so the first run on a fresh
-            # volume dies before the server ever starts. Nothing here needs a
-            # known root credential — BookStack connects as the application
-            # user above — so the password is random. It applies only to
-            # root@localhost (see MARIADB_ROOT_HOST below) and is printed to
-            # this container's stdout once, by the pod that runs initdb. The
-            # kubelet persists that stdout to a log file on the node, so the
-            # password stays recoverable via `kubectl logs` for as long as that
-            # log file exists. The monitoring pipeline redacts it before Loki —
-            # Loki only; the host log file and `kubectl logs` still carry the
-            # full line. The redaction is at read time and Loki receives lines
-            # only through Alloy, so there is no window where the line reaches
-            # Loki unredacted, on a fresh install or otherwise. If the log file
-            # is gone, recovery is to start a server against this data dir with
-            # --skip-grant-tables and SET PASSWORD for root@localhost — the last
-            # resort, after `kubectl logs`. Ignored once the data dir exists, so
-            # it is inert after initdb.
+            # one of the root-password options set; nothing here needs a known
+            # root credential, so this one is random. initdb prints it to this
+            # container's stdout once and kubelet persists that stdout to a log
+            # file on the node: the line is redacted before Loki (at read time,
+            # and Loki receives lines only through Alloy), still present in
+            # `kubectl logs` and the host log file. Ignored once the data dir
+            # exists. Getting at that password after the log line is gone is a
+            # hand sequence, not a flag: RUNBOOK.md, Standing notes, "Recover
+            # the MariaDB root password with the grant tables skipped".
             - name: MARIADB_RANDOM_ROOT_PASSWORD
               value: "1"
             # The entrypoint defaults this to '%' and, during initdb, creates
-            # root@'%' with the generated password. Setting it to localhost
+            # root@'%' with the generated password; setting it to localhost
             # skips that account entirely — verified against this image's
             # docker-entrypoint.sh, where the CREATE USER 'root'@host block is
-            # guarded by MARIADB_ROOT_HOST != 'localhost', while the
-            # root@localhost password, the healthcheck users and the app user
-            # are set by separate statements. Nothing in this chart connects
-            # as root over TCP; the probes sign in as the healthcheck user.
+            # guarded by MARIADB_ROOT_HOST != 'localhost'.
             - name: MARIADB_ROOT_HOST
               value: "localhost"
-            # Run mariadb-upgrade at start when the data dir is older than the
-            # image, and create the healthcheck users the probes below sign in
-            # as. Without it, an image bump that moves MariaDB forwards leaves
-            # the system tables on the old schema.
+            # Also what creates the healthcheck users the probes below sign in
+            # as, and what runs mariadb-upgrade when the data dir is older
+            # than the image; without it an image bump leaves the system
+            # tables on the old schema.
             - name: MARIADB_AUTO_UPGRADE
               value: "1"
           ports:
             - name: mysql
               containerPort: {{ .Values.database.port }}
-          # The image's own check: opens a connection and waits for InnoDB to
-          # finish recovery. Preferred over `mariadb-admin ping`, which needs
-          # credentials on the command line where any process in the pod can
-          # read them from /proc.
-          #
-          # Startup first, because the two slow things this container does are
-          # not crashes: InnoDB crash recovery after an OOMKill under the 512Mi
-          # limit, and the mariadb-upgrade step MARIADB_AUTO_UPGRADE runs —
-          # against a temporary server that has networking disabled and, on an
-          # older volume, no healthcheck config written yet. Both take minutes,
-          # and a kill restarts either one from the beginning, so the window
-          # this replaces (liveness at 60s + 3 x 20s = ~100s) was one the pod
-          # could not clear by being healthy; it could only be cleared by
-          # getting lucky. 60 x 10s = 10 minutes, and liveness and readiness
-          # stay paused until it passes.
           startupProbe:
             exec:
               command:
@@ -149,12 +118,6 @@ spec:
             initialDelaySeconds: 10
             periodSeconds: 10
             timeoutSeconds: 5
-          # --connect alone: a server that answers connections but has not
-          # finished with InnoDB is unready, not dead, and restarting it throws
-          # away the recovery in progress. No initialDelaySeconds either — the
-          # startup probe owns the start of the container now, and this one
-          # only has to answer for the steady state (3 x 20s = 60s of a server
-          # that has stopped accepting connections at all).
           livenessProbe:
             exec:
               command:
@@ -183,13 +146,10 @@ spec:
         - name: data
           persistentVolumeClaim:
             claimName: wiki-data
-        # Both scratch volumes carry a sizeLimit. An emptyDir with no limit is
-        # charged to the node's root filesystem with no ceiling, and on this
-        # single node that is the partition holding the Nix store and the
-        # container images. `run` holds only the socket and pidfile; 1Gi on
-        # `tmp` is generous for a wiki-sized database's temp tables, and
-        # exceeding it evicts this pod rather than filling the root — the
-        # failure is visible and self-limiting instead of taking the node.
+        # Both scratch volumes carry a sizeLimit: an unlimited emptyDir is
+        # charged to the node's root filesystem, and on this single node that
+        # is the partition holding the Nix store and the container images.
+        # Exceeding a limit evicts this pod rather than filling the root.
         - name: run
           emptyDir:
             sizeLimit: 32Mi

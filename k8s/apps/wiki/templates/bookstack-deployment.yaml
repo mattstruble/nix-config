@@ -1,43 +1,28 @@
 # BookStack itself.
 #
-# THE POD SECURITY EXCEPTION, stated plainly rather than buried:
+# The pod security exception: this is the least isolated container in the
+# cluster, and it is that way because the image is a LinuxServer s6-overlay
+# image. s6-overlay cannot start below uid 0 (`s6-overlay-suexec: fatal:
+# unable to setgid to root: Operation not permitted`); at init it chowns
+# /config to PUID and then, as root, creates directories inside what it just
+# chowned away, so dropping CAP_DAC_OVERRIDE answers `mkdir: cannot create
+# directory '/config/keys': Permission denied`. Both halves were tested
+# against the real image, not reasoned about.
 #
-# This is the least isolated container in the cluster, and it is that way for
-# one reason — the image is a LinuxServer s6-overlay image, which starts as
-# root, does its own privilege drop, and then needs to write inside a
-# directory it has just chowned to the unprivileged user. Both halves were
-# tested against the real image rather than reasoned about:
-#
-#   * started as uid 983: `s6-overlay-suexec: fatal: unable to setgid to
-#     root: Operation not permitted` — it does not start at all.
-#   * started as root with CAP_DAC_OVERRIDE dropped: `mkdir: cannot create
-#     directory '/config/keys': Permission denied`, because init chowns
-#     /config to PUID and then, as root, creates directories inside it.
-#   * started as root with the five caps below: migrates, serves /status 200.
-#   * started as root with the five caps AND no_new_privs: still 200, so
-#     allowPrivilegeEscalation: false is not part of the exception.
-#
-# What that buys back: the namespace is `baseline`, not `privileged`. Every
-# one of CHOWN, DAC_OVERRIDE, FOWNER, SETGID, SETUID is on baseline's allowed
-# add-list, and baseline permits runAsUser 0 — so this pod is baseline-
-# compliant with no namespace-level exception at all. The exception is
-# against `restricted`, which would additionally require a non-root user and
-# a read-only root filesystem, neither of which this image can do.
+# The exception is against `restricted`, which would additionally require a
+# non-root user and a read-only root filesystem, neither of which this image
+# can do — not against the namespace's `baseline`, which this pod meets with
+# no namespace-level exception at all.
 #
 # The trade is deliberate and it is bounded by the network policies, not by
 # the container: a PHP application, patched by a digest bump, running as root
-# at init, whose egress is limited to its own database, DNS, and TCP/443 to
-# the one public Pangolin /32 that oidc.egressCidrs still holds — values.yaml
-# records why the LAN segment was measured away rather than kept. The
-# bookstack NetworkPolicy admits one peer: the LAN, which matches and does
-# reach this pod.
-# What keeps this pod off the internet is therefore not the policy but the
-# absence of a publisher — nothing publishes wiki.mjolnir to the edge
-# (RUNBOOK.md, "What this runbook cannot check for you" — the tunnel). The
-# exception is written
-# against the state after the connector lands, where it becomes a public PHP
-# app reachable through exactly one connector pod; that is the blast radius
-# being accepted here, not today's.
+# at init. The policies bound what this pod can reach and which peers inside
+# the cluster reach it; nothing in them keeps it off the internet. What keeps
+# it off the internet is the absence of a publisher — nothing publishes
+# wiki.mjolnir to the edge (RUNBOOK.md, "What this runbook cannot check for
+# you"). The exception is written against the state after the connector lands,
+# where this is a public PHP app reachable through exactly one connector pod;
+# that is the blast radius being accepted here, not today's.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -59,32 +44,16 @@ spec:
         app.kubernetes.io/part-of: wiki
     spec:
       securityContext:
-        # Root at init, drops to uid {{ .Values.bookstack.uid }} for the app.
-        # runAsNonRoot: false is explicit, not omitted: its absence is what
-        # makes an unrelated default in a future Kubernetes quietly reject
-        # this pod, and the reason it must be root belongs next to it.
         runAsUser: 0
         runAsNonRoot: false
-        # No fsGroup — and there is deliberately none on the mariadb pod
-        # either. Both pods mount the SAME claim (wiki-data) through
-        # different subPaths, and kubelet reconciles fsGroup ownership and
-        # volume modes per pod at the VOLUME ROOT, not at the subPath. With
-        # 983 here and 999 there, every pod start recursively chowned the
-        # whole tree — the sibling subtree included, InnoDB datadir included —
-        # so on-disk ownership was decided by whichever pod started last and
-        # kubelet's mode handling overwrote the intended 0750/0770. A
-        # recursive chown racing MySQL's file creation can also fail the
-        # mount outright.
-        #
-        # What replaces it: the host subdirectories are created and owned by
-        # systemd.tmpfiles in nix/services/k3s.nix (/var/lib/wiki/bookstack
-        # 0770 983:983, /var/lib/wiki/mysql 0750 999:999) and re-asserted at
-        # every activation, and each pod already pins the identity it writes
-        # as (this one drops to PUID/PGID after init; mariadb runs as the
-        # image's own mysql user). This pod needs nothing from kubelet: it is
-        # root at init with CAP_CHOWN and chowns /config to PUID/PGID itself
-        # (see the caps below). Do not add fsGroup back to either pod without
-        # first giving each workload its own PV.
+        # No fsGroup here, and none on the mariadb pod either: both pods
+        # mount the SAME claim (wiki-data) through different subPaths, and
+        # kubelet reconciles fsGroup ownership and volume modes per pod at the
+        # VOLUME ROOT, not at the subPath — so a fsGroup here would recursively
+        # chown the mariadb subtree at every pod start and overwrite the
+        # intended 0750/0770. The host subdirectories are owned by
+        # systemd.tmpfiles in nix/services/k3s.nix instead. Do not add fsGroup
+        # back to either pod without first giving each workload its own PV.
         seccompProfile:
           type: RuntimeDefault
       automountServiceAccountToken: false
@@ -93,18 +62,16 @@ spec:
           image: {{ required "bookstack.image is required" .Values.bookstack.image }}
           securityContext:
             allowPrivilegeEscalation: false
-            # The app writes sqlite-free state under /config, but nginx and
-            # php-fpm also write pidfiles and sockets under /var/run and
-            # /var/log; s6's stage1 unpacks into /run as well.
+            # Not read-only: nginx and php-fpm write pidfiles and sockets
+            # under /var/run and /var/log, and s6's stage1 unpacks into /run.
             readOnlyRootFilesystem: false
             capabilities:
               drop:
                 - ALL
               add:
-                # CHOWN + FOWNER: init chowns /config to PUID/PGID.
-                # SETUID + SETGID: the privilege drop to the app user.
-                # DAC_OVERRIDE: init writes inside the directory it just
-                # chowned away from root (see the header comment).
+                # What the image's init does as root before it drops: chown
+                # /config to PUID/PGID, create directories inside the tree it
+                # just chowned away, then setgid/setuid to the app user.
                 - CHOWN
                 - DAC_OVERRIDE
                 - FOWNER
@@ -137,61 +104,32 @@ spec:
                 secretKeyRef:
                   name: {{ .Values.secretName }}
                   key: DB_PASSWORD
-            # ── Trusted proxies ──────────────────────────────────────────
-            # APP_PROXIES is the name this pinned version reads: the
-            # `proxies` key in app/Config/app.php, consumed by
-            # app/Http/Middleware/TrustProxies.php. Empty trusts no proxy —
-            # correct only while nothing proxies to this pod. The Pangolin
-            # connector PR must set bookstack.trustedProxies to the
-            # connector's pod/network, or throttling and the audit log key
-            # on the connector's address (see RUNBOOK.md's tunnel note).
             - name: APP_PROXIES
               value: {{ .Values.bookstack.trustedProxies | quote }}
-            # ── Third-party services kept off ────────────────────────────
             # Without this BookStack renders every member's avatar as
-            # gravatar.com/avatar/<md5(email)>: a household email hash
-            # leaves the cluster per member, and a gravatar profile lookup
-            # confirms the addresses. Verified against the pinned image
-            # (v26.09.2): app/Config/services.php reads
-            # DISABLE_EXTERNAL_SERVICES into `disable_services`, which
-            # app/Uploads/UserAvatars.php consults before the gravatar URL;
-            # the legacy DISABLE_GRAVATAR name no longer exists in this
-            # version. The same switch also turns off the draw.io
-            # integration — another third-party fetch, off on purpose here.
+            # gravatar.com/avatar/<md5(email)>: a household email hash leaves
+            # the cluster per member, and a gravatar profile lookup confirms
+            # the address. The same switch turns off the draw.io integration.
+            # DISABLE_EXTERNAL_SERVICES is the name this pinned version reads
+            # (app/Config/services.php); the legacy DISABLE_GRAVATAR name no
+            # longer exists in it.
             - name: DISABLE_EXTERNAL_SERVICES
               value: "true"
             # BookStack's docs warn debug mode can expose configuration
-            # credentials to visitors, and a default that happens to be safe
-            # is not a decision.
+            # credentials to visitors.
             - name: APP_DEBUG
               value: "false"
             # No update-check variable is set because the pinned version has
             # none to set: v26.09.2 ships no update checker at all — no
-            # APP_UPDATE_CHECK or UPDATE_CHECK key in app/Config, the
-            # image's .env.example.complete, the routes, or the settings
-            # code — so there is no server-side version report to disable
-            # and no variable to wire. Do not add a dead one here.
-            # ── Authentication ───────────────────────────────────────────
-            # OIDC is the ONLY auth method: there is no password form to
-            # brute force, and no local account to hand over.
+            # APP_UPDATE_CHECK or UPDATE_CHECK key in app/Config, the image's
+            # .env.example.complete, the routes, or the settings code. Do not
+            # add a dead one here.
             - name: AUTH_METHOD
               value: oidc
-            # The two variables below are presentation, not policy, and
-            # they are the only place this chart configures how the app
-            # looks. They are kept because the image's own defaults are
-            # worse for this deployment, not because the defaults are wrong:
-            # app/Config/auth.php defaults auto_initiate to false, so
-            # dropping it reinstates an intermediate provider screen for
-            # every login, and app/Config/oidc.php defaults the provider
-            # name to "SSO" — a word nobody here uses, on the one screen a
-            # non-technical family member has to get right unaided. Both
-            # cost a confused first login and neither buys any security.
-            # Everything else in this container is wiring or security.
-            #
-            # OIDC_DISPLAY_NAME_CLAIMS used to be pinned here to `name`,
-            # which is already app/Config/oidc.php's default. It restated a
-            # value nobody had chosen, so it is gone; if the claim ever
-            # needs changing, add it back with a reason.
+            # Presentation, not policy: app/Config/auth.php defaults
+            # auto_initiate to false, so dropping this reinstates an
+            # intermediate provider screen at every login, and
+            # app/Config/oidc.php defaults the provider name to "SSO".
             - name: AUTH_AUTO_INITIATE
               value: "true"
             - name: OIDC_NAME
@@ -200,20 +138,15 @@ spec:
               value: {{ .Values.oidc.issuer | quote }}
             - name: OIDC_ISSUER_DISCOVER
               value: "true"
-            # RP-initiated logout, if the issuer advertises one.
             - name: OIDC_END_SESSION_ENDPOINT
               value: "true"
-            # The client credentials, from the same Secret as APP_KEY and
-            # DB_PASSWORD and written the same way. The activation script only
-            # applies this chart when neither value is the "unset" sentinel,
-            # so both keys exist whenever this pod is created; the values are
-            # printf'd without a trailing newline, which matters because the
-            # client secret must byte-match what Pocket ID holds.
-            # The pinned image serves the app through php-fpm with
-            # clear_env = no (checked against the pinned digest, not assumed),
-            # so these reach Laravel's env(), and Laravel loads .env through an
-            # immutable repository, so a persisted /config/www/.env line can
-            # never shadow them.
+            # Both keys exist whenever this pod is created: the activation
+            # refuses to apply this chart while either is the "unset"
+            # sentinel. They are printf'd without a trailing newline because
+            # the client secret must byte-match what Pocket ID holds.
+            # The image serves the app through php-fpm with clear_env = no
+            # (checked against the pinned digest), so these reach Laravel's
+            # env() and a persisted /config/www/.env line cannot shadow them.
             - name: OIDC_CLIENT_ID
               valueFrom:
                 secretKeyRef:
@@ -224,7 +157,10 @@ spec:
                 secretKeyRef:
                   name: {{ .Values.secretName }}
                   key: OIDC_CLIENT_SECRET
-            # ── Group → role sync ────────────────────────────────────────
+            # BookStack resolves a missing entity grant by walking up the
+            # parent chain, so an absent allow is not a deny: what group →
+            # role sync hands out is roles, never a denial — closing content
+            # off happens on the entity, in the database (RUNBOOK.md §6.5).
             - name: OIDC_USER_TO_GROUPS
               value: "true"
             - name: OIDC_GROUPS_CLAIM
@@ -235,69 +171,33 @@ spec:
             # silently loses their roles at their next login.
             - name: OIDC_ADDITIONAL_SCOPES
               value: {{ .Values.oidc.groupsClaim }}
-            # Drop roles the user no longer matches. Load-bearing in both
-            # directions: it is what makes removing someone from a Pocket ID
-            # group revoke anything — at that user's NEXT LOGIN, not when the
-            # membership changes, because this sync runs inside the OIDC login
-            # flow and BookStack never revisits a session that is already
-            # live — and it is also why the registration default role must be
-            # an empty one: while this is on, BookStack treats that role as
-            # always-matched and assigns it.
-            #
-            # The next-login qualifier is the threat model rather than a
-            # footnote to it: this deployment exists so that a plex-users
-            # member cannot read the Family shelves, and between a group
-            # removal and the next login the removed member still holds the
-            # roles they were issued. Closing that window is an operator
-            # action — see the Revoke step in RUNBOOK.md. The SESSION_*
-            # settings below bound how long a session can survive without
-            # activity; the end-to-end delay is an open measurement, not a
-            # number this file asserts.
+            # Revocation runs inside the OIDC login flow and BookStack never
+            # revisits a session that is already live, so removing someone from
+            # a Pocket ID group takes effect at their NEXT LOGIN, not when the
+            # membership changes — closing that window is an operator action
+            # (RUNBOOK.md, Revoke). It is also why the registration default
+            # role must be an empty one: while this is on, BookStack treats
+            # that role as always-matched and assigns it.
             - name: OIDC_REMOVE_FROM_GROUPS
               value: "true"
-            # ── Session lifetime ─────────────────────────────────────────
-            # Group → role sync happens at login only (see
-            # OIDC_REMOVE_FROM_GROUPS), so a BookStack session's lifetime is
-            # exactly the window in which a removed member keeps the roles they
-            # were issued. SESSION_LIFETIME is the minutes of inactivity after
-            # which BookStack expires that session, and it is the only session
-            # expiry this image reads — app/Config/session.php consults
-            # SESSION_LIFETIME, SESSION_DRIVER, SESSION_COOKIE_NAME,
-            # SESSION_DOMAIN and SESSION_SECURE_COOKIE, and nothing else.
+            # Group → role sync happens at login only, so a session's lifetime
+            # is the window in which a removed member keeps the roles they were
+            # issued. SESSION_LIFETIME is the minutes of inactivity after which
+            # BookStack expires it, and app/Config/session.php reads no other
+            # session expiry. It revokes nobody: a member who keeps using the
+            # app refreshes the session indefinitely. 120 is BookStack's own
+            # default; pinning a no-op is what makes the window a recorded
+            # decision a diff can change and a reviewer can object to, rather
+            # than an image default nobody chose.
             #
-            # 120 is BookStack's own default, so pinning it changes nothing
-            # today; it makes the window a recorded decision a diff can change
-            # and a reviewer can object to, which is the reason it is here
-            # rather than an image default nobody chose.
-            #
-            # What it does not do: revoke anybody. A member who keeps using the
-            # app refreshes the session indefinitely, so this bounds only what
-            # forgetting to act costs. The revocation itself stays explicit
-            # (RUNBOOK.md, Revoke).
-            #
-            # SESSION_ACTIVITY_LIMIT and SESSION_TOKEN_TIME used to be set
-            # here, with a comment explaining how they bounded an unattended
-            # session. Neither is a BookStack option — they are pre-Laravel
-            # names the image ignores — so that control was fiction and the
-            # real value was an unchosen default. Do not reintroduce them.
+            # SESSION_ACTIVITY_LIMIT and SESSION_TOKEN_TIME are not BookStack
+            # options at all: pre-Laravel names this image ignores. Do not
+            # reintroduce them.
             - name: SESSION_LIFETIME
               value: "120"
           ports:
             - name: http
               containerPort: {{ .Values.bookstack.port }}
-          # /status reports the three things that actually make BookStack
-          # usable — database, cache and session all answering — as JSON over
-          # 200. That makes it the right readiness signal: a pod that is up but
-          # cannot read its own database is taken out of service instead of
-          # serving errors. It is the wrong liveness signal, and startup is
-          # where the difference is worth paying for.
-          #
-          # Startup covers `artisan migrate --force`, which the image runs at
-          # every container start and which can outlast a short window on a
-          # large instance. The threshold is deliberately long (40 x 15s = 10
-          # minutes) for a second reason: if this container starts while
-          # MariaDB is down, the correct behaviour is to wait, not to be killed
-          # and re-run a migration against a database that is not there.
           startupProbe:
             httpGet:
               path: /status
@@ -313,21 +213,12 @@ spec:
             periodSeconds: 15
             timeoutSeconds: 5
             failureThreshold: 6
-          # Liveness asks a different question, and only a restart can answer
-          # it: is the s6 bundle (nginx, php-fpm, the queue worker and cron, in
-          # one 768Mi cgroup) still serving? /status cannot be used here, and
-          # not only because its database check makes MariaDB reachability a
-          # liveness condition — with the image default SESSION_DRIVER=database
-          # and settings read from the same table, every routed request touches
-          # MariaDB, so no HTTP path on this app is dependency-free. A MariaDB
-          # Recreate longer than ~3 minutes therefore killed this pod
-          # repeatedly, each start re-running a migration in the middle of the
-          # outage, and an OOMKill here also drops an in-flight queue job.
-          #
-          # What the TCP probe gives up: a wedged php-fpm behind a live nginx
-          # stays Running. That is the intended trade — it fails readiness, so
-          # it is loud and out of service, and it is not the condition a
-          # restart reliably fixes. Dependency health belongs to readiness.
+          # tcpSocket while readiness above is httpGet /status: with the
+          # image default SESSION_DRIVER=database, and settings read from the
+          # same table, every routed request touches MariaDB — no HTTP path on
+          # this app is dependency-free. An HTTP liveness probe therefore
+          # restarts this pod through a MariaDB outage, each start re-running
+          # `artisan migrate --force` against a database that is not there.
           livenessProbe:
             tcpSocket:
               port: http
