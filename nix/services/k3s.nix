@@ -725,9 +725,6 @@
               [ $(( $(ip_to_int "$outer_ip") & mask )) -eq $(( $(ip_to_int "$inner_ip") & mask )) ]
             }
 
-            # The datadir check reports at most once per activation: the retry
-            # loop below can run 150 times and the line it prints does not
-            # change between iterations.
             WIKI_DATADIR_CHECKED=0
 
             # 150 x 2s = 5min: the API server can take well over 60s to be
@@ -738,45 +735,32 @@
               $KCTL get namespace monitoring >/dev/null 2>&1 || $KCTL create namespace monitoring
               $KCTL get namespace gpu >/dev/null 2>&1 || $KCTL create namespace gpu
               $KCTL get namespace wiki >/dev/null 2>&1 || $KCTL create namespace wiki
-              # Empty-datadir-behind-an-installed-wiki check: the
-              # one signal in this stack that can tell a wiped wiki
-              # from a fresh one. The tmpfiles rule above
-              # pre-creates /var/lib/wiki/mysql at every boot, so
-              # "is the directory there" is the wrong question —
-              # the directory is always there; the question is
-              # whether initdb has already run in it. Marker:
-              # /var/lib/wiki/mysql/mysql, the system schema
-              # directory the mariadb:11 image's initdb creates —
-              # engine-independent (aria_log_control and ibdata1
-              # are Aria/InnoDB artifacts), and a directory, so
-              # test -d is exact. Failure mode: a future image that
-              # reorganised the datadir layout would make this fire
-              # on a FRESH install — a false alarm, not a false
-              # silence; the dangerous direction (a wiped wiki
-              # reading as new) is unreachable, because the Secret
-              # half of the test is what this check is for.
+              # Empty-datadir-behind-an-installed-wiki check: the one signal in
+              # this stack that tells a wiped wiki from a fresh one. The marker
+              # is /var/lib/wiki/mysql/mysql — the system schema directory
+              # mariadb:11's initdb creates, and the engine-independent one
+              # (aria_log_control and ibdata1 are Aria/InnoDB artifacts). The
+              # tmpfiles rule above pre-creates /var/lib/wiki/mysql at every
+              # boot, so its presence says nothing about initdb. Direction of
+              # error: an image that reorganised the datadir layout would fire
+              # this on a fresh install — a false alarm, never a false silence
+              # from the marker.
               #
-              # "Was installed before" is the wiki/bookstack
-              # Secret, read the same way the rotation guard below
-              # reads it: this activation creates it, so its
-              # presence means a wiki was installed here. No
-              # Secret + no marker = first install, say nothing.
-              # Secret + no marker = the database is gone and the
-              # cluster is about to serve an empty wiki at the real
-              # URL with every probe green (k8s/apps/wiki/RUNBOOK.md,
-              # standing note "An empty database reads as healthy")
-              # — data loss, currently silent, so say it.
+              # "Was installed before" means the wiki/bookstack Secret exists:
+              # every activation that deploys the wiki writes it, so one already
+              # in the cluster records an install. Secret + no marker = the
+              # database is gone and the cluster serves an empty wiki at the
+              # real URL with every probe green (k8s/apps/wiki/RUNBOOK.md, "An
+              # empty database reads as healthy"). Non-fatal, the rule the wiki
+              # pass below states: the loss already happened, so refusing to
+              # apply would punish the operator twice and save nothing.
               #
-              # Non-fatal on purpose, per the decision at the top
-              # of the wiki pass: the data is already gone by the
-              # time this runs, so refusing to apply would punish
-              # the operator twice (generation rolled back AND wiki
-              # lost) and save nothing. The line reports; the apply
-              # proceeds.
               # kubectl exits non-zero both when the Secret does not exist and
               # when the API server is not answering, and only the first is an
               # answer: NotFound latches the check silently, a transport error
-              # leaves it armed so the next iteration reads again.
+              # leaves it armed for the next iteration. A read that keeps
+              # failing non-NotFound until the apply chain below succeeds means
+              # the check never reports and the activation stays green.
               if [ "$WIKI_DATADIR_CHECKED" = 0 ]; then
                 if WIKI_SECRET_ERR="$($KCTL get secret bookstack -n wiki 2>&1 >/dev/null)"; then
                   WIKI_DATADIR_CHECKED=1
@@ -943,77 +927,42 @@
                 && $KCTL label configmap mjolnir-dashboards --namespace monitoring grafana_dashboard=1 --overwrite \
                 && register_metrics_key \
                 && {
-                      # The wiki pass runs last, and it is the one apply pass
+                      # The wiki pass runs last and it is the one apply pass
                       # whose failure does NOT abort the activation: a broken
-                      # optional service must not cost the monitoring stack
-                      # that sits behind it in the chain. Every wiki failure —
-                      # including the DB_PASSWORD rotation guard below — is loud
-                      # in the journal and lets the rest of the generation land;
-                      # the unit exits 0. It used to run
-                      # mid-chain, so with && joining every step a first-run
-                      # wiki failure skipped register_metrics_key too — the
-                      # step whose own comment records the 2026-10-05
-                      # dashboards outage.
-                      #
-                      # Non-fatal, not retried-to-death: the realistic wiki
-                      # failure is not transient. Raising persistence.size
-                      # (which k8s/apps/wiki/templates/pvc.yaml invites, and
-                      # nothing ties it to the PV capacity) makes the existing
-                      # claim mismatch its own immutable spec, kubectl answers
-                      # "field is immutable", and apply_pruned is not
-                      # idempotent under that. The pass runs once, because it
-                      # sits in the && chain that ends in exit 0, so the
-                      # rejection is seen once and the activation continues;
-                      # it is not retried because retrying cannot fix an
-                      # immutable-spec rejection.
-                      #
-                      # What it needs, all of it above: the wiki namespace and
-                      # its PSS label (top of each loop iteration), the 0600
-                      # secret value files and $T/wiki-chart.json (render
-                      # section, before the loop), and the cluster-scoped wiki
-                      # PV that k3s' manifest auto-loader applies before this
-                      # script runs. Its own Secret is created first, here:
-                      # the chart's pods read it at start, and applying the
-                      # workloads a moment earlier only buys a
-                      # CreateContainerConfigError that resolves itself.
+                      # optional service must not cost the monitoring stack that
+                      # sits behind it in the chain. Every wiki failure — the
+                      # rotation guard below included — is loud in the journal,
+                      # lets the rest of the generation land, and leaves the
+                      # unit green. Nor is it retried: the realistic wiki
+                      # failure is not transient — raising persistence.size
+                      # (k8s/apps/wiki/templates/pvc.yaml) makes the existing
+                      # claim mismatch its own immutable spec, and kubectl
+                      # answers "field is immutable", which no retry fixes.
                       if [ "$WIKI_DEPLOY" = "1" ]; then
-                        # DB_PASSWORD rotation guard. The MariaDB image
-                        # honours MARIADB_USER/MARIADB_PASSWORD only while the
-                        # data directory is empty; from then on the bookstack
-                        # account's password lives in the database, and
-                        # re-applying the Secret never touches it. So applying
-                        # a rotated db-password is a half-update: the Secret
-                        # and BookStack's environment move to the new value
-                        # while the account keeps the old one forever, and —
-                        # because nothing here restarts a pod when a Secret
-                        # changes (no checksum annotation, no reloader) — the
-                        # mismatch surfaces as Access denied at the next
-                        # BookStack start, days or weeks later, at an unrelated
-                        # restart and fully detached from the rotation. The
-                        # rotation is therefore refused rather than
-                        # half-applied: the last-applied value is read back
-                        # from the cluster's own Secret (the single record of
-                        # what was last applied), and a mismatch fails here,
-                        # before the Secret is written, with the manual
-                        # procedure spelled out. Same value, or no Secret yet
-                        # (fresh install), or the get itself failing (the
-                        # apply below fails too, and this pass's own error
-                        # handling covers it): proceed.
+                        # DB_PASSWORD rotation guard. The MariaDB image sets the
+                        # bookstack account's password only while the data
+                        # directory is empty; after that the password lives in
+                        # the database and re-applying the Secret never touches
+                        # it. A rotated db-password can therefore only be
+                        # half-applied — Secret and BookStack's environment move,
+                        # the account keeps the old value — and because nothing
+                        # here restarts a pod when a Secret changes, it surfaces
+                        # as Access denied at the next BookStack start, detached
+                        # from the rotation that caused it. So refuse, before the
+                        # Secret is written, with the manual procedure spelled
+                        # out; the cluster's own Secret is the single record of
+                        # the last applied value. Proceed on a match, on no
+                        # Secret yet (fresh install), or on a get that itself
+                        # fails: the guard is skipped then, accepted because an
+                        # API server unreachable enough to fail this read fails
+                        # the apply chain below too, and this pass's own error
+                        # handling reports that.
                         #
-                        # Refusing is right; failing the generation is not.
-                        # The old version of this guard exited 1, which made
-                        # deploy-rs roll the whole system generation back —
-                        # while the cluster kept the five apply passes that
-                        # had already landed (cluster, default, monitoring,
-                        # gpu, kube-system). The nix-declared state and the
-                        # cluster state then diverged until a human noticed,
-                        # which is the outage the non-fatal rule exists to
-                        # prevent. So a refusal now sets WIKI_ROTATE_OK=0,
-                        # which gates the apply chain below: no apply, no
-                        # prune, no exit. The refusal is loud in the journal
-                        # (the two error lines below) and the unit stays
-                        # green; the wiki stays at its previous, consistent
-                        # state until the rotation is carried out by hand.
+                        # Refuse without failing the generation: exiting 1 makes
+                        # deploy-rs roll the whole system generation back while
+                        # the five apply passes that already landed stay in the
+                        # cluster, and the two states then diverge until a human
+                        # notices. WIKI_ROTATE_OK=0 gates the apply chain below.
                         WIKI_ROTATE_OK=1
                         if APPLIED_DB_B64="$($KCTL get secret bookstack -n wiki -o jsonpath='{.data.DB_PASSWORD}' 2>/dev/null)"; then
                           APPLIED_DB_PASSWORD="$(printf '%s' "$APPLIED_DB_B64" | base64 -d 2>/dev/null)"
@@ -1024,82 +973,51 @@
                             echo "error: to change the password anyway (in one sitting — BookStack's live connections break at step 1): (1) k3s kubectl exec -it -n wiki deploy/wiki-mariadb -- mariadb -u bookstack -p  (old password at the prompt, so it stays out of any argv), then SET PASSWORD = '<the new password>';  (2) k3s kubectl delete secret bookstack -n wiki  — that Secret is this guard's memory of the last applied value;  (3) re-activate, which recreates the Secret from sops;  (4) k3s kubectl rollout restart deploy/wiki-bookstack -n wiki. Reasoning and the full version of these steps: k8s/apps/wiki/SECRETS.md." >&2
                           fi
                         fi
-                        # The LAN Ingress terminates TLS at traefik, which
-                        # needs a certificate for the host being served. The
-                        # hostname and the Secret name are read out of the
-                        # rendered chart rather than repeated here, so
-                        # values.yaml stays the only place they are written and
-                        # the certificate cannot disagree with the route. When
-                        # the Ingress is disabled the extraction yields nothing
-                        # and no certificate is built — the manifest list keeps
-                        # an empty file so the same `cat` works either way.
-                        #
-                        # Self-signed and regenerated every pass, following the
-                        # grafana-tls precedent: the browser warns on a
-                        # self-signed name regardless, the LAN is trusted, and
-                        # regenerating keeps the Secret inside this pass's
-                        # prune scope so it is never orphaned. cert-manager and
-                        # a real wildcard certificate are canonical-URLs
-                        # phase 0.
-                        #
-                        # Single-Ingress assumption: head -1 collapses the
-                        # render to the first Ingress's (host, secretName)
-                        # pair and the certificate gets exactly one SAN.
-                        # Today's render has one Ingress with one host. Do not
-                        # add a second Ingress: it would not get a certificate
-                        # here, and its tls secretName would be pruned by this
-                        # pass like any Secret the apply does not carry.
+                        # traefik terminates TLS at the LAN Ingress, so the
+                        # certificate must be for the host being served: host
+                        # and Secret name are read out of the render rather than
+                        # repeated here, so values.yaml stays the only place
+                        # they are written. Self-signed and regenerated every
+                        # pass — that keeps the Secret inside this pass's prune
+                        # scope, so it is never orphaned; cert-manager and a
+                        # real certificate belong to the canonical-URLs phase.
+                        # head -1 means only the first Ingress gets a
+                        # certificate: a second one's tls secretName would be
+                        # pruned like any Secret the apply does not carry.
                         : > "$T/wiki-tls.json"
-                        # Values come from the printf'd 0600 temp files above,
-                        # never straight from the sops paths: --from-file on a
-                        # sops file would ship whatever trailing newline the
-                        # materialisation happens to have, and OIDC_CLIENT_SECRET
-                        # must byte-match the secret registered in Pocket ID.
+                        # From the printf'd 0600 files, never the sops paths:
+                        # OIDC_CLIENT_SECRET must byte-match the value
+                        # registered in Pocket ID, newline for newline.
                         #
-                        # The whole pass — TLS extraction, certificate,
-                        # bookstack Secret, final apply — is one guard.
-                        # core/v1/Secret is in PRUNE_ALLOWLIST and both
-                        # Secrets carry the wiki selector, so an apply whose
-                        # Secret document is missing (a failed yq, openssl or
-                        # kubectl, or an empty render) would prune the live
-                        # Secrets while the activation exits 0, and the
-                        # rotation guard above would lose its record of the
-                        # last applied value. The extractions are the first
-                        # steps of the chain: with set +e a bare
-                        # WIKI_TLS_HOST="$(...)" would discard yq's exit
-                        # status, and a failed extraction (a render whose
-                        # shape yq cannot read — .spec.tls a map, hosts
-                        # dropped) would read as "no Ingress" and skip the
-                        # certificate; splicing the assignments into the chain
-                        # makes that status load-bearing. nonempty() makes an
-                        # empty document a failure in its own right, and the
-                        # if/else below fails the guard on a half-populated
-                        # (host, secretName) pair — the render declared TLS,
-                        # so it is a broken render, not a disabled Ingress.
+                        # The whole pass is one guard: core/v1/Secret is in
+                        # PRUNE_ALLOWLIST and both Secrets carry the wiki
+                        # selector, so an apply whose Secret document is missing
+                        # would prune the live Secrets while the activation
+                        # exits 0 — and the rotation guard above would lose its
+                        # record of the last applied value. Under set +e a bare
+                        # assignment discards yq's status, and a render whose
+                        # shape yq cannot read would answer "no Ingress"; hence
+                        # the extractions are spliced into the chain and an empty
+                        # or half-populated document is a failure in its own
+                        # right.
                         #
-                        # Fail-closed trade-off: widening the guard means a
-                        # transient openssl failure now applies nothing in
-                        # this pass, and the pass is never retried — it sits
-                        # in the && chain that ends in exit 0, so the 150x2s
-                        # loop is short-circuited — with no red unit. The
-                        # wiki stays at its previous state until the next
-                        # activation; that is the accepted cost of not
-                        # pruning live Secrets.
-                        # The refusal gate wraps the whole pass: `if <false>; then ...; fi`
-                        # yields status 0, so a refusal leaves the enclosing && chain unbroken
-                        # and the pass still exits 0. Second load-bearing use of that property.
+                        # Fail-closed trade-off: a transient openssl failure
+                        # applies nothing in this pass, with no red unit, and it
+                        # is not retried — the pass sits in the && chain that
+                        # ends in exit 0, so the retry loop is short-circuited.
+                        # The wiki stays where it was until the next activation;
+                        # that is the accepted cost of not pruning live Secrets.
+                        # The refusal gate wraps the whole pass: `if <false>; then
+                        # ...; fi` yields status 0, so a refusal leaves the enclosing
+                        # && chain unbroken and the unit still exits 0.
                         if [ "$WIKI_ROTATE_OK" = "1" ]; then
                           if ! {
                             WIKI_TLS_HOST="$($YQ -r 'select(.kind == "Ingress") | .spec.tls[0].hosts[0] // empty' "$T/wiki-chart.json" | head -1)" \
                             && WIKI_TLS_SECRET="$($YQ -r 'select(.kind == "Ingress") | .spec.tls[0].secretName // empty' "$T/wiki-chart.json" | head -1)" \
                             && {
-                               # The disabled-Ingress path must end in status 0
-                               # (the echo): the if is spliced into the && chain,
-                               # so a bare [ -n "$WIKI_TLS_HOST" ] && [ -n
-                               # "$WIKI_TLS_SECRET" ] && openssl ... would return
-                               # 1 on a valid disabled-Ingress config and fail the
-                               # pass. The \ after fi is what joins the if to the
-                               # chain.
+                               # The disabled-Ingress path has to end in status
+                               # 0 (the echo): this if is spliced into the &&
+                               # chain, so a false test here fails the pass.
                                if [ -n "$WIKI_TLS_HOST" ] && [ -n "$WIKI_TLS_SECRET" ]; then
                                  $OPENSSL req -x509 -newkey rsa:2048 -nodes \
                                      -keyout "$T/wiki-tls.key" \
@@ -1114,10 +1032,6 @@
                                        --dry-run=client -o yaml | label_all wiki "true" > "$T/wiki-tls.json" \
                                    && nonempty "$T/wiki-tls.json" "create secret tls"
                                else
-                                 # Both empty: ingress disabled — the wiki-tls
-                                 # Secret is outside this apply and will be
-                                 # pruned. Exactly one empty: a broken render,
-                                 # and the guard must fail.
                                  [ -z "$WIKI_TLS_HOST" ] && [ -z "$WIKI_TLS_SECRET" ] && \
                                    echo "note: ingress disabled — the wiki-tls Secret is outside this apply and will be pruned"
                                fi
@@ -1137,8 +1051,6 @@
                           fi
                         fi
                       else
-                        # Print the skip reason. If no reason was recorded
-                        # (a site forgot to set it), default to loud.
                         if [ -n "$WIKI_SKIP_REASON" ]; then
                           echo "wiki: $WIKI_SKIP_REASON" >&2
                         else
