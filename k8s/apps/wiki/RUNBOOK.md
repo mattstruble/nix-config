@@ -415,7 +415,7 @@ can be correct while the direct fetch is not.
   so a disk failure today means redoing section 6 from memory. When the backup
   work is filed, the acceptance criterion that matters is a rehearsed restore, not
   a timer that might be firing.
-- **An empty database reads as healthy, and nothing will tell you.** If
+- **An empty database reads as healthy.** If
   `/var/lib/wiki/mysql` is ever gone — wiped directory, replaced NVMe, the PV
   recreated against a fresh tmpfiles directory, a partial restore that brought back
   uploads but not mysql — the MariaDB image runs initdb, BookStack's startup
@@ -424,13 +424,18 @@ can be correct while the direct fetch is not.
   serves an empty instance with BookStack's stock default roles at the real URL;
   readiness, probes and pod-level alerts all stay green.
 
-  **No automated alarm for this, on purpose.** One was built — poll for a Ready
-  BookStack pod, count content rows, exit 1 on zero — and it cannot tell a wiped
-  wiki from a brand-new one, because they are the same rows; it fired on the wiki's
-  first deploy. A data-loss indicator that blocks deployments is not an indicator,
-  it is an outage; if the wiki grows a metrics endpoint the check belongs in a
-  PrometheusRule, where a verdict is an alert a human can dismiss. And the honest
-  trigger is a change of expectation, not a row count: zero rows is correct the day
+  **One automated check exists now; the row-counting one did not survive.** The
+  activation compares the `bookstack` Secret with the MariaDB datadir marker and
+  prints the wiped-database verdict on stderr — the Secret-present/marker-absent
+  paragraph below — and its install record is that same Secret, so a rotation in
+  progress (`SECRETS.md` step 2 deletes it) leaves it silent. The alarm built
+  before it — poll for a Ready BookStack pod, count content rows, exit 1 on
+  zero — could not tell a wiped wiki from a brand-new one, because they are the
+  same rows; it fired on the wiki's first deploy. A data-loss indicator that
+  blocks deployments is not an indicator, it is an outage; if the wiki grows a
+  metrics endpoint the check belongs in a PrometheusRule, where a verdict is an
+  alert a human can dismiss. And the honest trigger is a change of expectation,
+  not a row count: zero rows is correct the day
   the wiki is installed and alarming the day after it had hundreds, and only you
   know which day it is.
 
@@ -548,11 +553,13 @@ can be correct while the direct fetch is not.
         mariadb -u root --socket=/run/mysqld/mysqld.sock -e "SHOW DATABASES"'
      ```
 
-     `ibdata1` there and `bookstack` in the list is the proof. If either is
-     missing, the mount is wrong: fix the mount. Making the directory work with
-     the image entrypoint or `mariadb-install-db` is the destructive answer —
-     either writes a fresh schema into the tree that holds BookStack's
-     `/config` and uploads.
+     `ibdata1` there and `bookstack` in the list is the proof. `ERROR 2002`
+     (Can't connect to local server) means the server is not answering yet:
+     re-run the block — a timing failure is not a verdict about the datadir.
+     Only once the server answers and either is still missing is the mount
+     wrong: fix the mount. Making the directory work with the image entrypoint
+     or `mariadb-install-db` is the destructive answer — either writes a fresh
+     schema into the tree that holds BookStack's `/config` and uploads.
 
   3. Over the unix socket — `--skip-networking` leaves no TCP port, and the
      socket is the `run` emptyDir at `/run/mysqld/mysqld.sock`. Generate the
@@ -564,16 +571,22 @@ can be correct while the direct fetch is not.
      openssl rand -base64 24
      ```
 
+     Run it on your own machine: openssl is not on mjolnir's PATH (the
+     activation binds it explicitly for its own use).
+
      The statements go on stdin, never through `-e`: `mariadb -e "SET PASSWORD
      ... = 'x'"` puts the value in the process arguments, readable by anything
-     on the node that reads `ps`.
+     on the node that reads `ps`. And the value reaches the pipe through
+     `read -rs`, not typed into a heredoc — a password typed at the prompt
+     lands in the operator's shell history.
 
      ```
-     kubectl -n wiki exec -i wiki-mariadb-recovery -- \
-       mariadb -u root --socket=/run/mysqld/mysqld.sock <<'SQL'
-     FLUSH PRIVILEGES;
-     SET PASSWORD FOR 'root'@'localhost' = '<the generated password>';
-     SQL
+     read -rs -p 'new root password: ' PW
+     { echo 'FLUSH PRIVILEGES;'
+       echo "SET PASSWORD FOR 'root'@'localhost' = '$PW';"; } | \
+       kubectl -n wiki exec -i wiki-mariadb-recovery -- \
+         mariadb -u root --socket=/run/mysqld/mysqld.sock
+     unset PW
      ```
 
      The flush is load-bearing: under `--skip-grant-tables` the grant tables are
@@ -594,7 +607,14 @@ can be correct while the direct fetch is not.
 
      ```
      kubectl -n wiki delete pod wiki-mariadb-recovery
+     kubectl -n wiki get pod wiki-mariadb-recovery
      ```
+
+     The second command must answer `Error from server (NotFound)`: the
+     delete's pass condition asserted by name, because the pod's own name
+     matches the `wiki-mariadb-*` row of the label-scoped check below — a
+     silently failed delete still prints two matching rows there while the
+     grant-tables-skipped server is still running.
 
      Re-run step 1's check immediately before scaling up —
      `kubectl -n wiki get pods -l app.kubernetes.io/component=database` must
@@ -604,7 +624,13 @@ can be correct while the direct fetch is not.
 
      ```
      kubectl -n wiki scale deploy/wiki-mariadb --replicas=1
+     kubectl -n wiki rollout status deploy/wiki-mariadb --timeout=10m
      ```
+
+     Wait for the rollout before both the pod-list check below and the
+     password check at the end of the sequence: `Running` is not "the server
+     answers", and a check run against a pod that is not up yet reads as
+     failure, not as verdict.
 
      The check that the unauthenticated server is gone and the Deployment's own
      pods are the only ones left:

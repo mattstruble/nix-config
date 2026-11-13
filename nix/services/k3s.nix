@@ -610,8 +610,8 @@
               return 0
             }
 
-            # No empty-database alarm here, deliberately — see the Standing
-            # notes in k8s/apps/wiki/RUNBOOK.md. One existed and was removed,
+            # The row-counting empty-database alarm that once lived here was
+            # removed — see the Standing notes in k8s/apps/wiki/RUNBOOK.md —
             # and the reason is worth keeping in mind before writing the next
             # one. It polled for a Ready BookStack pod, counted content rows,
             # and exited 1 when they were zero. Wrong mechanism: a oneshot that
@@ -625,11 +625,10 @@
             # data-loss indicator that blocks deployments is not an indicator,
             # it is an outage.
             #
-            # The failure mode it guarded against is real and now unguarded;
-            # it is cheaper to notice by looking than to have it fail a deploy.
-            # If the wiki one day gets an exporter the check belongs in a
-            # PrometheusRule, where a verdict is an alert instead of a
-            # rollback.
+            # What covers that failure mode is the empty-datadir check below:
+            # a verdict on stderr, never a rollback. If the wiki one day gets
+            # an exporter the check belongs in a PrometheusRule, where the
+            # verdict is an alert a human can dismiss.
 
             # Fill the sops placeholders in the values, render kps, and build the
             # grafana admin Secret. Done in a temp dir so nothing leaks to the store.
@@ -748,7 +747,10 @@
               #
               # "Was installed before" means the wiki/bookstack Secret exists:
               # every activation that deploys the wiki writes it, so one already
-              # in the cluster records an install. Secret + no marker = the
+              # in the cluster records an install. That record is deletable:
+              # step 2 of the rotation in k8s/apps/wiki/SECRETS.md deletes this
+              # Secret, and until step 3 rewrites it the read below is NotFound
+              # and the check stays silent. Secret + no marker = the
               # database is gone and the cluster serves an empty wiki at the
               # real URL with every probe green (k8s/apps/wiki/RUNBOOK.md, "An
               # empty database reads as healthy"). Non-fatal, the rule the wiki

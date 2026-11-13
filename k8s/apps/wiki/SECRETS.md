@@ -79,7 +79,9 @@ live connections break at step 1:
    changing — the root password is not needed for the rotation at all.
 2. `k3s kubectl delete secret bookstack -n wiki` — that Secret is the guard's
    memory; deleting it is the statement that the database now agrees with
-   sops.
+   sops. The same Secret is the empty-datadir check's install record
+   (`nix/services/k3s.nix`), so that detector is blind between this delete and
+   step 3's re-activation.
 3. Re-activate. The Secret comes back from sops with the new value.
 4. `k3s kubectl rollout restart deploy/wiki-bookstack -n wiki`, so the running
    pod's environment matches the account.
