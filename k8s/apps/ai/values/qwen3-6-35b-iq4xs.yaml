@@ -14,6 +14,12 @@ models:
     # serves at ~7.5Gi, so request tracks serving and limit tracks the peak.
     enable: true
     lifecycle: on-demand
+    # Fast reviewer tier (wiki: decisions/2026-11-13-tiered-review-loop): this
+    # model reviews every orchestrator wave. ttlSeconds keeps it warm across a
+    # workday of waves — the first-reviewer wake is measured 80-138s, and a wave
+    # would pay it every time after lunch breaks otherwise. Same contract as the
+    # strata entry's 1800s.
+    ttlSeconds: 1800
     coldStartSeconds: 240
     memoryRequest: 8Gi
     memoryLimit: 40Gi

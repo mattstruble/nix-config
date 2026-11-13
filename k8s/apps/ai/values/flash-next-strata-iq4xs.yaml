@@ -97,6 +97,17 @@ models:
         - "32768"
         - "--resident-budget-gib"
         - "55"
+        # Two concurrent request slots (tiered review loop, wiki:
+        # decisions/2026-11-13-tiered-review-loop). Source-audited (Strata
+        # generate.cpp vram_batch_hint): each --batch slot is "a session of its
+        # own" at the FULL --max-context — context is never divided, so the
+        # 262k orchestrator/planner depth is safe. The engine reports
+        # INFO batch_slots=N and keeps fewer slots than asked when VRAM/RAM
+        # cannot hold them, degrading gracefully to today's single stream.
+        # Watch: prefill stability under two deep sessions of streamed KV
+        # (the Q4_K_XL page-cache lesson) — llm-fleet dashboard, prefill gauge.
+        - "--batch"
+        - "2"
       # nosec-style pragma: "tokenizer:" matches the `token` keyword in the
       # detect-secrets hook; it is a path, not a credential.
       tokenizer: "/data/packs/unsloth-ud-iq4_xs/tokenizer" # pragma: allowlist secret
