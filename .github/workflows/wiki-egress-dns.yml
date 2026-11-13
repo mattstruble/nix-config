@@ -1,0 +1,59 @@
+name: wiki-egress-dns
+
+# oidc.egressCidrs in k8s/apps/wiki/values.yaml is the only rule letting the
+# BookStack pod reach <issuer>/.well-known/openid-configuration, and it holds a
+# /32 of the Pangolin edge measured by hand. When the edge address moves the
+# discovery request is dropped, no login completes, and every pod still reports
+# Ready — values.yaml and the RUNBOOK both record that nothing verifies it. This
+# job resolves the issuer and fails when the answer leaves the list.
+#
+# Vantage, and it is a real one: the job runs on a GitHub-hosted runner, so it
+# resolves through PUBLIC DNS. That is the vantage that sees the public edge
+# address the /32 records, and the one the check must assert from. It is a
+# different vantage from the pod inside the cluster, and once the CoreDNS
+# split-horizon work lands the two answers may legitimately differ — this job
+# catches the public edge moving, never the in-cluster view, and a green run
+# says nothing about what the pod resolves.
+#
+# The CIDRs are read from values.yaml at run time, never copied here: the list
+# changes shape when split-horizon lands, and a copy would check the check.
+#
+# Lookup semantics, stated because a shell that says nothing would otherwise
+# say "pass": a resolver error FAILS, and a name that returns no IPv4 address
+# (NXDOMAIN, NODATA) FAILS — an unresolvable name drops the discovery request
+# just like a blocked one. When several A records come back, EVERY address must
+# sit inside SOME CIDR: the pod's resolver may return any of them, so one
+# allowed address among several is not evidence the pod can reach the issuer.
+#
+# GitHub skips a workflow entirely when no changed file matches its `paths:`,
+# so the filter covers every file the check reads: the values file it compares
+# against, the script, and this file.
+#
+# A schedule, not just PRs: the thing that breaks this check (the VPS moving)
+# is not a commit, and a check that only runs on pull requests can only catch
+# it on the day someone happens to touch the file.
+on:
+  schedule:
+    - cron: "30 6 * * *"
+  pull_request:
+    paths:
+      - "k8s/apps/wiki/values.yaml"
+      - ".github/workflows/wiki-egress-dns.yml"
+      - "scripts/check-wiki-egress-dns.sh"
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  issuer-inside-egress-cidrs:
+    runs-on: ubuntu-latest
+    steps:
+      # Runnable from a plain checkout, no nix, no helm, no cluster; dig ships
+      # on the ubuntu runner image.
+      - uses: actions/checkout@v4
+
+      - name: The OIDC issuer must resolve inside oidc.egressCidrs
+        run: ./scripts/check-wiki-egress-dns.sh
