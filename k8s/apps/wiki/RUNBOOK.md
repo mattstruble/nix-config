@@ -405,6 +405,19 @@ deployment; that delay deliberately has no number recorded here.
 3. Same as `plex-users`: Home Apps only, Plex only, no `Internal`.
 4. Open an `Internal` chapter by URL as `plex-users`. It must be 404, not a
    redirect to login and not a page.
+5. The policy and probe objects, from the apply's own output:
+
+   ```
+   sudo -n k3s kubectl -n wiki get networkpolicy
+   sudo -n k3s kubectl -n wiki get job -l app.kubernetes.io/part-of=wiki
+   ```
+
+   Four `wiki-`prefixed policies, and one `wiki-oidc-egress-*` job with
+   `COMPLETIONS 1/1`. The wiki pass runs `kubectl apply --prune` scoped to
+   `mjolnir/prune-group=wiki`, and `pruned` is kubectl's word for every removal it
+   makes — a rename and an accidental deletion print the same line, so the object
+   list is the check, not the log. Between a prune and the CNI programming the
+   replacement there is a window in which the old policy's enforcement is gone.
 
 Step 4 is the one that catches 6.5. The listing is generated from a query that
 can be correct while the direct fetch is not.
@@ -678,12 +691,14 @@ things that work.
   resolves `auth.struble.app` through public DNS, so the request leaves the cluster
   for the edge and tunnels back. An egress list holding only the private segment
   drops it while every pod still reports Ready.
-  `.github/workflows/wiki-egress-dns.yml` now asserts the issuer's resolved
-  address against that list. Two things stay unverified by it: the pod's own
-  in-cluster view of the name, which is a different answer from the one the job
-  sees — canonical-URLs phase 0 (CoreDNS views) is what lets the `/32` go away;
-  and whether the discovery endpoint behind the address actually answers, since
-  a green run proves the route only.
+  The `wiki-oidc-egress` CronJob in this chart now makes that request from this
+  namespace every 30 minutes and alerts through the same path BookStack uses, so
+  the CIDR going stale is a page rather than a silent outage. What it cannot tell
+  you: it has never run yet, so its own first pass is unverified; a green probe is
+  evidence about the route, not about the `iss` string matching or the claim
+  arriving; and once the CoreDNS split-horizon work lands (canonical-URLs phase 0)
+  the in-cluster answer and the edge address may legitimately diverge, which is the
+  point at which the `/32` can go away.
 - **The LAN route.** `wiki.mjolnir` needs a record in LAN DNS pointing at the node
   (10.0.0.4); the `.mjolnir` zone is per-host rather than a wildcard, and a missing
   record does not announce itself — a correct Ingress and a correct NetworkPolicy

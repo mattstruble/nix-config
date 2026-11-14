@@ -1,0 +1,101 @@
+{{- /*
+Does the BookStack pod's own path to the OIDC discovery document still work?
+
+The egress rule that permits it is a /32 of the edge, measured by hand, and the
+VPS behind it can move with no commit here; when it does the discovery request
+is dropped, no login ever completes, and every pod still reports Ready. So this
+asks the question the /32 stands in for, from inside the namespace, where the
+NetworkPolicy and the resolver being tested are the ones that fail: it is the
+pod's view, not a public resolver's, and it covers the whole path (DNS answer,
+policy, routing, TLS, the endpoint answering) rather than the first hop of it.
+
+A failing job is the signal; the PrometheusRule below turns it into the
+Telegram alert. `kube_job_status_failed` is kube-state-metrics' own, so nothing
+here scrapes anything.
+*/ -}}
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: wiki-oidc-egress
+  labels:
+    app.kubernetes.io/component: oidc-egress-probe
+    app.kubernetes.io/part-of: wiki
+spec:
+  # Twice an hour: the thing that breaks this is the edge moving, not a commit,
+  # so a PR-time check would have been a check against a value it could not read.
+  schedule: "*/30 * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  # Kept, not garbage-collected: kube_job_status_failed disappears with the job,
+  # and an alert that resolves because its evidence was cleaned up is worse than
+  # no alert.
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      # One retry, so a single dropped packet is not an alert; the deadline so a
+      # blackholed connection cannot hold the slot past the next schedule.
+      backoffLimit: 1
+      activeDeadlineSeconds: 120
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/component: oidc-egress-probe
+            app.kubernetes.io/part-of: wiki
+        spec:
+          restartPolicy: Never
+          automountServiceAccountToken: false
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            runAsGroup: 1000
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: probe
+              image: {{ required "oidc.probe.image is required" .Values.oidc.probe.image }}
+              # -f exits non-zero on any HTTP status >= 400, which is the same
+              # test BookStack's discovery fetch makes of the response.
+              args:
+                - "-fsS"
+                - "--max-time"
+                - "20"
+                - "--output"
+                - "/dev/null"
+                - "{{ required "oidc.issuer is required" .Values.oidc.issuer }}/.well-known/openid-configuration"
+              resources:
+                requests:
+                  cpu: 1m
+                  memory: 16Mi
+                limits:
+                  memory: 32Mi
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop:
+                    - ALL
+---
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: wiki-oidc-egress
+  labels:
+    app.kubernetes.io/component: oidc-egress-probe
+    app.kubernetes.io/part-of: wiki
+spec:
+  groups:
+    - name: wiki
+      rules:
+        - alert: WikiOidcEgressBlocked
+          # CronJob jobs are named <cronjob>-<timestamp>, hence the prefix match.
+          expr: kube_job_status_failed{namespace="{{ .Release.Namespace }}",job_name=~"wiki-oidc-egress-.*"} == 1
+          labels:
+            severity: warning
+          annotations:
+            summary: "the wiki namespace cannot fetch the OIDC discovery document"
+            description: >-
+              The wiki-oidc-egress probe job failed. BookStack's login does the
+              same fetch, so no one can log in until it succeeds. The usual cause
+              is the edge address moving out from under
+              services.k3s.wikiOidcEgressCidrs; check the job's logs before the
+              NetworkPolicy.
