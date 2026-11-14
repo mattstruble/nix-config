@@ -428,37 +428,27 @@ can be correct while the direct fetch is not.
   so a disk failure today means redoing section 6 from memory. When the backup
   work is filed, the acceptance criterion that matters is a rehearsed restore, not
   a timer that might be firing.
-- **An empty database reads as healthy.** If
-  `/var/lib/wiki/mysql` is ever gone — wiped directory, replaced NVMe, the PV
-  recreated against a fresh tmpfiles directory, a partial restore that brought back
-  uploads but not mysql — the MariaDB image runs initdb, BookStack's startup
-  `artisan migrate --force` builds a fresh empty schema, and `/status` answers 200
-  because its database check is a migrations-row count. The pod reports Ready and
-  serves an empty instance with BookStack's stock default roles at the real URL;
-  readiness, probes and pod-level alerts all stay green.
+- **An empty database reads as healthy.** If `/var/lib/wiki/mysql` is ever gone —
+  wiped directory, replaced NVMe, the PV recreated against a fresh tmpfiles
+  directory, a partial restore that brought back uploads but not mysql — the MariaDB
+  image runs initdb, BookStack's startup `artisan migrate --force` builds a fresh
+  empty schema, and `/status` answers 200 because its database check is a
+  migrations-row count. The pod reports Ready and serves an empty instance with
+  BookStack's stock default roles at the real URL; readiness, probes and pod-level
+  alerts all stay green.
 
-  **One automated check exists now; the row-counting one did not survive.** The
-  activation compares the `bookstack` Secret with the MariaDB datadir marker and
-  prints the wiped-database verdict on stderr — the Secret-present/marker-absent
-  paragraph below — and its install record is that same Secret, so a rotation in
-  progress (`SECRETS.md` step 2 deletes it) leaves it silent. The alarm built
-  before it — poll for a Ready BookStack pod, count content rows, exit 1 on
-  zero — could not tell a wiped wiki from a brand-new one, because they are the
-  same rows; it fired on the wiki's first deploy. A data-loss indicator that
-  blocks deployments is not an indicator, it is an outage; if the wiki grows a
-  metrics endpoint the check belongs in a PrometheusRule, where a verdict is an
-  alert a human can dismiss. And the honest trigger is a change of expectation,
-  not a row count: zero rows is correct the day
-  the wiki is installed and alarming the day after it had hundreds, and only you
-  know which day it is.
+  The activation compares the `bookstack` Secret with the MariaDB datadir marker and
+  prints the verdict on stderr, then applies anyway: the loss already happened, so
+  refusing to apply punishes the operator twice and saves nothing. Its install record
+  is that same Secret, so a rotation in progress (`SECRETS.md` step 2 deletes it)
+  leaves it silent. No row count can replace it — a wiped wiki and a brand-new one
+  are the same rows.
 
-  **Why `entities`.** BookStack v26.09.2 has no `pages`, `books`, `chapters` or
-  `bookshelves` tables — they are one `entities` table discriminated by `type`,
-  with only the `bookshelves_books` join left. A renamed table does not break the
-  deploy, it silently disarms a guard written against the old name: the removed
-  check errored on a missing table, discarded stderr, and read its own empty stdout
-  as "inconclusive". Checking by hand (`-p` prompts; the password is `DB_PASSWORD`
-  in the `bookstack` Secret, see `SECRETS.md`):
+  **BookStack v26.09.2 has no `pages`, `books`, `chapters` or `bookshelves` tables** —
+  they are one `entities` table discriminated by `type`, with only the
+  `bookshelves_books` join left. A renamed table does not break the deploy, it
+  silently disarms a guard written against the old name. Checking by hand (`-p`
+  prompts; the password is `DB_PASSWORD` in the `bookstack` Secret, see `SECRETS.md`):
 
   ```
   kubectl -n wiki exec deploy/wiki-mariadb -- \
@@ -466,11 +456,8 @@ can be correct while the direct fetch is not.
     -e "select count(*) as entities from entities"
   ```
 
-  `select type, count(*) from entities group by type` says what the rows are. With
-  no backup, the empty instance is simply the state of the world. The activation
-  reports the Secret-present/marker-absent combination and applies anyway: the loss
-  already happened, so refusing to apply would punish the operator twice and save
-  nothing.
+  `select type, count(*) from entities group by type` says what the rows are. With no
+  backup, the empty instance is simply the state of the world.
 - **A Retain PV does not rebind after its claim is deleted.** Delete the claim and
   `wiki-data` goes to `Released`, not `Available`, and the PV controller binds only
   `Available` and `Failed` volumes — so deleting the PVC and re-applying the
