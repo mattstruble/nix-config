@@ -757,12 +757,16 @@
               # pass below states: the loss already happened, so refusing to
               # apply would punish the operator twice and save nothing.
               #
-              # kubectl exits non-zero both when the Secret does not exist and
-              # when the API server is not answering, and only the first is an
-              # answer: NotFound latches the check silently, a transport error
-              # leaves it armed for the next iteration. A read that keeps
-              # failing non-NotFound until the apply chain below succeeds means
-              # the check never reports and the activation stays green.
+              # kubectl exits non-zero when the Secret does not exist, when
+              # the namespace does not exist yet (the create above can fail
+              # under set +e), and when the API server is not answering; only
+              # the first is an answer. The match is therefore Secret-specific:
+              # 'Error from server (NotFound): secrets "bookstack"' latches the
+              # check silently, while a namespaces-not-found, a transport error
+              # or a client-side 'executable file not found' leaves it armed for
+              # the next iteration. A read that keeps failing with anything else
+              # until the apply chain below succeeds means the check never
+              # reports and the activation stays green.
               if [ "$WIKI_DATADIR_CHECKED" = 0 ]; then
                 if WIKI_SECRET_ERR="$($KCTL get secret bookstack -n wiki 2>&1 >/dev/null)"; then
                   WIKI_DATADIR_CHECKED=1
@@ -771,7 +775,7 @@
                   fi
                 else
                   case "$WIKI_SECRET_ERR" in
-                    *NotFound*|*'not found'*) WIKI_DATADIR_CHECKED=1 ;;
+                    *'Error from server (NotFound): secrets "bookstack"'*) WIKI_DATADIR_CHECKED=1 ;;
                   esac
                 fi
               fi
