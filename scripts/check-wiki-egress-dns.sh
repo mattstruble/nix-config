@@ -29,6 +29,11 @@
 #     among them is not evidence the pod can reach the issuer.
 #   - every address inside some CIDR: PASS.
 #
+# The list is bounded, not just matched: every entry must be a /32 host route,
+# the same floor templates/networkpolicy.yaml enforces at render, because a
+# list widened toward 0.0.0.0/0 would let this job print a green run over an
+# open 443 egress to the whole internet.
+#
 # What a green run does NOT claim:
 #   - that the discovery endpoint answers, only that the route to it is open.
 #   - anything about AAAA records: the egress list is IPv4-only, so this is
@@ -70,15 +75,33 @@ values_get() { # $1 = dotted two-part key
   ' "$values_file"
 }
 
+# Every extraction demands exactly one match, the discipline
+# check-wiki-invariants.sh applies to the same values_get: a duplicated
+# oidc.issuer would otherwise join both values with a newline and blame DNS
+# for what is a duplicate key.
+one_match() { # $1 = value(s), one per line; $2 = what was looked for; $3 = file
+  local n
+  n=$(printf '%s\n' "$1" | grep -c . || true)
+  [ "$n" -eq 1 ] || {
+    echo "::error::found $n occurrence(s) of $2 in $3: a value this check cannot read unambiguously is as fatal as a disagreement" >&2
+    exit 1
+  }
+  printf '%s' "$1"
+}
+
 # The list items under oidc.egressCidrs, one per line. Read from the file on
 # purpose: when split-horizon DNS lands the list changes shape, and a copy of
-# it here would check the check instead of the policy.
+# it here would check the check instead of the policy. Both list shapes YAML
+# allows are read: the block sequence, and a flow sequence on the key line,
+# which the chart renders identically.
 egress_cidrs_get() {
   awk '
-    /^[A-Za-z0-9_-]+:/ { inblock = ($0 ~ /^oidc:/); next }
-    inblock && /^[[:space:]]+egressCidrs:[[:space:]]*(#.*)?$/ { incom = 1; next }
-    incom && /^[[:space:]]*#/ { next }
-    incom && /^[[:space:]]*-[[:space:]]*[^[:space:]]/ {
+    # A top-level key ends the oidc block: no collection state may survive it.
+    /^[A-Za-z0-9_-]+:/ { in_oidc = ($0 ~ /^oidc:/); collecting = 0; next }
+    !in_oidc { next }
+    /^[[:space:]]*$/ { next }
+    /^[[:space:]]*#/ { next }
+    collecting && /^[[:space:]]*-[[:space:]]*[^[:space:]]/ {
       v = $0
       sub(/^[[:space:]]*-[[:space:]]*/, "", v)
       sub(/[[:space:]]*(#.*)?$/, "", v)
@@ -86,30 +109,53 @@ egress_cidrs_get() {
       print v
       next
     }
-    incom && $0 ~ /[^[:space:]]/ { incom = 0 }
+    # Inside the block, any line that is not a list item ends the list.
+    collecting { collecting = 0 }
+    /^[[:space:]]+egressCidrs:[[:space:]]*\[/ {
+      v = $0
+      sub(/^[[:space:]]+egressCidrs:[[:space:]]*/, "", v)
+      sub(/[[:space:]]*(#.*)?$/, "", v)
+      sub(/^\[/, "", v)
+      sub(/\]$/, "", v)
+      n = split(v, item, /,/)
+      for (i = 1; i <= n; i++) {
+        gsub(/^[[:space:]]+|[[:space:]]+$/, "", item[i])
+        gsub(/^"|"$/, "", item[i])
+        if (item[i] != "") print item[i]
+      }
+      next
+    }
+    /^[[:space:]]+egressCidrs:[[:space:]]*(#.*)?$/ { collecting = 1 }
   ' "$values_file"
 }
 
-issuer=$(values_get oidc.issuer)
-if [ -z "$issuer" ]; then
+issuer_raw=$(values_get oidc.issuer)
+if [ -z "$issuer_raw" ]; then
   echo "::error::oidc.issuer not found in $values_file; the check cannot know which name to resolve" >&2
   exit 1
 fi
+issuer=$(one_match "$issuer_raw" "oidc.issuer" "$values_file")
 # Strip scheme and path; the issuer is a base URL, the A record belongs to its host.
 host=$(printf '%s' "$issuer" | sed -E 's#^[A-Za-z][A-Za-z0-9+.-]*://##; s#[/?:].*$##')
 
 mapfile -t cidrs < <(egress_cidrs_get)
 if [ "${#cidrs[@]}" -eq 0 ]; then
-  echo "::error::oidc.egressCidrs in $values_file lists no CIDR. The chart refuses to render an empty list because a policy rule with no peer matches every destination; a check that read nothing here would pass on the widest possible policy." >&2
+  echo "::error::oidc.egressCidrs in $values_file lists no CIDR; this check reads a block list ('- a.b.c.d/n' lines) or a flow list ('[a.b.c.d/n, ...]') under oidc.egressCidrs, and any other shape collects nothing. The chart refuses to render an empty list because a policy rule with no peer matches every destination; a check that read nothing here would pass on the widest possible policy." >&2
   exit 1
 fi
 
+# Go's net.ParseCIDR — what actually programs the NetworkPolicy — rejects
+# leading-zero octets outright, while bash arithmetic reads 066 as octal 54;
+# the ambiguous form is rejected at this boundary and base 10 is forced below
+# so the check and the policy cannot disagree about the same text.
+octet='0|[1-9][0-9]{0,2}'
+
 ip2int() { # $1 = dotted quad; echoes the 32-bit value, returns 1 if malformed
   local ip=$1 a b c d
-  [[ $ip =~ ^([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})$ ]] || return 1
+  [[ $ip =~ ^($octet)\.($octet)\.($octet)\.($octet)$ ]] || return 1
   a=${BASH_REMATCH[1]} b=${BASH_REMATCH[2]} c=${BASH_REMATCH[3]} d=${BASH_REMATCH[4]}
   ((a <= 255 && b <= 255 && c <= 255 && d <= 255)) || return 1
-  printf '%s' $(( (a << 24) + (b << 16) + (c << 8) + d ))
+  printf '%s' $(( (10#$a << 24) + (10#$b << 16) + (10#$c << 8) + 10#$d ))
 }
 
 in_cidr() { # $1 = IPv4 dotted quad, $2 = CIDR in a.b.c.d/n form
@@ -125,8 +171,15 @@ in_cidr() { # $1 = IPv4 dotted quad, $2 = CIDR in a.b.c.d/n form
 # matched nothing would turn a typo into a permanently failing check — or,
 # matched too loosely, into a permanently passing one.
 for c in "${cidrs[@]}"; do
-  [[ $c =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}/([0-9]|[12][0-9]|3[0-2])$ ]] || {
-    echo "::error::oidc.egressCidrs contains '$c', which is not an IPv4 CIDR in a.b.c.d/n form; refusing to judge the answer against a rule this check cannot evaluate" >&2
+  [[ $c =~ ^($octet)\.($octet)\.($octet)\.($octet)/([0-9]|[12][0-9]|3[0-2])$ ]] || {
+    echo "::error::oidc.egressCidrs contains '$c', which is not an IPv4 CIDR in a.b.c.d/n form (leading-zero octets included: net.ParseCIDR rejects them); refusing to judge the answer against a rule this check cannot evaluate" >&2
+    exit 1
+  }
+  # The /32 floor values.yaml records as an invariant, mirrored in
+  # templates/networkpolicy.yaml: a wider entry is a deliberate widening of
+  # the pod's TCP/443 egress and may not read green here.
+  [[ $c == */32 ]] || {
+    echo "::error::oidc.egressCidrs contains '$c', which is wider than a /32 host route; templates/networkpolicy.yaml refuses to render one for the same reason, so narrow it or delete the rule there to close the traffic for real" >&2
     exit 1
   }
 done

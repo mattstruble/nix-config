@@ -24,6 +24,10 @@ name: wiki-egress-dns
 # sit inside SOME CIDR: the pod's resolver may return any of them, so one
 # allowed address among several is not evidence the pod can reach the issuer.
 #
+# The list's breadth is asserted too: every entry must be a /32 host route, the
+# floor templates/networkpolicy.yaml enforces at render, so a list widened
+# toward 0.0.0.0/0 cannot read green here.
+#
 # GitHub skips a workflow entirely when no changed file matches its `paths:`,
 # so the filter covers every file the check reads: the values file it compares
 # against, the script, and this file.
