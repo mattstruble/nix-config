@@ -12,10 +12,10 @@
 # by hand — go on ignoring it. None of the three misses is visible on the PR that
 # adds the app, and one of them is not visible until a deploy.
 #
-# This replaced a checklist in k8s/README.md: a checklist restates the live state
-# of three other files and is wrong the first time any of them is refactored. This
-# asks each of them, at the time it matters, whether the code that does the work
-# names the app's chart directory.
+# This replaced the three-file half of the checklist in k8s/README.md: a checklist
+# restates the live state of three other files and is wrong the first time any of
+# them is refactored. This asks each of them, at the time it matters, whether the
+# code that does the work names the app's chart directory.
 #
 # A green run claims these three places only, and is not "the app is wired": still
 # hand-wired, and still silent when missing, are `system.build.<app>ChartRendered`
@@ -235,4 +235,7 @@ if [ "$status" -ne 0 ]; then
   exit $status
 fi
 
+# A green run is what an operator reads as "wired", so the success line names what
+# it did not check; the points themselves are listed under "Adding an app".
 echo "every app chart under k8s/apps/ is named by a nix render derivation, the PR preview render and renovate"
+echo "those three places only: the sops secrets, the apply oneshot, the system.build and PV entries, and the per-app workflow lists are unchecked (k8s/README.md)"
