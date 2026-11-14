@@ -4,8 +4,7 @@ name: wiki-egress-dns
 # BookStack pod reach <issuer>/.well-known/openid-configuration, and it holds a
 # /32 of the Pangolin edge measured by hand. When the edge address moves the
 # discovery request is dropped, no login completes, and every pod still reports
-# Ready — values.yaml and the RUNBOOK both record that nothing verifies it. This
-# job resolves the issuer and fails when the answer leaves the list.
+# Ready. This job resolves the issuer and fails when the answer leaves the list.
 #
 # Vantage, and it is a real one: the job runs on a GitHub-hosted runner, so it
 # resolves through PUBLIC DNS. That is the vantage that sees the public edge
