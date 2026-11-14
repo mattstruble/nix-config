@@ -97,20 +97,13 @@ jobs:
           render > /tmp/pr.yaml
           # The render lands in a public pull-request comment. The contract in
           # k8s/apps/wiki/SECRETS.md is that the chart references a Secret and
-          # never creates one; assert the rendered output holds no Secret
-          # document before anything is posted.
-          # The assertion runs on /tmp/pr.yaml - the same document the diff
-          # below posts, not on a separate wiki-only render: the thing verified
-          # must be the thing reported. The wiki-only render used to exist so
-          # the check could look at just the wiki output; it is gone because
-          # the ai chart renders no Secret documents, and if it ever did,
-          # posting one in the public comment is exactly what this check
-          # exists to prevent.
-          # The check must not pass vacuously: require the wiki chart's
-          # documents to be present in the render before the Secret-free grep
-          # can mean anything. A renamed or removed wiki chart would otherwise
-          # leave the grep with nothing to find and report "clean" for a PR
-          # that removed the app.
+          # never creates one, so assert the output holds no Secret document
+          # before anything is posted — and assert on /tmp/pr.yaml, the document
+          # about to be posted, not on a separate render.
+          #
+          # The wiki chart's documents must be present first: a renamed or removed
+          # chart would leave the Secret-free grep with nothing to find, and it
+          # would report "clean" for a PR that removed the app.
           if ! grep -q '^# Source: wiki/' /tmp/pr.yaml; then
             echo "::error::the render contains no wiki chart documents; the Secret-free assertion would pass vacuously (chart renamed? render failed?)"
             exit 1

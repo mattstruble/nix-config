@@ -13,13 +13,12 @@
 # namespace written into a manifest is the PV's `claimRef`, and a PV whose
 # `claimRef` names a namespace the claim is not in stays `Available` forever with
 # no error anywhere.
-#
-# Upstream BookStack publishes no container image; its own docs point at
-# LinuxServer or solidnerd.
 
 bookstack:
-  # ghcr.io rather than lscr.io for the same bytes: ghcr speaks the registry auth
-  # flow scripts/resolve-digest.sh (and Renovate) can authenticate to.
+  # Upstream BookStack publishes no container image; its own docs point at
+  # LinuxServer or solidnerd. ghcr.io rather than lscr.io for the same bytes: ghcr
+  # speaks the registry auth flow scripts/resolve-digest.sh (and Renovate) can
+  # authenticate to.
   image: ghcr.io/linuxserver/bookstack:v26.09.2-ls293@sha256:2fdeeb1a2028ce7cb1274696237e32b9f849e16b6d77314d08c78356a6016fca
   # BookStack derives every redirect, every stored image URL, and its OIDC
   # redirect_uri from this. Moving it later needs `php artisan

@@ -29,18 +29,15 @@ build-rpi-images:
 
 build: build-rpi-images
 
-# Render every app chart under k8s/apps/. A directory is an app chart when it
-# carries a Chart.yaml — the same rule nix/services/k3s.nix applies, so an app
-# cannot render here and be missing from the deploy, or the other way round.
-# k8s/apps/monitoring is excluded by that rule: dashboard JSON plus values for the
-# vendored upstream charts, which nix renders from the release tarballs.
-# The values a build supplies (store paths, host ids) are eval'd from nix and
-# written per chart, so the preview applies exactly what production applies. A
-# chart that needs them and does not get them fails its render rather than
-# rendering something else — `required` in its templates is what makes that true.
+# Render every app chart under k8s/apps/ — the directories carrying a Chart.yaml,
+# which is the same rule nix/services/k3s.nix applies, so an app cannot render
+# here and be missing from the deploy, or the other way round. The values a build
+# supplies are eval'd from nix, so the preview applies what production applies.
+#
 # One chart's render failure must neither stop the others nor hide: the loop keeps
 # going and the recipe still exits non-zero, because a preview that shows the
 # healthy charts and says nothing about the broken one reads as "nothing changed".
+#
 # The per-chart helm arguments accumulate in the positional parameters (`set --`),
 # not in a bash array: just runs this under the default `sh -cu`, and where
 # /bin/sh is a true POSIX shell (dash) `F=(...)` is a syntax error that kills the

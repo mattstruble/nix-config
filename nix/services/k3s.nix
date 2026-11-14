@@ -114,26 +114,18 @@
       # pre-bound by claimRef, so a capacity below the claim's request never
       # binds and never errors.
       wikiPvManifest = pkgs.writeText "wiki-local-pv.yaml" ''
-        # Local PV for the wiki: the BookStack database and its uploads, on
-        # mjolnir's NVMe. Not NFS — a database on NFS is a latency story nobody
-        # needs — and not a hostPath in the pod, which would break the
-        # namespace's Pod Security posture. Same shape as
-        # k8s/manifests/local-pvs.yaml, including the reason for selecting on
-        # the stable `storage=mjolnir` label rather than kubernetes.io/hostname:
-        # a node rename would otherwise orphan the volume.
+        # Generated from `wikiStorage` in nix/services/k3s.nix, which also owns
+        # the host subdirectories and the claim this volume binds to.
         #
-        # ONE volume, TWO mounts. The chart mounts it twice with subPath (mysql/
-        # for the database, bookstack/ for the app's /config). The alternative —
-        # a database-only volume — loses every uploaded image on a pod delete,
-        # and loses it quietly, because a node-pinned volume reschedules so
-        # rarely that nobody sees it happen.
+        # Local, not NFS: a database on NFS is a latency story nobody needs. Not a
+        # hostPath volume in the pod, which would break the namespace's Pod
+        # Security posture.
         #
-        # Reclaim is Retain: this is the only copy of the wiki's content until
-        # the backup timer exists, and a deleted PVC should not also delete the
-        # data.
-        #
-        # Generated from wikiStorage in nix/services/k3s.nix, which is also what
-        # owns the host subdirectories and what the chart renders the claim from.
+        # ONE volume, TWO mounts: the chart mounts it twice with subPath (mysql/
+        # for the database, bookstack/ for the app's /config). A database-only
+        # volume loses every uploaded image on a pod delete, and loses it quietly,
+        # because a node-pinned volume reschedules so rarely that nobody sees it
+        # happen.
         apiVersion: v1
         kind: PersistentVolume
         metadata:
@@ -145,6 +137,8 @@
             storage: ${wikiStorage.size}
           accessModes:
             - ReadWriteOnce
+          # The only copy of the wiki's content until the backup timer exists: a
+          # deleted PVC must not also delete the data.
           persistentVolumeReclaimPolicy: Retain
           storageClassName: ${wikiStorage.storageClass}
           # Pre-bound to the wiki claim: while this PV sat Available, any claim
@@ -160,6 +154,8 @@
             required:
               nodeSelectorTerms:
                 - matchExpressions:
+                    # The stable `storage` label, not kubernetes.io/hostname: a
+                    # node rename would otherwise orphan the volume.
                     - key: storage
                       operator: In
                       values:
@@ -610,9 +606,9 @@
             METRICS_KEY="$(cat ${config.sops.secrets."services/ai/litellm/metrics-key".path})"
             [ -n "$METRICS_KEY" ] || { echo "error: services/ai/litellm/metrics-key sops secret is empty" >&2; exit 1; }
 
-            # Wiki secrets. The Pocket ID OIDC client has to be created by
-            # hand, and until it exists the two client values are the literal
-            # string "unset". All four values below are read on activation and
+            # Wiki secrets. The Pocket ID OIDC client is created by hand, so a
+            # fresh scope ships the two client values as the literal string
+            # "unset". All four values below are read on activation and
             # judged on two separate states, and the two states fail
             # differently: the sentinel is an allowed configuration, so seeing
             # it skips the whole wiki pass, loudly, and everything else still
@@ -765,26 +761,6 @@
               return 0
             }
 
-            # The row-counting empty-database alarm that once lived here was
-            # removed — see the Standing notes in k8s/apps/wiki/RUNBOOK.md —
-            # and the reason is worth keeping in mind before writing the next
-            # one. It polled for a Ready BookStack pod, counted content rows,
-            # and exited 1 when they were zero. Wrong mechanism: a oneshot that
-            # exits 1 during activation does not merely mark itself red,
-            # deploy-rs treats the whole activation as failed and rolls the
-            # entire system generation back. So a wiki with no content takes
-            # down every unrelated change riding in the same generation — the
-            # ai chart, k3s config, everything — which is exactly what happened
-            # on the wiki's first deploy, because a brand-new wiki and a wiped
-            # one are the same rows and no row count can tell them apart. A
-            # data-loss indicator that blocks deployments is not an indicator,
-            # it is an outage.
-            #
-            # What covers that failure mode is the empty-datadir check below:
-            # a verdict on stderr, never a rollback. If the wiki one day gets
-            # an exporter the check belongs in a PrometheusRule, where the
-            # verdict is an alert a human can dismiss.
-
             # Fill the sops placeholders in the values, render kps, and build the
             # grafana admin Secret. Done in a temp dir so nothing leaks to the store.
             T=$(mktemp -d)
@@ -889,39 +865,27 @@
               $KCTL get namespace monitoring >/dev/null 2>&1 || $KCTL create namespace monitoring
               $KCTL get namespace gpu >/dev/null 2>&1 || $KCTL create namespace gpu
               $KCTL get namespace wiki >/dev/null 2>&1 || $KCTL create namespace wiki
-              # Empty-datadir-behind-an-installed-wiki check: the one signal in
-              # this stack that tells a wiped wiki from a fresh one. The marker
-              # is /var/lib/wiki/mysql/mysql — the system schema directory
-              # mariadb:11's initdb creates, and the engine-independent one
-              # (aria_log_control and ibdata1 are Aria/InnoDB artifacts). The
-              # tmpfiles rule above pre-creates /var/lib/wiki/mysql at every
-              # boot, so its presence says nothing about initdb. Direction of
-              # error: an image that reorganised the datadir layout would fire
-              # this on a fresh install — a false alarm, never a false silence
-              # from the marker.
+              # The one signal in this stack that tells a wiped wiki from a
+              # fresh one: the install record present, the datadir marker absent.
               #
-              # "Was installed before" means the wiki/bookstack Secret exists:
-              # every activation that deploys the wiki writes it, so one already
-              # in the cluster records an install. That record is deletable:
-              # step 2 of the rotation in k8s/apps/wiki/SECRETS.md deletes this
-              # Secret, and until step 3 rewrites it the read below is NotFound
-              # and the check stays silent. Secret + no marker = the
-              # database is gone and the cluster serves an empty wiki at the
-              # real URL with every probe green (k8s/apps/wiki/RUNBOOK.md, "An
-              # empty database reads as healthy"). Non-fatal, the rule the wiki
-              # pass below states: the loss already happened, so refusing to
-              # apply would punish the operator twice and save nothing.
+              # The marker is /var/lib/wiki/mysql/mysql — the system schema
+              # directory mariadb:11's initdb creates, and the engine-independent
+              # one (aria_log_control and ibdata1 are Aria/InnoDB artifacts). The
+              # tmpfiles rule above pre-creates /var/lib/wiki/mysql at every boot,
+              # so its presence says nothing; only the inner directory does. An
+              # image that reorganised the datadir layout would fire this on a
+              # fresh install — a false alarm, never a false silence.
               #
-              # kubectl exits non-zero when the Secret does not exist, when
-              # the namespace does not exist yet (the create above can fail
-              # under set +e), and when the API server is not answering; only
-              # the first is an answer. The match is therefore Secret-specific:
-              # 'Error from server (NotFound): secrets "bookstack"' latches the
-              # check silently, while a namespaces-not-found, a transport error
-              # or a client-side 'executable file not found' leaves it armed for
-              # the next iteration. A read that keeps failing with anything else
-              # until the apply chain below succeeds means the check never
-              # reports and the activation stays green.
+              # "Was installed before" means the wiki/bookstack Secret exists,
+              # because every activation that deploys the wiki writes it. That
+              # record is deletable: step 2 of the SECRETS.md rotation deletes
+              # this Secret, and until step 3 re-activates, the read below is
+              # NotFound and the check stays silent.
+              #
+              # Only a NotFound naming this Secret is an answer. kubectl also
+              # exits non-zero for a namespace that does not exist yet (the create
+              # above runs under set +e) and for a transport error; latching on
+              # either would silence the check for the rest of the run.
               if [ "$WIKI_DATADIR_CHECKED" = 0 ]; then
                 if WIKI_SECRET_ERR="$($KCTL get secret bookstack -n wiki 2>&1 >/dev/null)"; then
                   WIKI_DATADIR_CHECKED=1
@@ -1097,30 +1061,22 @@
                       # claim mismatch its own immutable spec, and kubectl
                       # answers "field is immutable", which no retry fixes.
                       if [ "$WIKI_DEPLOY" = "1" ]; then
-                        # DB_PASSWORD rotation guard. The MariaDB image sets the
-                        # bookstack account's password only while the data
-                        # directory is empty; after that the password lives in
-                        # the database and re-applying the Secret never touches
-                        # it. A rotated db-password can therefore only be
-                        # half-applied — Secret and BookStack's environment move,
-                        # the account keeps the old value — and because nothing
-                        # here restarts a pod when a Secret changes, it surfaces
-                        # as Access denied at the next BookStack start, detached
-                        # from the rotation that caused it. So refuse, before the
-                        # Secret is written, with the manual procedure spelled
-                        # out; the cluster's own Secret is the single record of
-                        # the last applied value. Proceed on a match, on no
-                        # Secret yet (fresh install), or on a get that itself
-                        # fails: the guard is skipped then, accepted because an
-                        # API server unreachable enough to fail this read fails
-                        # the apply chain below too, and this pass's own error
-                        # handling reports that.
+                        # DB_PASSWORD rotation guard. The cluster's own
+                        # wiki/bookstack Secret is the only record of the value
+                        # last applied, so the comparison is against that and not
+                        # against sops. Proceed on a match, on no Secret yet (a
+                        # fresh install), or on a get that itself fails: the guard
+                        # is skipped then, accepted because an API server
+                        # unreachable enough to fail this read fails the apply
+                        # chain below too, and that reports itself.
                         #
                         # Refuse without failing the generation: exiting 1 makes
                         # deploy-rs roll the whole system generation back while
                         # the five apply passes that already landed stay in the
                         # cluster, and the two states then diverge until a human
                         # notices. WIKI_ROTATE_OK=0 gates the apply chain below.
+                        # Why the password cannot be rotated by editing sops, and
+                        # the one-sitting procedure that can: k8s/apps/wiki/SECRETS.md.
                         WIKI_ROTATE_OK=1
                         if APPLIED_DB_B64="$($KCTL get secret bookstack -n wiki -o jsonpath='{.data.DB_PASSWORD}' 2>/dev/null)"; then
                           APPLIED_DB_PASSWORD="$(printf '%s' "$APPLIED_DB_B64" | base64 -d 2>/dev/null)"
@@ -1159,12 +1115,11 @@
                         # or half-populated document is a failure in its own
                         # right.
                         #
-                        # Fail-closed trade-off: a transient openssl failure
-                        # applies nothing in this pass, with no red unit, and it
-                        # is not retried — the pass sits in the && chain that
-                        # ends in exit 0, so the retry loop is short-circuited.
-                        # The wiki stays where it was until the next activation;
-                        # that is the accepted cost of not pruning live Secrets.
+                        # A transient openssl failure therefore applies nothing in
+                        # this pass, with no red unit and no retry — the pass sits
+                        # in the && chain that ends in exit 0, so the retry loop is
+                        # short-circuited — and the wiki stays where it was until
+                        # the next activation.
                         # The refusal gate wraps the whole pass: `if <false>; then
                         # ...; fi` yields status 0, so a refusal leaves the enclosing
                         # && chain unbroken and the unit still exits 0.

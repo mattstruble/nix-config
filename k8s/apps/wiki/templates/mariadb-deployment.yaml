@@ -7,13 +7,12 @@
 # (bookstack-deployment.yaml), which bypasses the 0750 999:999 mode on the
 # datadir — so the app container can read and overwrite the InnoDB files.
 #
-# Accepted, and considered: a second volume for the datadir was declined, because
-# both directories live under one host path (`spec.local.path` /var/lib/wiki,
-# generated from `wikiStorage` in nix/services/k3s.nix), so a split buys nothing
-# against the failure that actually matters here — filling or corrupting the single
-# NVMe partition — while costing the one-directory backup story. The residual risk
-# is integrity, not confidentiality, and the control that closes it is a backup,
-# which this repo does not have yet.
+# Accepted, and considered: a separate volume for the datadir would not close
+# that — both directories are subPaths of one host path (`spec.local.path`
+# /var/lib/wiki), so it separates nothing the NVMe does not already share, and it
+# costs the one-directory backup story. The residual risk is integrity, not
+# confidentiality, and the control that closes it is a backup, which this repo does
+# not have yet.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
