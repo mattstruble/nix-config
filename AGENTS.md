@@ -55,9 +55,51 @@ fast reader misreads as explaining the code below — a comment beside a
 or beside a Pod Security exception that says what was measured, is bloat only
 until someone deletes it and the next change breaks it.
 
+## What a check may be
+
+The rule above is about prose. This one is about mechanism, and it exists for
+the same reason: a check is a document that can drift.
+
+**Discover, do not enumerate.** When a check exists to assert that several
+places name the same app, path or number, the fix is the enumeration — one list,
+or a `readDir`, that those places are derived from. A check that three
+hand-written lists agree is a fourth list to maintain, and it can pass while all
+four are wrong.
+
+**A value has one source.** If two files must agree, render one from the other.
+A checker for the agreement leaves both files free to drift and adds a third
+thing that can be wrong.
+
+**CI validates artifacts; the cluster observes runtime health.** No workflow may
+query live external state — DNS, a registry's current digest, a URL's status. A
+green run from a GitHub runner is evidence about the runner. A scheduled probe
+belongs in the namespace whose policy or resolver is the thing that would fail,
+where it can be alerted on.
+
+**Never hand-parse another language in shell.** No `awk` or `sed` parser for
+nix, YAML, JSON or GitHub Actions; use `nix eval`, `yq`, `jq`, `helm`. A
+reimplemented parser disagrees with the real one on exactly the inputs that
+matter, and the disagreement looks like a passing check.
+
+**Generic linters before bespoke checkers.** The generic ones are wired into
+`.pre-commit-config.yaml` and cover every file from one config each. A new
+`scripts/check-*.sh` asserts one project-specific invariant, carries its own
+parser, and drifts.
+
+**A check's comment records the constraint it enforces, and what a green run does
+not claim — once, in a sentence.** Not the history of what it replaced, not a
+defence of its design, not a narration of its own parsing.
+
 ## Why it exists
 
 Three review passes ran against PR #304, and in the second,
 nine findings were residuals of tickets closed in the first — the fix had
 landed and the comment it left behind claimed more than the code does. The
 history is `~/llm-wiki/decisions/2026-11-12-documentation-scope-rule.md`.
+
+The rules above came out of the third pass, against the same PR: it shipped four
+bespoke checkers and three workflows to validate them, two of which asserted
+that values nix could have emitted were equal to each other, one of which
+resolved public DNS from a runner and said so in its own header, and all four of
+which were shell parsers for other languages. The app they wrapped was smaller
+than the scaffolding around it.
