@@ -14,6 +14,37 @@ protects it.
 Sections 1–3 are the hand work, 4 is the deploy, 5–7 are the first-run
 configuration and the checks that say it took.
 
+## State of the deployment
+
+Re-measured on the live cluster 2026-11-14, because a runbook that describes a
+first run forever is how a second operator redoes one.
+
+**Done.** Sections 1–4 and 5 ran. The four keys in
+`nix/services/homelab/homelab-wiki-secrets.yaml` hold real values — no `unset`
+sentinel, no empty — the `wiki` namespace is Active, `wiki-bookstack` and
+`wiki-mariadb` are `1/1 Running`, `/status` answers 200 through traefik, and one
+account (`users.external_auth_id` = a Pocket ID subject UUID, three `auth_login`
+activities) has logged in over OIDC. The pod fetches
+`<issuer>/.well-known/openid-configuration` successfully — 200 from the edge
+address in 0.27 s — so the egress rule and the LAN record both work from the
+vantage that matters.
+
+**Not done.** Section 2's three groups: the only audience role in the database is
+`Books User` (`external_auth_id = books`), created by hand on 2026-11-11. Section
+6.1's `no-access` default role does not exist. Section 7's four checks have never
+been run, so nothing here says the audience model holds.
+
+**Two things the first run left behind.** The install's stock `admin@admin.com`
+row still exists and still holds the Admin role — section 5 binds *another* admin
+and does not remove it. And group → role sync is unproven: the one OIDC-bound user
+holds only the Admin role assigned in the UI, so no evidence exists that a
+`groups` claim arrived and matched anything.
+
+Sections 1–3 below are therefore the **redo** procedure — a second host, a rotated
+client, a rebuilt database. Do not run section 3 against the live scope without
+reading `SECRETS.md` first: those four values are live credentials, and
+`db-password` in particular cannot be rotated by editing the file.
+
 ## 1. Create the OIDC client in Pocket ID
 
 Pocket ID 2.18.0 on roque, `APP_URL = https://auth.struble.app`. What this chart
@@ -98,13 +129,19 @@ got access denied from Pocket ID".
 
 ## 3. Put the values where mjolnir can read them
 
+Filled in 2026-11-11; this is the redo path.
+
 ```
 sops nix/services/homelab/homelab-wiki-secrets.yaml
 ```
 
-Replace the two `unset` strings with the client ID and secret. `app-key` and
-`db-password` are already generated. That file's recipients are you and mjolnir
-only, which is the point of it not being `homelab-secrets.yaml`.
+Set the client ID and secret from section 1. `app-key` and `db-password` are
+already generated, and neither is safe to regenerate here: `app-key` invalidates
+every session, and `db-password` cannot be rotated by editing the file at all —
+activation refuses the attempt and skips the wiki pass, leaving the unit green
+(SECRETS.md, "Rotation", for why and for the one-sitting procedure).
+That file's recipients are you and mjolnir only, which is the point of it not
+being `homelab-secrets.yaml`.
 
 ## 4. Deploy
 
@@ -282,6 +319,14 @@ kubectl -n wiki exec -it deploy/wiki-mariadb -- \
 Your row must be there and its `external_auth_id` must hold the `sub` you passed.
 There is no `bookstack:list-users` command; `php artisan list` shows what this
 image ships. Read the table.
+
+**The image's own admin row survives this.** `admin@admin.com` is created at first
+start and holds the Admin role; `bookstack:create-admin` adds a row and removes
+none. It cannot authenticate while `AUTH_METHOD=oidc` — `/login` renders only the
+OIDC form, which posts to `/oidc/login` and carries no password field — but it is
+an Admin principal with a password nobody knows, in the user list, that comes back
+to life the day `AUTH_METHOD` changes. Delete it from Settings → Users once your
+own row is confirmed above.
 
 ## 6. Configure the model
 
@@ -490,35 +535,36 @@ can be correct while the direct fetch is not.
 
 ## What this runbook cannot check for you
 
-Verified only against a real Pocket ID and a real node — first-run unknowns, not
-things that work.
+Two of these were open questions when this file was written and have since been
+answered against the live cluster; the two that remain are marked.
 
-- **The `groups` claim's shape.** BookStack reads `OIDC_GROUPS_CLAIM=groups` and
-  expects an array of names; if group sync silently does nothing, dump the claims
-  with `OIDC_DUMP_USER_DETAILS=true` and see what Pocket ID actually sent.
-- **Egress to the issuer.** BookStack fetches
-  `<issuer>/.well-known/openid-configuration` from inside its own pod, and the
-  egress rule allowing it is a CIDR of the **Pangolin edge, not of roque**: the pod
-  resolves `auth.struble.app` through public DNS, so the request leaves the cluster
-  for the edge and tunnels back. An egress list holding only the private segment
-  drops it while every pod still reports Ready.
-  The `wiki-oidc-egress` CronJob in this chart now makes that request from this
-  namespace every 30 minutes and alerts through the same path BookStack uses, so
-  the CIDR going stale is a page rather than a silent outage. What it cannot tell
-  you: it has never run yet, so its own first pass is unverified; a green probe is
-  evidence about the route, not about the `iss` string matching or the claim
-  arriving; and once the CoreDNS split-horizon work lands (canonical-URLs phase 0)
-  the in-cluster answer and the edge address may legitimately diverge, which is the
-  point at which the `/32` can go away.
-- **The LAN route.** `wiki.mjolnir` needs a record in LAN DNS pointing at the node
-  (10.0.0.4); the `.mjolnir` zone is per-host rather than a wildcard, and a missing
-  record does not announce itself — a correct Ingress and a correct NetworkPolicy
-  still give a browser that never receives an answer. DNS first, then the policy,
-  then the app:
-
-  ```
-  dig +short A wiki.mjolnir @10.0.0.1
-  ```
+- **The `groups` claim's shape — still unverified.** BookStack reads
+  `OIDC_GROUPS_CLAIM=groups` and expects an array of names; if group sync silently
+  does nothing, dump the claims with `OIDC_DUMP_USER_DETAILS=true` and see what
+  Pocket ID actually sent. Nothing observed so far would show it: the one
+  OIDC-bound account holds only the Admin role assigned in the UI, so no claim has
+  ever been seen to arrive and match a role's Authentication ID.
+- **Egress to the issuer — verified from the pod's own vantage, 2026-11-14.**
+  BookStack fetches `<issuer>/.well-known/openid-configuration` from inside its own
+  pod, and the egress rule allowing it is a CIDR of the **Pangolin edge, not of
+  roque**: the pod resolves `auth.struble.app` through public DNS, so the request
+  leaves the cluster for the edge and tunnels back. An egress list holding only the
+  private segment drops it while every pod still reports Ready. Measured from
+  `exec` in the running pod: 200 from the edge address in 0.27 s.
+  The `wiki-oidc-egress` CronJob in this chart now makes that request every 30
+  minutes and alerts through the path BookStack uses, so a stale CIDR is a page
+  rather than a silent outage. What it cannot tell you: a green probe is evidence
+  about the route, not about the `iss` string matching or the claim arriving; and
+  once the CoreDNS split-horizon work lands (canonical-URLs phase 0) the in-cluster
+  answer and the edge address may legitimately diverge, which is the point at which
+  the `/32` can go away.
+- **The LAN route — verified, 2026-11-14.** `wiki.mjolnir` needs a record in LAN
+  DNS pointing at the node (10.0.0.4); the `.mjolnir` zone is per-host rather than
+  a wildcard, and a missing record does not announce itself — a correct Ingress and
+  a correct NetworkPolicy still give a browser that never receives an answer.
+  Measured: `dig +short A wiki.mjolnir @10.0.0.1` → `10.0.0.4`, and
+  `curl -sk https://wiki.mjolnir/status` → 200 over the self-signed certificate.
+  The rest of this entry is the procedure for the day it does not.
 
   **Why not `wiki.struble.app`, which already resolves here too.** It does resolve
   to 10.0.0.4; the certificate is the missing piece. `struble.app` is on the browser
@@ -548,12 +594,13 @@ things that work.
   TLS termination for some other app — the cheapest possible proof they work for
   this one. Same DNAT-bypasses-INPUT behaviour the host firewall note in
   `nix/services/k3s.nix` records for the gateway's hostPort 8000.
-- **The tunnel.** Nothing in this directory publishes `wiki.struble.app`; until the
-  Pangolin connector lands the other path is `kubectl -n wiki port-forward
-  svc/wiki-bookstack 8080:80`. The connector PR carries one wiki-side acceptance
-  item beyond reachability: `bookstack.trustedProxies` (rendered as `APP_PROXIES`)
-  has to name the connector's network, not only the pod CIDR the LAN Ingress
-  arrives from. Left short, BookStack trusts no proxy for that source, so login
-  throttling and the audit log key on the connector's own address — one person's
-  failed logins lock out the whole household, and every audit line records the same
-  source IP. Pocket ID sets `TRUST_PROXY` for the same reason.
+- **The tunnel — still open.** Nothing in this directory publishes
+  `wiki.struble.app`; until the Pangolin connector lands the other path is
+  `kubectl -n wiki port-forward svc/wiki-bookstack 8080:80`. The connector PR
+  carries one wiki-side acceptance item beyond reachability:
+  `bookstack.trustedProxies` (rendered as `APP_PROXIES`) has to name the
+  connector's network, not only the pod CIDR the LAN Ingress arrives from. Left
+  short, BookStack trusts no proxy for that source, so login throttling and the
+  audit log key on the connector's own address — one person's failed logins lock
+  out the whole household, and every audit line records the same source IP. Pocket
+  ID sets `TRUST_PROXY` for the same reason.

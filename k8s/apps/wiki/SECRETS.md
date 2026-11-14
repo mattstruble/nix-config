@@ -24,11 +24,13 @@ rather than wedging a pod in `CreateContainerConfigError`.
 
 ## What a bad value does
 
-The two OIDC values are the literal string `unset` until the Pocket ID client
-exists (RUNBOOK.md section 1). That sentinel is a configuration, not an error:
-starting BookStack against a client that does not exist produces a login
-redirect to an error page, which reads as a broken wiki rather than an
-unconfigured one. An empty value is a mistake rather than a state of the world.
+A fresh scope ships the two OIDC values as the literal string `unset`, because
+the Pocket ID client has to be created by hand first (RUNBOOK.md section 1); the
+live scope has held real values since 2026-11-11. That sentinel is a
+configuration, not an error: starting BookStack against a client that does not
+exist produces a login redirect to an error page, which reads as a broken wiki
+rather than an unconfigured one. An empty value is a mistake rather than a state
+of the world.
 
 The two are judged apart and they fail the same way: either one skips the wiki
 pass, loudly, and lets the rest of the generation land. Neither fails the
