@@ -7,3 +7,9 @@ result-*
 .envrc*
 
 docs/review
+
+# Editor and in-place-rewrite residue. A `sed -i.bak` run during a verification
+# leaves a second copy of whatever file it touched next to the original, and the
+# wiki values copies carry image digest pins a reviewer would then read as two
+# independent sources.
+*.bak

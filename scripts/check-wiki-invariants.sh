@@ -51,6 +51,10 @@ for f in "$values_file" "$pv_file" "$nix_file"; do
   }
 done
 
+workflow_file=.github/workflows/wiki-invariants.yml
+./scripts/assert-paths-filter.sh "$workflow_file" \
+  "$values_file" "$pv_file" "$nix_file" "$workflow_file" "${0#./}"
+
 failed=0
 
 # Every extraction demands exactly one match. A silent first-match-wins reading

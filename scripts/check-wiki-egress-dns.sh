@@ -53,6 +53,10 @@ values_file=k8s/apps/wiki/values.yaml
   exit 1
 }
 
+workflow_file=.github/workflows/wiki-egress-dns.yml
+./scripts/assert-paths-filter.sh "$workflow_file" \
+  "$values_file" "$workflow_file" "${0#./}"
+
 # A top-level key opens a block and any deeper key of that name belongs to it —
 # same shape as check-wiki-invariants.sh: a duplicated key must not silently
 # first-match-win while Helm reads the last one.

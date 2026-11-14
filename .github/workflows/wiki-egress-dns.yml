@@ -28,9 +28,9 @@ name: wiki-egress-dns
 # floor templates/networkpolicy.yaml enforces at render, so a list widened
 # toward 0.0.0.0/0 cannot read green here.
 #
-# GitHub skips a workflow entirely when no changed file matches its `paths:`,
-# so the filter covers every file the check reads: the values file it compares
-# against, the script, and this file.
+# The filter below is asserted against the script's own inputs by
+# scripts/assert-paths-filter.sh: a file read there and missing here would make
+# this job pass by never running.
 #
 # A schedule, not just PRs: the thing that breaks this check (the VPS moving)
 # is not a commit, and a check that only runs on pull requests can only catch

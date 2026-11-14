@@ -9,15 +9,14 @@ name: k8s-app-wiring
 # k8s/README.md, which restated the live state of those three files and was wrong
 # the first time any of them was refactored.
 #
-# GitHub skips a workflow entirely when no changed file matches its `paths:`, so a
-# cross-file check is only as good as a filter that covers every file it reads:
-# the refactor that breaks the invariant touches one of them by construction, and
-# a check that is never scheduled for that PR is a check that passes. Hence the
-# render step's own workflow file and the script below are listed next to the
-# three files compared. It is a separate workflow rather than a job of
-# k8s-manifest-diff.yml because that one triggers on k8s/** and nix/** only, and
-# widening it to cover renovate.json would drag the nix build and the helm render
-# onto renovate-only PRs.
+# It is a separate workflow rather than a job of k8s-manifest-diff.yml because
+# that one triggers on k8s/** and nix/** only, and widening it to cover
+# renovate.json would drag the nix build and the helm render onto renovate-only
+# PRs.
+#
+# The filter below is asserted against the script's own inputs by
+# scripts/assert-paths-filter.sh — a file read there and missing here would make
+# this job pass by never running.
 on:
   pull_request:
     paths:

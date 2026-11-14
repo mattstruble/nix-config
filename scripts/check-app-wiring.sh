@@ -24,6 +24,14 @@
 # the apply oneshot that creates the Secret the chart references and must not
 # define, `services.k3s.manifests.<app>-pvs`, and the per-app lists in
 # renovate-config-check.yml and chart-image-digests.yml.
+#
+# The other direction fails too, and louder. A chart wired through a generic
+# attribute map — the `monitoringCharts` set, rendered by
+# `pkgs.runCommand "${name}-chart-rendered"` whose body interpolates `${chart}` —
+# names no chart directory in any body, so this reads MISSING on an app that is
+# correctly wired. `k8s/apps/monitoring/` escapes only because it carries no
+# Chart.yaml today. Wiring a new local chart through that pattern means fixing
+# what this reads, not adding a path string to a build script to get green.
 set -euo pipefail
 
 # `CDPATH= cd` is a prefix assignment, not an empty one: CDPATH must not redirect this.
@@ -41,6 +49,12 @@ for f in "$nix_file" "$diff_file" "$renovate_file"; do
     exit 1
   }
 done
+
+# The chart directories are not listed to the filter: they arrive through the
+# `k8s/apps/**` entry, which is what a new app's Chart.yaml lands under.
+workflow_file=.github/workflows/k8s-app-wiring.yml
+./scripts/assert-paths-filter.sh "$workflow_file" \
+  "$nix_file" "$diff_file" "$renovate_file" "$workflow_file" "${0#./}"
 
 # Each place is reduced to the text that does the work before it is asked about an
 # app, because a mention elsewhere in the same file is not a wire: the k3s

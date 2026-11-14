@@ -11,11 +11,9 @@ name: wiki-invariants
 # which a revert does not undo because the image only chowns an empty datadir; the
 # size pair leaves the claim Pending forever with an event that names no file.
 #
-# GitHub skips a workflow entirely when no changed file matches its `paths:`, so a
-# cross-file check is only as good as a filter that covers every file it reads:
-# the change that breaks one of these pairs touches one of them by construction,
-# and a check that is never scheduled for that PR is a check that passes. Hence
-# the workflow file and the script are listed next to the three inputs.
+# The filter below is asserted against the script's own inputs by
+# scripts/assert-paths-filter.sh: a file read there and missing here would make
+# this job pass by never running.
 #
 # DELIBERATELY OUT OF SCOPE, and the window is accepted: the Secret name pair.
 # `secretName` in the wiki values has to equal the name hardcoded three times in
