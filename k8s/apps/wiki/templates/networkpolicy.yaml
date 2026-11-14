@@ -45,13 +45,15 @@ is a window in which the old policy's enforcement is gone.
 {{- if not $egressCidrs -}}
   {{- fail "oidc.egressCidrs must list at least one CIDR. An empty list is not a refusal: it renders the TCP/443 egress rule with no `to` peer, and a NetworkPolicy rule with no peer matches EVERY destination — so emptying it opens 443 from the bookstack pod to the whole internet. List the IdP address as a /32 — values.yaml records the measured one under oidc.egressCidrs — or delete the rule from templates/networkpolicy.yaml to actually close it." -}}
 {{- end -}}
+{{- /* The grammar below is the one scripts/check-wiki-egress-dns.sh asserts on
+the same list — octets 0-255 written without leading zeros, prefix exactly 32 —
+so both gates refuse the same set; IPv6 is refused rather than rendered because
+that check judges A records only. */ -}}
+{{- $octet := `(0|[1-9][0-9]?|1[0-9]{2}|2[0-4][0-9]|25[0-5])` -}}
+{{- $host_route := `^%s\.%s\.%s\.%s/32$` -}}
 {{- range $cidr := $egressCidrs -}}
-  {{- /* The /32 floor scripts/check-wiki-egress-dns.sh asserts on the same
-  list: an entry that parses but is wider than a host route widens this rule
-  toward the whole internet, so an entry without a parseable /n suffix fails
-  here too (int of a non-numeric suffix is 0). */ -}}
-  {{- if lt (int (splitList "/" $cidr | last)) 32 -}}
-    {{- fail (printf "oidc.egressCidrs entry %q is not a /32 host route. A wider entry gives the bookstack pod TCP/443 egress toward the whole internet; list the IdP address as a /32 — values.yaml records the measured one — or delete the rule from templates/networkpolicy.yaml to actually close it." $cidr) -}}
+  {{- if not (regexMatch (printf $host_route $octet $octet $octet $octet) $cidr) -}}
+    {{- fail (printf "oidc.egressCidrs entry %q is not an IPv4 /32 host route. A wider entry gives the bookstack pod TCP/443 egress toward the whole internet and a non-IPv4 entry is one scripts/check-wiki-egress-dns.sh cannot judge; list the IdP address as an IPv4 /32 — values.yaml records the measured one — or delete the rule from templates/networkpolicy.yaml to actually close it." $cidr) -}}
   {{- end -}}
 {{- end -}}
 apiVersion: networking.k8s.io/v1

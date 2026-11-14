@@ -89,13 +89,18 @@ one_match() { # $1 = value(s), one per line; $2 = what was looked for; $3 = file
   printf '%s' "$1"
 }
 
+# Printed in place of the items by egress_cidrs_get when a flow list is not
+# closed on its key line: the extraction stays in awk, the verdict is below.
+flow_list_split='!! egressCidrs flow list not closed on its key line'
+
 # The list items under oidc.egressCidrs, one per line. Read from the file on
 # purpose: when split-horizon DNS lands the list changes shape, and a copy of
-# it here would check the check instead of the policy. Both list shapes YAML
-# allows are read: the block sequence, and a flow sequence on the key line,
-# which the chart renders identically.
+# it here would check the check instead of the policy. Two shapes are read: the
+# block sequence, and a flow sequence closed on the key line, which the chart
+# renders identically; any other shape prints $flow_list_split in place of the
+# items, because a half-read list would be judged as if it were the whole rule.
 egress_cidrs_get() {
-  awk '
+  awk -v split_marker="$flow_list_split" '
     # A top-level key ends the oidc block: no collection state may survive it.
     /^[A-Za-z0-9_-]+:/ { in_oidc = ($0 ~ /^oidc:/); collecting = 0; next }
     !in_oidc { next }
@@ -115,6 +120,7 @@ egress_cidrs_get() {
       v = $0
       sub(/^[[:space:]]+egressCidrs:[[:space:]]*/, "", v)
       sub(/[[:space:]]*(#.*)?$/, "", v)
+      if (v !~ /\]$/) { print split_marker; exit }
       sub(/^\[/, "", v)
       sub(/\]$/, "", v)
       n = split(v, item, /,/)
@@ -138,7 +144,12 @@ issuer=$(one_match "$issuer_raw" "oidc.issuer" "$values_file")
 # Strip scheme and path; the issuer is a base URL, the A record belongs to its host.
 host=$(printf '%s' "$issuer" | sed -E 's#^[A-Za-z][A-Za-z0-9+.-]*://##; s#[/?:].*$##')
 
-mapfile -t cidrs < <(egress_cidrs_get)
+cidrs_raw=$(egress_cidrs_get)
+if printf '%s\n' "$cidrs_raw" | grep -Fqx -- "$flow_list_split"; then
+  echo "::error::oidc.egressCidrs in $values_file opens a flow list with '[' without closing it on the same line; this check reads a block list ('- a.b.c.d/n' lines) or a flow list ('[a.b.c.d/n, ...]') under oidc.egressCidrs, and any other shape collects nothing — a list split across lines is refused, not half-read." >&2
+  exit 1
+fi
+mapfile -t cidrs < <(printf '%s\n' "$cidrs_raw" | grep .)
 if [ "${#cidrs[@]}" -eq 0 ]; then
   echo "::error::oidc.egressCidrs in $values_file lists no CIDR; this check reads a block list ('- a.b.c.d/n' lines) or a flow list ('[a.b.c.d/n, ...]') under oidc.egressCidrs, and any other shape collects nothing. The chart refuses to render an empty list because a policy rule with no peer matches every destination; a check that read nothing here would pass on the widest possible policy." >&2
   exit 1
@@ -148,7 +159,7 @@ fi
 # leading-zero octets outright, while bash arithmetic reads 066 as octal 54;
 # the ambiguous form is rejected at this boundary and base 10 is forced below
 # so the check and the policy cannot disagree about the same text.
-octet='0|[1-9][0-9]{0,2}'
+octet='0|[1-9][0-9]?|1[0-9]{2}|2[0-4][0-9]|25[0-5]'
 
 ip2int() { # $1 = dotted quad; echoes the 32-bit value, returns 1 if malformed
   local ip=$1 a b c d
