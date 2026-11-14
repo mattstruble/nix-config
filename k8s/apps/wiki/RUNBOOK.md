@@ -16,40 +16,40 @@ configuration and the checks that say it took.
 
 ## State of the deployment
 
-Re-measured on the live cluster 2026-11-14, because a runbook that describes a
-first run forever is how a second operator redoes one.
+Measured against the live cluster and Pocket ID on 2026-11-14. Sections 1–5 ran;
+sections 6 and 7 did not, and the group names 6 and 7 were written against are not
+the ones in use. Read this before following anything below.
 
-**Done.** Sections 1–4 and 5 ran. The four keys in
-`nix/services/homelab/homelab-wiki-secrets.yaml` hold real values — no `unset`
-sentinel, no empty — the `wiki` namespace is Active, `wiki-bookstack` and
-`wiki-mariadb` are `1/1 Running`, `/status` answers 200 through traefik, and one
-account (`users.external_auth_id` = a Pocket ID subject UUID, three `auth_login`
-activities) has logged in over OIDC. The pod fetches
-`<issuer>/.well-known/openid-configuration` successfully — 200 from the edge
-address in 0.27 s — so the egress rule and the LAN record both work from the
-vantage that matters.
+**Live.** Pocket ID 2.18.0 (`pocket-id.service` on roque) with four groups —
+`member`, `books`, `admin`, `plex` — and eight accounts, of which only `mestruble`
+is in `admin`. The OIDC client is named **Wiki**: confidential, PKCE on, skip
+consent on, admitted groups `admin` and `books`. In the cluster, `wiki-bookstack`
+and `wiki-mariadb` are `1/1 Running`, `/status` answers 200 through traefik, and the
+pod fetches `<issuer>/.well-known/openid-configuration` in 0.27 s. BookStack has the
+built-in Admin, Editor, Viewer and Public roles, all with an empty Authentication
+ID, plus one audience role **Books User** whose Authentication ID is `books`.
 
-**Not done.** Section 2's three groups: the only audience role in the database is
-`Books User` (`external_auth_id = books`), created by hand on 2026-11-11. Section
-6.1's `no-access` default role does not exist. Section 7's four checks have never
-been run, so nothing here says the audience model holds.
+**Not live.** The `books` group has no members, so the one working group → role
+mapping grants nothing to anyone. The other seven accounts are in `member`, which
+the Wiki client does not admit, so they cannot reach the wiki at all. The wiki is
+single-user, and section 7's checks have never been run.
 
-**Two things the first run left behind.** The install's stock `admin@admin.com`
-row still exists and still holds the Admin role — section 5 binds *another* admin
-and does not remove it. And group → role sync is unproven: the one OIDC-bound user
-holds only the Admin role assigned in the UI, so no evidence exists that a
-`groups` claim arrived and matched anything.
+**One of these is load-bearing and accidental.** The Admin role's Authentication ID
+is empty, so BookStack matches it to a Pocket ID group by display name: "Admin" →
+`admin`, which is a group that exists and that the client admits. That is the whole
+reason the admin account is still an admin after login, and section 2 explains what
+breaks it.
 
-Sections 1–3 below are therefore the **redo** procedure — a second host, a rotated
-client, a rebuilt database. Do not run section 3 against the live scope without
-reading `SECRETS.md` first: those four values are live credentials, and
-`db-password` in particular cannot be rotated by editing the file.
+Sections 1–3 below are the **redo** procedure — a second host, a rotated client, a
+rebuilt database. Do not run section 3 against the live scope without reading
+`SECRETS.md` first: those four values are live credentials, and `db-password` in
+particular cannot be rotated by editing the file.
 
 ## 1. Create the OIDC client in Pocket ID
 
-Pocket ID 2.18.0 on roque, `APP_URL = https://auth.struble.app`. What this chart
-asks of that issuer is safe because each of these was read off its live discovery
-document rather than assumed:
+Pocket ID 2.18.0 on roque, `APP_URL = https://auth.struble.app`. Four properties of
+that issuer decide this chart's shape, and all four were re-read from its discovery
+document on 2026-11-14:
 
 - `groups` is in both `scopes_supported` and `claims_supported`. Without the
   scope the claim is simply absent and every user loses their roles at their next
@@ -64,18 +64,22 @@ document rather than assumed:
 
 ### The client
 
-Use the **LAN** hostname — `wiki.mjolnir` is the only name the wiki is served on
-(see the HSTS note at the end). BookStack builds its redirect URI from
+The live client is named **Wiki**. BookStack builds its redirect URI from
 `bookstack.appUrl`, so the callback URL must match that value character for
 character, and nothing here can stop the Pocket ID client from being wrong.
 
-1. **Administration → OIDC Clients → Add OIDC Client.** Name `BookStack`, client
-   type **confidential** — BookStack has a backend and can hold a secret.
-   Callback URL:
+1. **Administration → OIDC Clients → Add OIDC Client.** Name `Wiki`, and leave it
+   **not public** — BookStack has a backend and can hold a secret, which is the
+   Public toggle, not the client-type field. Callback URLs:
 
    ```
    https://wiki.mjolnir/oidc/callback
+   https://wiki.struble.app/oidc/callback
    ```
+
+   The second is registered ahead of the Pangolin resource that would serve it;
+   `wiki.struble.app` resolves to the node and answers 404 today, so only the first
+   is a path a browser can complete.
 
 2. **Create**, then copy the **Client ID** and **Client secret**. The secret is
    shown once.
@@ -90,17 +94,16 @@ character, and nothing here can stop the Pocket ID client from being wrong.
    trusted client.
 
 5. On the client's **Access** tab, set **Allowed User Groups** to *Selected user
-   groups* and tick `wiki-admin`, `family`, `plex-users` — they come from section
-   2, so nothing to tick yet is expected. A new client admits **nobody** until
-   this is set, and everyone else gets "You are not allowed to access this
-   service", which reads as a Pocket ID fault rather than an unconfigured client.
+   groups* and tick `admin` and `books`. A new client admits **nobody** until this
+   is set, and everyone else gets "You are not allowed to access this service",
+   which reads as a Pocket ID fault rather than an unconfigured client.
 
 ### Logout callback URLs
 
 Pocket ID keeps **Logout Callback URLs** as a separate list and matches both lists
 **exactly** unless an entry has a wildcard, and BookStack picks a logout URL by
 where you were standing when you logged out — a missing entry looks like a logout
-that silently does nothing. Register all three:
+that silently does nothing. Register all three paths, for each hostname:
 
 ```
 https://wiki.mjolnir/
@@ -111,21 +114,55 @@ https://wiki.mjolnir/login?prevent_auto_init=true
 A globstar (`**`) covers path segments only, so no wildcard reaches the
 `?prevent_auto_init` query string that distinguishes the third entry.
 
+A globstar (`**`) covers path segments only, so no wildcard reaches the
+`?prevent_auto_init` query string that distinguishes the third entry.
+
 The certificate is self-signed, so expect to re-accept it after a redeploy — the
 accepted cost of a LAN name before cert-manager exists. When canonical-URLs phase
 0 ships a real wildcard, re-register these URIs in the same sitting as the
 `appUrl` change.
 
-## 2. Create the groups
+## 2. The groups, and what a group name can do
 
-Administration → User Groups. The **Name** field is what matters: Pocket ID emits
-group names (not friendly names) in the `groups` claim, and BookStack matches
-them lower-cased with spaces turned into hyphens.
+Pocket ID emits group **names** in the `groups` claim, never friendly names. They
+are separate columns and they are equal for all four groups today, which is the
+only reason the distinction is not biting.
 
-Create `wiki-admin`, `family`, `plex-users`. Then finish the client's **Access**
-tab from section 1 step 5 — a group that exists but is not allowed on the client
-cannot sign in at all, which is the step that gets missed and produces "my wife
-got access denied from Pocket ID".
+BookStack's matching, from `app/Access/GroupSyncService.php`: each group name is
+trimmed, lower-cased and has its spaces turned into hyphens. A role matches if its
+**Authentication ID** — lower-cased, then split on unescaped commas, so one role
+can list several groups — equals one of those names. If the Authentication ID is
+**empty**, BookStack normalizes the role's **display name** the same way and
+compares that instead.
+
+That fallback cuts both ways, and both edges are live here.
+
+- **It grants.** A Pocket ID group named `admin`, `editor` or `viewer` matches the
+  built-in role of that name, because those roles have no Authentication ID and
+  their display names normalize to exactly those strings. The `admin` group exists
+  and the Wiki client admits it, so membership in `admin` *is* BookStack admin —
+  not because anyone assigned it, and renaming either side ends it.
+- **It strips.** With `OIDC_REMOVE_FROM_GROUPS=true` a login runs
+  `roles()->sync(<matched roles>)` and then attaches the default role. Every role
+  the groups do not match is detached, including one assigned by hand in the UI.
+  So the Admin role the setup CLI created survives only while the group name keeps
+  matching it.
+
+The four groups that exist, and what each does:
+
+| group | in the Wiki client | effect in BookStack |
+|---|---|---|
+| `admin` | yes | matches the built-in **Admin** role by display name |
+| `books` | yes | matches **Books User** by Authentication ID; no members, so it grants nothing yet |
+| `member` | no | seven of the eight accounts are only here, so they cannot sign in |
+| `plex` | no | nothing until the client admits it and a role carries the ID |
+
+A group that exists but is not on the client's **Access** tab cannot sign in at all,
+which is the step that gets missed and produces "my wife got access denied from
+Pocket ID".
+
+Section 6 needs audience groups that do not exist yet. Create them there, with names
+that match no BookStack role display name, before giving them any members.
 
 ## 3. Put the values where mjolnir can read them
 
@@ -137,9 +174,10 @@ sops nix/services/homelab/homelab-wiki-secrets.yaml
 
 Set the client ID and secret from section 1. `app-key` and `db-password` are
 already generated, and neither is safe to regenerate here: `app-key` invalidates
-every session, and `db-password` cannot be rotated by editing the file at all —
-activation refuses the attempt and skips the wiki pass, leaving the unit green
-(SECRETS.md, "Rotation", for why and for the one-sitting procedure).
+every session and every stored MFA secret, and `db-password` cannot be rotated by
+editing the file at all — activation refuses the attempt and skips the wiki pass,
+leaving the unit green (SECRETS.md, "Rotation", for why and for the one-sitting
+procedure).
 That file's recipients are you and mjolnir only, which is the point of it not
 being `homelab-secrets.yaml`.
 
@@ -241,11 +279,12 @@ ssh mjolnir systemctl show ai-chart-apply -p ActiveState -p SubState
 `SubState=running` is a pass in flight; `exited` or `dead` is none —
 `RemainAfterExit` keeps `ActiveState=active` after the process has exited, so
 `ActiveState` on its own never means the pass is running. Nor is a running pass
-the deploy you just ran: a deploy that restarts this unit waits for it (measured
-here — the unit's own start and exit timestamps, 09:41:26 and 09:42:11, both
-fall inside that deploy's ssh session), so a pass in flight is somebody else's
-activation — a second terminal, another operator. A `DIFFERS` printed while one
-is running means the pass has not finished, not that it applied the wrong value.
+the deploy you just ran: the unit is `Type=oneshot` with `JobTimeoutUSec=infinity`,
+and the activation's `systemctl restart` waits on that job, so a pass in flight is
+somebody else's activation — a second terminal, another operator. The pass takes
+about 45 seconds end to end (`ExecMainStartTimestamp` to `ExecMainExitTimestamp`). A
+`DIFFERS` printed while one is running means the pass has not finished, not that it
+applied the wrong value.
 Wait and re-check instead of restarting: restarting a running `Type=oneshot`
 signals its control group, which aborts the apply chain partway — some
 namespaces applied, some not — and leaves nothing to re-run it.
@@ -292,7 +331,7 @@ logins while it is on, so turn it straight back off).
 ```
 kubectl -n wiki exec -it deploy/wiki-bookstack -- \
   php artisan bookstack:create-admin \
-    --name="Matt" --email=matt@struble.app \
+    --name="Matt" --email=matt@struble.dev \
     --external-auth-id=<your-pocket-id-sub>
 ```
 
@@ -338,46 +377,50 @@ dialog on each entity.
 Create a role `no-access` with **nothing** ticked. Then Settings →
 Authentication → **Default user role** → `no-access`.
 
-This is the highest-blast-radius setting in the system and it goes first.
-`OIDC_REMOVE_FROM_GROUPS=true` makes the empty role "always matched", so whatever
-the default points at is what every holder of a Pocket ID account receives on
-first login. Pointing it at anything else hands out read access by default,
-silently, to people you have never met.
+This is the highest-blast-radius setting in the system and it goes first. A login
+attaches that role after group matching — `attachDefaultRole()` in
+`app/Users/Models/User.php` reads the `registration-role` setting — so whatever it
+points at is what every holder of a Pocket ID account receives on first login, on
+top of whatever their groups matched. Pointing it at anything other than an empty
+role hands out read access by default, silently, to people you have never met.
 
 ### 6.2 The audience roles
 
 | role | Authentication ID | permissions |
 |---|---|---|
-| `no-access` | *(empty)* | none |
-| `wiki-admin` | `wiki-admin` | leave the built-in **Admin** role alone; give it the Authentication ID `wiki-admin` rather than creating a second admin role |
-| `family` | `family` | see section 6.3 |
-| `plex-users` | `plex-users` | see section 6.3 |
+| `no-access` | *(empty)* | none; a group named `no-access` would match it by display name, which is harmless and probably what you want |
+| built-in **Admin** | `admin` | set the ID explicitly so the match stops depending on the display name; do not create a second admin role |
+| **Books User** *(exists)* | `books` | already correct; the group has no members, so it grants nothing yet |
+| `family` | `family` | see 6.3; the Pocket ID group does not exist yet — create it before adding members |
+| `plex` | `plex` | see 6.3; the group exists but the client does not admit it |
 
-Authentication ID is what Pocket ID group sync matches against. Without it
-BookStack falls back to the role's display name, so **renaming a role in the UI
-silently strips every member's role at their next login**. With it, display names
-are cosmetic and safe to change.
+Authentication ID is what group sync matches against, and while it is empty the
+role's **display name** is the match key instead (section 2). So renaming a role in
+the UI silently moves who it is granted to, and a new role whose name collides with
+an existing Pocket ID group is granted to that group's members on their next login.
+Give every audience role an explicit Authentication ID and keep its name away from
+the built-in role names.
 
 ### 6.3 Strip the global view permissions
 
-On `family` and `plex-users`, untick every "View all …" permission — view all
+On `family` and `plex`, untick every "View all …" permission — view all
 books, pages, shelves, attachments. **This is the step that decides whether the
 rest of the model means anything.**
 
-BookStack has two independent ways to grant a read and the global one wins:
-`book-view-all` is evaluated *before* entity permissions, so a role carrying it
-sees books it was explicitly never granted — and the Viewer role it can be cloned
-from ships with five of them. Measured: with one ticked a family user opened the
-Cluster book; without, 404. What these roles need is no global permissions at all;
-access comes entirely from the per-entity grants in 6.5.
+BookStack has two ways to grant a read and the global one wins. `EntityPermissionEvaluator`
+collects the joint permissions for your roles along the entity chain and returns
+`max()` of them, so a role-level `book-view-all` contributes an allow row for every
+book and outranks the per-entity deny you just wrote — a role carrying it sees books
+it was explicitly never granted. Access for an audience role therefore comes from
+the per-entity grants in 6.5 and from nothing else.
 
 ### 6.4 Shelves and books
 
 | shelf | viewers | books |
 |---|---|---|
-| Family | `family`, `wiki-admin` | Printers, Travel, Home |
-| Home Apps | `family`, `plex-users`, `wiki-admin` | Plex |
-| Ops | `wiki-admin` | Cluster, Network |
+| Family | `family`, **Admin** | Printers, Travel, Home |
+| Home Apps | `family`, `plex`, **Admin** | Plex |
+| Ops | **Admin** | Cluster, Network |
 
 Give each book a chapter named **Internal**. The convention that makes this wiki
 usable is that the permission decision is *where you save*: public-facing content
@@ -390,7 +433,7 @@ For each book: permissions → restrict → tick the roles that should see it, p
 shelf table above.
 
 For each `Internal` chapter: **untick "copy permissions from parent"**, then tick
-only `wiki-admin`.
+only **Admin**.
 
 > **The trap in that step, and the one to remember forever.** A new chapter
 > inherits its book's grants: absence of an allow is *not* a deny in BookStack —
@@ -404,7 +447,7 @@ only `wiki-admin`.
 The one step in this section you will do more than once. Taking someone off a
 shelf is two actions, and only the first of them is in Pocket ID.
 
-1. **Pocket ID** — remove the user from `family` and/or `plex-users`. To shut the
+1. **Pocket ID** — remove the user from `family` and/or `plex`. To shut the
    wiki to the whole account instead of one audience, remove those groups from the
    client's **Allowed User Groups**: the account then cannot complete a wiki login
    at all, which is the difference between losing a shelf and losing the wiki.
@@ -435,20 +478,25 @@ The heavier version is Users → *name* → Delete — right when the account it
 should not come back, and it takes their content with it, so it is a decision
 rather than a revocation.
 
-What is stated and what is checked: sync at login is the assumption the whole model
-rests on, and 7 exercises it. The SQL above, what account deletion does to a live
-session, and the delay from a Pocket ID change to access being gone in a browser
-are written from the schema and the image defaults, not exercised against this
-deployment; that delay deliberately has no number recorded here.
+What is stated and what is checked: the group → role match and the login-time
+`sync()` are read off `GroupSyncService.php` and `OidcService.php` in the running
+image, so the mechanism in section 2 is source, not inference. What has not been
+exercised here is the other half of this step: the SQL above, what account deletion
+does to a live session, and the delay from a Pocket ID change to access being gone
+in a browser are written from the schema and the image defaults. That delay
+deliberately has no number recorded here.
 
 ## 7. Verify
 
-1. Log in as someone in **no** wiki group. Empty dashboard, no books, no
-   shelves. If they see anything, 6.1 did not take.
+1. Log in as someone whose only group is one the client admits but no role matches
+   — `member` once section 6.2 adds it to the client's **Allowed User Groups**.
+   Until it is admitted, this check cannot run: that account gets Pocket ID's own
+   "not allowed to access this service" and never reaches BookStack. Expect an
+   empty dashboard, no books, no shelves. If they see anything, 6.1 did not take.
 2. Log in as a `family` member: Family and Home Apps shelves, four books, and no
    `Internal` chapter — not in the book listing, **and not by URL**.
-3. Same as `plex-users`: Home Apps only, Plex only, no `Internal`.
-4. Open an `Internal` chapter by URL as `plex-users`. It must be 404, not a
+3. Same as `plex`: Home Apps only, Plex only, no `Internal`.
+4. Open an `Internal` chapter by URL as `plex`. It must be 404, not a
    redirect to login and not a page.
 5. The policy and probe objects, from the apply's own output:
 
@@ -527,23 +575,34 @@ can be correct while the direct fetch is not.
   sharp rather than fiddly: two servers on this RWO datadir is corruption, not a
   second chance at uptime, and `--skip-grant-tables` alone leaves the server
   listening on the pod network with no credential.
-- **A role rename strips membership** unless the role has an Authentication ID, so
-  give every role a Pocket ID group maps to one. The `no-access` default is the
-  deliberate exception in 6.2: an Authentication ID would make it a group-matched
-  role and stop it being the always-matched default 6.1 depends on.
+- **A role rename moves who the role is granted to.** While a role's Authentication
+  ID is empty its display name is the group-match key (section 2), so renaming it
+  silently changes which Pocket ID members get it at their next login — and a new
+  role named after an existing group is granted to that group. Give every role a
+  Pocket ID group maps to an explicit Authentication ID. The `no-access` default in
+  6.2 is the one role that is not group-matched at all: it is attached by
+  `attachDefaultRole()` from the `registration-role` setting, not by a claim, which
+  is why giving it an Authentication ID would be a different mechanism rather than a
+  safer one.
 - **New chapter → set permissions immediately**, per 6.5.
 
 ## What this runbook cannot check for you
 
-Two of these were open questions when this file was written and have since been
-answered against the live cluster; the two that remain are marked.
+Three of these were open questions when this file was written. Two have been
+answered by measurement against the live cluster, one by inference from the running
+image's source, and one is still open.
 
-- **The `groups` claim's shape — still unverified.** BookStack reads
-  `OIDC_GROUPS_CLAIM=groups` and expects an array of names; if group sync silently
-  does nothing, dump the claims with `OIDC_DUMP_USER_DETAILS=true` and see what
-  Pocket ID actually sent. Nothing observed so far would show it: the one
-  OIDC-bound account holds only the Admin role assigned in the UI, so no claim has
-  ever been seen to arrive and match a role's Authentication ID.
+- **The `groups` claim's shape — settled by inference, not by a capture.** BookStack
+  reads `OIDC_GROUPS_CLAIM=groups` with `OIDC_ADDITIONAL_SCOPES=groups`, and the pod
+  runs `OIDC_USER_TO_GROUPS=true` with `OIDC_REMOVE_FROM_GROUPS=true`, so every login
+  runs `roles()->sync(<matched>)` and detaches whatever the claim did not match. The
+  one OIDC account was created with the Admin role at 21:41:47, logged in twice more
+  at 21:54 and 21:55, and still holds exactly the Admin role — so the claim arrived
+  and carried a name that matched it (`admin`, by display name; see section 2). An
+  empty claim would have left that account with nothing but the default role. To
+  capture the claim itself rather than infer it, set `OIDC_DUMP_USER_DETAILS=true`
+  and log in once; that env var blocks logins while it is on, so turn it straight
+  back off.
 - **Egress to the issuer — verified from the pod's own vantage, 2026-11-14.**
   BookStack fetches `<issuer>/.well-known/openid-configuration` from inside its own
   pod, and the egress rule allowing it is a CIDR of the **Pangolin edge, not of

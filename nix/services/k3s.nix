@@ -92,6 +92,12 @@
         (k: " \\\n                    --from-file=${k}=\"$T/secret-wiki-${wikiSecretName k}\"")
         wikiSecretKeys);
       wikiValuesText = ''
+        # The namespace this chart is applied into. The apply's -n places every
+        # object, but one template has to name a namespace inside a string it
+        # emits — the PrometheusRule's label selector — and the render runs with
+        # no --namespace, so .Release.Namespace would answer "default" and the
+        # alert would watch a namespace the CronJob never runs in.
+        namespace: ${wikiStorage.claimNamespace}
         bookstack:
           uid: ${toString wikiStorage.bookstackUid}
           gid: ${toString wikiStorage.bookstackGid}
@@ -211,9 +217,13 @@
           }
           ''
             mkdir -p $out
-            # one -f per values file (a bare glob expands to positional chart args)
+            # one -f per values file (a bare glob expands to positional chart args).
+            # The -f test is not paranoia: a chart with no values/ directory leaves
+            # the glob literal, and helm then fails on the file it cannot open.
             F=(-f $src/apps/${name}/values.yaml)
-            for f in $src/apps/${name}/values/*.yaml; do F+=(-f "$f"); done
+            for f in $src/apps/${name}/values/*.yaml; do
+              if [ -f "$f" ]; then F+=(-f "$f"); fi
+            done
             ${lib.optionalString (chartBuildValues ? ${name}) ''F+=(-f ${chartBuildValues.${name}})''}
             helm template ${name} $src/apps/${name} "''${F[@]}" > $out/rendered.yaml
           '';

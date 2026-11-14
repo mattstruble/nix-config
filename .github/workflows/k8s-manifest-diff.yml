@@ -87,7 +87,11 @@ jobs:
               [ -f "$dir/Chart.yaml" ] || continue
               chart=$(basename "$dir")
               local F=(-f "$dir/values.yaml")
-              for f in "$dir"values/*.yaml; do F+=(-f "$f"); done
+              # The -f test: a chart with no values/ directory leaves the glob
+              # literal, and helm fails on the file it cannot open.
+              for f in "$dir"values/*.yaml; do
+                if [ -f "$f" ]; then F+=(-f "$f"); fi
+              done
               [ -f "$CHART_VALUES/$chart" ] && F+=(-f "$CHART_VALUES/$chart")
               helm template "$chart" "$dir" "${F[@]}" || rc=1
             done

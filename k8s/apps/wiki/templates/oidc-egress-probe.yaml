@@ -88,7 +88,7 @@ spec:
       rules:
         - alert: WikiOidcEgressBlocked
           # CronJob jobs are named <cronjob>-<timestamp>, hence the prefix match.
-          expr: kube_job_status_failed{namespace="{{ .Release.Namespace }}",job_name=~"wiki-oidc-egress-.*"} == 1
+          expr: kube_job_status_failed{namespace="{{ required "namespace: set by wikiStorage in nix/services/k3s.nix, the namespace the apply pass uses" .Values.namespace }}",job_name=~"wiki-oidc-egress-.*"} == 1
           labels:
             severity: warning
           annotations:

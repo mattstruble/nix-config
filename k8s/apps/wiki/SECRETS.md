@@ -42,8 +42,12 @@ that was not the reason it skipped.
 
 ## Rotation
 
-`APP_KEY` can be changed in sops and re-deployed (it invalidates every session,
-and nothing else). `DB_PASSWORD` cannot, and activation refuses the attempt
+`APP_KEY` can be changed in sops and re-deployed. It is Laravel's `APP_KEY`, so it
+invalidates every session, and it is also what `MfaValue` encrypts
+`mfa_values.value` with — every enrolled second factor becomes undecryptable, which
+is a lockout rather than a logout. `mfa_values` is empty today, so the cost is
+sessions only, and that stops being true the first time anyone enables MFA.
+`DB_PASSWORD` cannot be rotated this way at all, and activation refuses the attempt
 rather than half-applying it.
 
 The reason is the MariaDB image: it reads `MARIADB_USER` and `MARIADB_PASSWORD`

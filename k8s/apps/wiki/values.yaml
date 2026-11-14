@@ -1,9 +1,10 @@
 # Values for the wiki chart (BookStack + MariaDB).
 #
-# The `uid`/`gid` pairs, everything under `persistence:`, `secret.keys`,
-# `oidc.issuer` and `oidc.egressCidrs` are deliberately absent: nix supplies them
-# at render (`wikiStorage`, `wikiSecretKeys` and `wikiOidcEgressCidrs` in
-# nix/services/k3s.nix, `issuerUrl` in nix/flake-parts.nix), because the host
+# `namespace`, the `uid`/`gid` pairs, everything under `persistence:`,
+# `secret.keys`, `oidc.issuer` and `oidc.egressCidrs` are deliberately absent: nix
+# supplies them at render (`wikiStorage`, `wikiSecretKeys` and
+# `wikiOidcEgressCidrs` in nix/services/k3s.nix, `issuerUrl` in
+# nix/flake-parts.nix), because the namespace the apply pass uses, the host
 # directory owner, the PV capacity, the Secret's key list, the edge's address and
 # the IdP's `iss` claim are the same facts read by other software. `just
 # k8s-render` and the CI preview pass the same file; a bare `helm template` fails
@@ -71,7 +72,11 @@ ingress:
   tlsSecret: wiki-tls # pragma: allowlist secret (a Kubernetes Secret name, not a credential)
 
 database:
-  image: mariadb:11@sha256:c4124d1afa875e47f2892edf26b482fa54f796e2f342d3717a04ca091a22a9bd
+  # Version-specific, not `mariadb:11`: this is the engine that owns an on-disk
+  # datadir it can never be downgraded out of, so the tag a re-push can move is
+  # the wrong tag to pin. 11.8.9 is the version the previous `11` pin resolved
+  # to; only the build changed.
+  image: mariadb:11.8.9@sha256:d36f18d65a0459510b8b0f643b226a6d299e3206486e2b64ff20754a6d291707
   port: 3306
   database: bookstack
   username: bookstack
