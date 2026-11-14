@@ -38,9 +38,11 @@ Per-chart options:
 
 - `repo` is fed into `helm repo add <repo> <repo-url>` inside a `fetchHelm` derivation. It must be a valid Helm repository URL ([source](https://github.com/NixOS/nixpkgs/blob/d07ebbab9bcf9726e224fd2ef71daf63fd16098b/nixos/modules/services/cluster/k3s/default.nix#L69-L85)).
 - `package` must be a **packaged `.tgz` archive** (type is `either path package`). The module’s `mkHelmChartCR` hardcodes the `chart` field in the generated `HelmChart` CR to:
+
   ```nix
   chart = "https://%{KUBERNETES_API}%/static/charts/${name}.tgz";
   ```
+
   ([source](https://github.com/NixOS/nixpkgs/blob/d07ebbab9bcf9726e224fd2ef71daf63fd16098b/nixos/modules/services/cluster/k3s/default.nix#L118))
 
 The `.tgz` is placed on disk via `services.k3s.charts` (linked to `/var/lib/rancher/k3s/server/static/charts/`) and served by the k3s API server. The Helm controller (klipper-helm) detects the `https://` prefix and treats it as a direct chart archive URL, skipping repo init ([klipper-helm entry](https://github.com/k3s-io/klipper-helm/blob/master/entry)).
@@ -58,6 +60,7 @@ The `.tgz` is placed on disk via `services.k3s.charts` (linked to `/var/lib/ranc
 - Helm’s native deep-merge semantics across multiple `-f` files would have to be replicated manually in Nix (parse YAML → attrsets → `lib.recursiveUpdate` or similar), then fed as a single attrset to `values`. This is possible but fragile and loses the clarity of per-model values files.
 
 Our current chart uses:
+
 ```bash
 helm template ai k8s/apps/ai \
   -f k8s/apps/ai/values.yaml \
@@ -65,6 +68,7 @@ helm template ai k8s/apps/ai \
   -f k8s/apps/ai/values/qwen3-8-27b.yaml \
   ...  # 8 per-model files total
 ```
+
 That is not expressible in `autoDeployCharts` without pre-merging.
 
 ---
@@ -74,11 +78,13 @@ That is not expressible in `autoDeployCharts` without pre-merging.
 **Only if the chart is pre-packaged as a `.tgz` containing the file.**
 
 Our `templates/chat-template-configmap.yaml` uses:
+
 ```yaml
 {{ .Files.Get "qwen3-chat-template.jinja" | indent 4 }}
 ```
 
 Helm’s `.Files.Get` works inside a packaged chart archive as long as the file is in the chart root and not excluded by `.helmignore`. So:
+
 - **With `autoDeployCharts`:** we would need a Nix derivation that runs `helm package k8s/apps/ai` to produce `ai-0.1.0.tgz`, then pass that as `package`. The `.jinja` would be bundled correctly.
 - **With `runCommand`:** `helm template` on an unpacked directory already resolves `.Files.Get` relative to the chart root. This works today with no extra packaging step.
 
@@ -100,6 +106,7 @@ Helm’s `.Files.Get` works inside a packaged chart archive as long as the file 
 **Keep the current `pkgs.runCommand` render + `system.activationScripts` apply.**
 
 Why:
+
 1. **No impedance mismatch.** `helm template` natively supports unpacked local charts, multiple `-f` values files, and `.Files.Get`.
 2. **Deterministic activation.** The manifest is rendered at Nix build time and applied during `nixos-rebuild switch` with a retry loop. If it fails, the deploy fails visibly.
 3. **autoDeployCharts adds no value here.** It is optimized for “fetch a chart from the internet and let k3s manage it asynchronously.” Our use case is “render a local fleet chart with per-model overlays and apply it now.”

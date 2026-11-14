@@ -193,6 +193,7 @@ Rollouts are `Recreate` (the model owns its card) and there is no livenessProbe
 120 s termination grace, so a rollout during one does interrupt it.
 
 ### Dormant chart models (enable: false)
+
 gemma-4-26b-a4b (non-thinking), gemma-4-26b-a4b-think (same weights, reasoning
 left on — thinking is an endpoint property, so voice and deliberating agents
 cannot share a server), qwen3-6-35b-iq4xs. All are image-based; none needs a

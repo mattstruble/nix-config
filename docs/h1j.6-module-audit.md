@@ -79,6 +79,7 @@
 The audit's recommendations above were reviewed. Final approved scope for h1j.7:
 
 **DO:**
+
 1. Delete 5 dead darwin-only homeManager modules: `nix/programs/{ai-agents,browser,dev-tools,git,workstation}.nix` (~646 lines).
 2. Delete `nix/nix/tools/disko.nix` (6-line dead wrapper).
 3. Trim `nix/programs/cli-tools.nix` — delete the dead `flake.modules.homeManager.cli-tools` block (keep the live `nixos` half).
@@ -86,6 +87,7 @@ The audit's recommendations above were reviewed. Final approved scope for h1j.7:
 5. Trim `nix/programs/shell.nix` — delete all 10 dead `isDarwin` branches.
 
 **KEEP (audit recommended change, user overrode):**
+
 - `nix/services/homelab/homelab.nix` — stays whole. Cohesive single-host stack; none of the split values (independent toggling / sharing / find-pain) clear the bar.
 - `nix/system/tiers/{base,server}.nix` — stay. Host profiles, not feature grab-bags; flattening adds ~30 lines of duplication across 3 hosts.
 - `nix/hosts/mjolnir/{_llama-fork,_llama-turboq,_disko}.nix` — stay. Orphaned from the live graph (current k8s fleet uses ghcr images) but are fork build recipes / a saved disk layout; keep for now.

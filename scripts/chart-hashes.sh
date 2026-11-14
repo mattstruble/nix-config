@@ -87,7 +87,7 @@ checked=0
 repaired=0
 failed=0
 
-while IFS=$'\t' read -r uline url shaLine want; do
+while IFS=$'\t' read -r _ url shaLine want; do
   [ -n "${url:-}" ] || continue
   checked=$((checked + 1))
   name=${url##*/download/}

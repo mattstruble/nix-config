@@ -28,6 +28,7 @@ Prometheus `job` label = Service name: `gemma-4-26b-a4b`, `swift-qwen3-8-27b`,
 | `llamacpp:spec_decode_num_drafts_total` | counter | MTP: verification steps |
 
 Derived:
+
 - **TTFT** ≈ prompt processing time: `llamacpp:prompt_seconds_total / llamacpp:prompt_tokens_total` (s/token; × prompt length for per-request TTFT). No per-request TTFT histogram on the pod.
 - **Decode tok/s**: `rate(llamacpp:tokens_predicted_total[5m])` (or the `predicted_tokens_seconds` gauge).
 - **MTP acceptance rate**: `rate(spec_decode_num_accepted_tokens_total) / rate(spec_decode_num_draft_tokens_total)`.
@@ -109,9 +110,13 @@ that block is the single source of truth (including the procedure for
 updating them), so no rate table is duplicated here.
 
 Used by the `mjolnir LLM overview` dashboard's `rate_profile` variable to
-cost tokens per type: input (excl. cached) × input rate + cached × cached rate
-+ output × output rate. Cached tokens are a subset of input (OpenAI
-`prompt_tokens` convention).
+cost tokens per type:
+
+```text
+input (excl. cached) × input rate + cached × cached rate + output × output rate
+```
+
+Cached tokens are a subset of input (OpenAI `prompt_tokens` convention).
 
 ## DCGM (dcgm-exporter, job `dcgm-exporter`)
 

@@ -36,7 +36,11 @@ files that shouldn't become modules.
 There is no render-and-apply recipe: applying cluster state without a nix build
 means piping a render at the node yourself, and it leaves the next `just deploy`
 to reconcile whatever you applied by hand.
-- `just lint` — pre-commit (nixfmt, etc.).
+
+- `just lint` — pre-commit: trailing whitespace, YAML syntax, markdownlint,
+  shellcheck, actionlint, codespell, detect-secrets, sops-encryption. No nix
+  formatter: the tree predates nixfmt's RFC style and reformatting it is its own
+  change.
 
 `just deploy mjolnir` also applies `k8s/manifests/` and ships the ai chart: nix
 renders it at build time and the ai-chart-apply oneshot applies it after k3s is
