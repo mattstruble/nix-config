@@ -90,6 +90,54 @@ parser, and drifts.
 not claim — once, in a sentence.** Not the history of what it replaced, not a
 defence of its design, not a narration of its own parsing.
 
+## Where a value goes
+
+The document rule, applied to a chart and the nix module that renders it. The
+mechanics and the per-app checklist live in `k8s/README.md`; these are the
+decisions that go wrong.
+
+**The chart owns the spec; nix owns the host facts.** A value nix should not
+pass is one the chart could default: replicas, a probe timeout, a resource
+request. Passing those buys a second place to change them and a diff across two
+languages to say one thing. A value nix must pass is one another mechanism reads
+— and then the template `required`s it, so a bare `helm template` failing is the
+correct behaviour: a default invented by a render is a value no host agrees with.
+
+**Guard in the render, not in CI.** Where two values must agree — `appUrl` and
+`ingress.host`, a `secretKeyRef` key and the list nix creates the Secret from —
+the template `fail`s. A render that refuses cannot drift, cannot be skipped by a
+job that did not run, and names the file to fix.
+
+**Nothing may enumerate the app charts by hand.** The `Chart.yaml` rule in
+`k8s/README.md` is the only thing that decides it; a list added next to the glob
+it should have used — a render derivation, a preview step, a Renovate pattern, a
+CI job's file list — is the bug returning.
+
+**Every object a prune pass may delete carries that pass's
+`mjolnir/prune-group`.** `kubectl apply --prune -l` deletes everything matching
+the selector that is absent from that pass's file, so two passes sharing a
+selector delete each other's resources. The label is stamped by the apply script;
+a template that sets it by hand has taken ownership of a scope decision.
+
+**No template writes `metadata.namespace`.** The apply's `-n` fixes it. The one
+namespace allowed inside a manifest is a PV's `claimRef`, because a PV whose
+`claimRef` names the wrong namespace stays `Available` forever and says nothing.
+
+**An image is `repository:tag@digest` in a values file, never in a template.** A
+template-built tag is invisible to the extractor and to `scripts/resolve-digest.sh`,
+and the digest must be the index digest — a per-architecture manifest digest is a
+pin that resolves on one machine only.
+
+## Traps set by software outside this repo
+
+- The `sops-encryption` pre-commit hook parses **any path containing `secret`** as
+  JSON. A helm helper named `_secrets.tpl` fails every commit; name it
+  `_helpers.tpl`.
+- k3s' embedded kube-router policy controller is on by default, so NetworkPolicies
+  bite on stock Flannel with no CNI to install — and a namespace with no policy
+  selecting a pod is DEFAULT ALLOW, so the deny must be the first document.
+- `pkgs.helm` in nixpkgs is a synthesizer. The chart tool is `pkgs.kubernetes-helm`.
+
 ## Why it exists
 
 Three review passes ran against PR #304, and in the second,
