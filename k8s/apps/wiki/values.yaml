@@ -126,12 +126,13 @@ oidc:
   # not the default and should not become one: a real exfil path from a PHP
   # pod.
   #
-  # Nothing in this repo records or checks the edge address: if the VPS moves,
-  # this entry goes stale, the pod's discovery request is dropped, no login
-  # ever completes, and every pod still reports Ready. Re-resolve by hand —
-  # `dig +short auth.struble.app` from OUTSIDE the cluster, since a LAN
-  # client's resolver may answer differently. Measured 2026-11-12 from inside
-  # the bookstack pod: auth.struble.app resolves to 66.63.168.18.
+  # The edge address is a VPS's, so this entry can go stale with no commit
+  # here: when it does, the pod's discovery request is dropped, no login ever
+  # completes, and every pod still reports Ready.
+  # .github/workflows/wiki-egress-dns.yml asserts the resolved address against
+  # this list, but from the public DNS view — the pod's own in-cluster answer
+  # stays a hand measurement. Measured 2026-11-12 from inside the bookstack
+  # pod: auth.struble.app resolves to 66.63.168.18.
   egressCidrs:
     - 66.63.168.18/32
 

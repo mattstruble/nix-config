@@ -677,9 +677,13 @@ things that work.
   egress rule allowing it is a CIDR of the **Pangolin edge, not of roque**: the pod
   resolves `auth.struble.app` through public DNS, so the request leaves the cluster
   for the edge and tunnels back. An egress list holding only the private segment
-  drops it while every pod still reports Ready, and the edge address is recorded
-  nowhere else in this repo — canonical-URLs phase 0 (CoreDNS views) is what lets
-  the `/32` go away.
+  drops it while every pod still reports Ready.
+  `.github/workflows/wiki-egress-dns.yml` now asserts the issuer's resolved
+  address against that list. Two things stay unverified by it: the pod's own
+  in-cluster view of the name, which is a different answer from the one the job
+  sees — canonical-URLs phase 0 (CoreDNS views) is what lets the `/32` go away;
+  and whether the discovery endpoint behind the address actually answers, since
+  a green run proves the route only.
 - **The LAN route.** `wiki.mjolnir` needs a record in LAN DNS pointing at the node
   (10.0.0.4); the `.mjolnir` zone is per-host rather than a wildcard, and a missing
   record does not announce itself — a correct Ingress and a correct NetworkPolicy
