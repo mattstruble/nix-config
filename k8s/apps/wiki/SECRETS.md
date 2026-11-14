@@ -17,6 +17,11 @@ recipients are the human and mjolnir — **not roque**, which holds the IdP, the
 NAS mount and n8n's credential store. That recipient list is plaintext sops
 metadata, so the boundary is auditable from a diff.
 
+The key list is `services.k3s.wikiSecretKeys` in `nix/services/k3s.nix`, and every
+`secretKeyRef` in the chart is a lookup in it, handed back as `secret.keys` at
+render: a key the chart names and the module does not create fails the render
+rather than wedging a pod in `CreateContainerConfigError`.
+
 ## What a bad value does
 
 The two OIDC values are the literal string `unset` until the Pocket ID client

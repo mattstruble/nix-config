@@ -44,143 +44,6 @@ jobs:
             exit 1
           fi
 
-  oidc-issuer-linked:
-    # Pocket ID signs the `iss` claim from its own APP_URL
-    # (nix/services/homelab/homelab.nix) and BookStack validates `iss` against
-    # oidc.issuer in the wiki values. The two live in independent sources
-    # edited by different flows, and a drift between them does not error — it
-    # produces a login that never completes, the wrong-looking problem that
-    # tempts operators into loosening issuer validation. Assert they agree.
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: wiki oidc.issuer must equal Pocket ID APP_URL
-        run: |
-          set -euo pipefail
-          # Capture the FIRST quoted string after `=`: anchoring on `[^=]*=`
-          # and `^[^"]*` keeps a quoted word in a trailing comment from
-          # shifting the match (a greedy `.*"` would swallow up to the last
-          # quote on the line).
-          # `|| true` on each pipeline: see the fuller rationale in the wiki-secret-keys-created job below.
-          idp=$(grep -E '^[[:space:]]*APP_URL = ' nix/services/homelab/homelab.nix | head -n1 | sed -E 's/^[^=]*=[[:space:]]*"([^"]*)".*/\1/' || true)
-          wiki=$(grep -E '^[[:space:]]*issuer: ' k8s/apps/wiki/values.yaml | head -n1 | sed -E 's/^[[:space:]]*issuer:[[:space:]]*//' || true)
-          if [ -z "$idp" ]; then
-            echo "::error::could not read Pocket ID APP_URL from nix/services/homelab/homelab.nix"
-            exit 1
-          fi
-          if [ -z "$wiki" ]; then
-            echo "::error::could not read oidc.issuer from k8s/apps/wiki/values.yaml"
-            exit 1
-          fi
-          echo "pocket-id APP_URL: $idp"
-          echo "wiki oidc.issuer:  $wiki"
-          if [ "$idp" != "$wiki" ]; then
-            echo "::error::wiki oidc.issuer ($wiki) does not match Pocket ID APP_URL ($idp); Pocket ID signs iss from APP_URL, so BookStack logins would never complete"
-            exit 1
-          fi
-
-  wiki-secret-keys-created:
-    # The wiki chart only *references* the `bookstack` Secret
-    # (k8s/apps/wiki/SECRETS.md); nix/services/k3s.nix creates it from sops
-    # material with --from-file=<key>=<tempfile> arguments. A secretKeyRef key
-    # in the rendered chart that the activation script does not create renders
-    # into the public PR comment looking fine, then wedges the pod in
-    # CreateContainerConfigError. Assert the chart never references a key the
-    # script does not create.
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: azure/setup-helm@v4
-        with:
-          version: v4.3.0
-
-      - name: Every wiki secretKeyRef key must be created by the activation script
-        run: |
-          set -euo pipefail
-          W=k8s/apps/wiki
-          # Render first, and fail loudly if the render itself fails: helm's
-          # exit status must not be swallowed into an empty `used`, which the
-          # no-keys branch below would report as "nothing to check" and a
-          # broken chart would pass the check it was never rendered for.
-          if ! helm template wiki "$W" -f "$W/values.yaml" --namespace wiki > /tmp/wiki-check.yaml; then
-            echo "::error::helm template of the wiki chart failed; the secretKeyRef key check cannot run"
-            exit 1
-          fi
-          # `|| true` on each extraction pipeline: with `set -o pipefail`, a
-          # pipeline that finds nothing would otherwise kill the script at the
-          # assignment and make the explicit ::error:: checks below
-          # unreachable; the empty result must reach them so the failure names
-          # its reason. This covers the extraction only - the render above is
-          # deliberately NOT covered by it.
-          # `used`: walk the render with an indentation-aware state machine -
-          # after a secretKeyRef line, take the key at *any* depth below it
-          # (name/optional/whatever else the block grows) and stop only when
-          # the block dedents. A fixed grep window would silently miss a key
-          # pushed past the window, which is the false negative that lets a
-          # CreateContainerConfigError through.
-          used=$(awk '
-                   function ind(s) { if (match(s, /[^[:space:]]/)) return RSTART; return 9999 }
-                   inref {
-                     if (ind($0) > base) {
-                       if ($0 ~ /^[[:space:]]*key:[[:space:]]*[^[:space:]]/) {
-                         v = $0
-                         sub(/^[[:space:]]*key:[[:space:]]*/, "", v)
-                         sub(/[[:space:]]*$/, "", v)
-                         print v
-                         inref = 0
-                       }
-                       next
-                     }
-                     inref = 0
-                   }
-                   /^[[:space:]]*secretKeyRef:[[:space:]]*$/ { inref = 1; base = ind($0) }
-                 ' /tmp/wiki-check.yaml | sort -u || true)
-          # `created`: match on the --from-file *key names*, not on the path
-          # they read - the script writes values to 0600 temp files first, so
-          # the argument is --from-file=KEY="$T/..." and only the key half is
-          # stable. The block runs from the bookstack command to the first
-          # line that ends the shell command - no trailing backslash, or a
-          # line containing && or ; anywhere (the awk matches both mid-line,
-          # not just at the start), checked before extraction so a later
-          # command's --from-file cannot leak into the created set - thus
-          # neither the presence of --dry-run nor the order of the remaining
-          # flags is load-bearing. The match is content-blind: a ; inside a
-          # quoted --from-file value would end the block early, and the
-          # created set would lose a key. That is loud, not silent: the
-          # comparison below requires every key the chart uses to be in
-          # created, so a missing key fails the job.
-          created=$(awk '
-                      $0 ~ /create secret generic bookstack/ { inblock = 1; start = 1 }
-                      inblock {
-                        if (!start && ($0 ~ /&&/ || $0 ~ /;/)) { inblock = 0; next }
-                        start = 0
-                        n = split($0, parts, "--from-file=")
-                        for (i = 2; i <= n; i++)
-                          if (match(parts[i], /^[A-Za-z0-9._-]+/))
-                            print substr(parts[i], 1, RLENGTH)
-                        if ($0 !~ /\\[[:space:]]*$/) inblock = 0
-                      }
-                    ' nix/services/k3s.nix | sort -u || true)
-          if [ -z "$created" ]; then
-            echo "::error::could not read any --from-file keys from the bookstack Secret block in nix/services/k3s.nix"
-            exit 1
-          fi
-          echo "keys the activation script creates: $(echo "$created" | tr '\n' ' ')"
-          if [ -z "$used" ]; then
-            echo "the rendered wiki chart references no secretKeyRef keys; nothing to check"
-            exit 0
-          fi
-          status=0
-          for k in $used; do
-            if ! grep -qxF "$k" <<<"$created"; then
-              echo "::error::the rendered wiki chart references secretKeyRef key '$k', which the activation script does not create in the bookstack Secret (see k8s/apps/wiki/SECRETS.md)"
-              status=1
-            fi
-          done
-          exit $status
-
   manifest-diff:
     runs-on: ubuntu-latest
     steps:
@@ -198,56 +61,39 @@ jobs:
       - name: Render PR and base, build comment
         run: |
           set -euo pipefail
-          # Eval a bundle path the way `just k8s-render` does. Only stdout may reach
-          # the value: nix writes noise to stderr ("Using saved setting for...",
-          # "warning: Git tree is dirty" once the base restore dirties the tree), and
-          # a multi-line value lands inside a YAML block scalar and breaks the render.
-          # A failed or unrecognisable result degrades to a labelled placeholder - a
-          # broken eval should not block manifest review, and strata-bundle-linked is
-          # the job that asserts the real link.
-          get_bundle() {
-            local opt=$1 placeholder=$2 out
-            out=$(nix eval --raw "$opt" 2>/dev/null) || out=""
-            if [[ "$out" == /nix/store/* && "$out" != *$'\n'* ]]; then
-              printf '%s' "$out"
-            else
-              echo "::warning::nix eval $opt gave no store path; the preview uses a placeholder" >&2
-              printf '%s' "$placeholder"
+          # The values a build supplies, per chart, eval'd from nix — the same text
+          # the nix render reads and `just k8s-render` reads, so the preview cannot
+          # render something production does not. A chart the eval cannot produce
+          # renders without them and its own `required` guards decide whether that
+          # is a failure; the preview never papers over a missing input with a
+          # placeholder store path, which is a value no pod ever mounts.
+          CHART_VALUES=$(mktemp -d)
+          chart_values() {
+            local chart=$1
+            if nix eval --raw ".#nixosConfigurations.mjolnir.config.services.k3s.appChartValues.$chart" > "$CHART_VALUES/$chart" 2>/dev/null; then
+              return 0
             fi
+            rm -f "$CHART_VALUES/$chart"
+            echo "::warning::nix eval gave no values for the $chart chart; its render must fail rather than preview something else" >&2
           }
-          STRATA_BUNDLE=$(get_bundle .#nixosConfigurations.mjolnir.config.services.k3s.aiChart.strataBundle /nix/store/00000000000000000000000000000000-strata-preview)
-          HEADEND_BUNDLE=$(get_bundle .#nixosConfigurations.mjolnir.config.services.k3s.aiChart.headEndBundle /nix/store/00000000000000000000000000000000-head-end-preview)
           render() {
-            # Render every chart under $1 (default: this checkout). Same values-file
-            # glob as `just k8s-render` and the nix render derivations
-            # (nix/services/k3s.nix); the chart dir is detected so a pre-rename
-            # base renders too.
+            # Render every chart under $1 (default: this checkout). A directory is a
+            # chart when it carries a Chart.yaml — the rule nix/services/k3s.nix and
+            # `just k8s-render` apply. Rendering the base from its own tree is what
+            # makes a newly added app show as entirely new instead of invisible.
             local root=${1:-$PWD}
-            local CHART="$root/k8s/apps/ai"; [ -d "$CHART" ] || CHART="$root/k8s/llama-fleet"
-            local F=(-f "$CHART/values.yaml")
-            local f
-            for f in "$CHART"/values/*.yaml; do F+=(-f "$f"); done
-            # the nix render injects the bundles it built; without them the preview
-            # shows empty mount paths and disagrees with production
-            F+=(--set "strataBundle=$STRATA_BUNDLE" --set "headEnd.bundle=$HEADEND_BUNDLE")
-            helm template "$(basename "$CHART")" "$CHART" "${F[@]}"
-            wiki_render "$root"
+            local chart dir f rc=0
+            for dir in "$root"/k8s/apps/*/; do
+              [ -f "$dir/Chart.yaml" ] || continue
+              chart=$(basename "$dir")
+              local F=(-f "$dir/values.yaml")
+              for f in "$dir"values/*.yaml; do F+=(-f "$f"); done
+              [ -f "$CHART_VALUES/$chart" ] && F+=(-f "$CHART_VALUES/$chart")
+              helm template "$chart" "$dir" "${F[@]}" || rc=1
+            done
+            return $rc
           }
-          wiki_render() {
-            # The wiki chart on its own - render() ends with it so the full
-            # render (and the diff built from it) includes the wiki.
-            # No bundle injection here, and the absence guard is the point: a PR
-            # that adds an app must diff against a base that does not have it,
-            # which is the only way this preview shows the whole app as new
-            # rather than showing nothing at all. A PR that renames or removes
-            # the wiki chart renders nothing here, and the non-vacuous check on
-            # the full render below turns that into a loud failure.
-            local root=${1:-$PWD}
-            local W="$root/k8s/apps/wiki"
-            if [ -d "$W" ]; then
-              helm template wiki "$W" -f "$W/values.yaml" --namespace wiki
-            fi
-          }
+          for dir in k8s/apps/*/; do [ -f "$dir/Chart.yaml" ] && chart_values "$(basename "$dir")"; done
           render > /tmp/pr.yaml
           # The render lands in a public pull-request comment. The contract in
           # k8s/apps/wiki/SECRETS.md is that the chart references a Secret and

@@ -1,45 +1,52 @@
 # Values for the wiki chart (BookStack + MariaDB).
 #
-# The namespace is not a value here and no template in this chart emits
-# `metadata.namespace`: it is fixed by the `-n wiki` on the apply in
-# nix/services/k3s.nix. The one namespace written into a manifest as a literal
-# is `claimRef.namespace` in k8s/manifests/wiki-local-pv.yaml, and PV binding
-# is what a disagreement costs: a PV whose `claimRef` names a namespace the
-# PVC is not in stays `Available` forever with no error anywhere.
+# The `uid`/`gid` pairs, everything under `persistence:`, `secret.keys`,
+# `oidc.issuer` and `oidc.egressCidrs` are deliberately absent: nix supplies them
+# at render (`wikiStorage`, `wikiSecretKeys` and `wikiOidcEgressCidrs` in
+# nix/services/k3s.nix, `issuerUrl` in nix/flake-parts.nix), because the host
+# directory owner, the PV capacity, the Secret's key list, the edge's address and
+# the IdP's `iss` claim are the same facts read by other software. `just
+# k8s-render` and the CI preview pass the same file; a bare `helm template` fails
+# the `required` guards rather than rendering defaults.
 #
-# BookStack is pinned to a LinuxServer image because upstream publishes no
-# container image at all — its own docs point at LinuxServer or solidnerd.
+# No template emits `metadata.namespace`; the apply's `-n wiki` fixes it. The one
+# namespace written into a manifest is the PV's `claimRef`, and a PV whose
+# `claimRef` names a namespace the claim is not in stays `Available` forever with
+# no error anywhere.
+#
+# Upstream BookStack publishes no container image; its own docs point at
+# LinuxServer or solidnerd.
 
 bookstack:
-  # ghcr.io rather than lscr.io for the same bytes: ghcr speaks the registry
-  # auth flow scripts/resolve-digest.sh (and Renovate) can authenticate to.
+  # ghcr.io rather than lscr.io for the same bytes: ghcr speaks the registry auth
+  # flow scripts/resolve-digest.sh (and Renovate) can authenticate to.
   image: ghcr.io/linuxserver/bookstack:v26.09.2-ls293@sha256:2fdeeb1a2028ce7cb1274696237e32b9f849e16b6d77314d08c78356a6016fca
-  # What users type, and what BookStack puts in every redirect and in the
-  # absolute URLs it stores for images — moving it later needs
-  # `php artisan bookstack:update-url`, not a value bump.
+  # BookStack derives every redirect, every stored image URL, and its OIDC
+  # redirect_uri from this. Moving it later needs `php artisan
+  # bookstack:update-url`, and the Pocket ID client must list
+  # https://<this>/oidc/callback or every login dies with invalid_redirect_uri.
   #
-  # This is the LAN name, not the canonical one: BookStack derives its OIDC
-  # redirect_uri from APP_URL, so the Pocket ID client must list
-  # https://<this>/oidc/callback or every login dies with an
-  # invalid_redirect_uri error.
+  # Not `wiki.struble.app`: `struble.app` is on the browser HSTS preload list
+  # (inherited from the `.app` TLD), so the self-signed certificate below is a
+  # hard failure with no "proceed anyway" button. That hostname waits on
+  # cert-manager and the `*.struble.app` wildcard.
   appUrl: https://wiki.mjolnir
-  # The unprivileged user the app actually runs as after s6 init. 983 is
-  # unassigned on mjolnir; the host directory is pre-owned by it (the
-  # systemd.tmpfiles rules in nix/services/k3s.nix, on the directory
-  # k8s/manifests/wiki-local-pv.yaml exports) because the cluster's non-root
-  # stance forbids a root chown initContainer.
-  uid: 983
-  gid: 983
+  # `wiki.mjolnir` must resolve to the node (10.0.0.4) in LAN DNS, and that
+  # record is outside this repo. The `.mjolnir` zone is per-host rather than a
+  # wildcard, so a new app name needs a new record: `dig +short A wiki.mjolnir @10.0.0.1`
+  #
+  # Encrypted-DNS clients (Android Private DNS, iOS) ignore the DHCP-assigned
+  # resolver and never resolve `.mjolnir` at all.
   port: 80
-  # CIDRs or addresses whose X-Forwarded-* headers Laravel trusts. APP_PROXIES
-  # is the name this pinned version reads (the `proxies` key in
-  # app/Config/app.php, consumed by app/Http/Middleware/TrustProxies.php); an
-  # empty value trusts no proxy. The pod CIDR rather than traefik's pod IP
-  # because that IP is reassigned on every restart — and it is safe only while
-  # templates/networkpolicy.yaml admits no ingress peer besides traefik: any
-  # peer that can reach port 80 can assert a client IP, and then login
-  # throttling collapses onto one bucket and every audit line records the
-  # forged source address.
+  # CIDRs whose X-Forwarded-* headers Laravel trusts. `APP_PROXIES` is the name
+  # this pinned version reads (the `proxies` key in app/Config/app.php, consumed
+  # by app/Http/Middleware/TrustProxies.php); empty trusts no proxy.
+  #
+  # The pod CIDR rather than traefik's pod IP, which is reassigned on every
+  # restart. Safe only while templates/networkpolicy.yaml admits no ingress peer
+  # besides traefik: any peer that can reach port 80 can assert a client IP, and
+  # then login throttling collapses onto one bucket and every audit line records
+  # the forged source address. The connector PR must add its network here.
   trustedProxies: "10.42.0.0/16"
   resources:
     requests:
@@ -47,36 +54,25 @@ bookstack:
       memory: 256Mi
     limits:
       memory: 768Mi
-  # Who can create an account, what role a new account gets, and whether the
-  # API is reachable are database-backed admin settings: no env var exists for
-  # them (none is in the image's .env.example.complete), so do not wire one.
-  # The only gate on account creation today is the Pocket ID client's Access
-  # list, which is manual and lives outside this repo.
+  # Who can create an account, what role a new account gets, and whether the API
+  # is reachable are database-backed admin settings with no env var (none is in
+  # the image's .env.example.complete). The only gate on account creation is the
+  # Pocket ID client's Access list, which is manual and outside this repo.
 
 ingress:
-  # The LAN path in. Traefik (kept in k3s for exactly this, see the `disable`
-  # list in nix/services/k3s.nix) terminates TLS on mjolnir:80/443 and proxies
-  # to the pod over the CNI network.
-  #
-  # `wiki.mjolnir` must resolve to the node (10.0.0.4) in LAN DNS, and that
-  # record is outside this repo. The `.mjolnir` zone is per-host rather than a
-  # wildcard — `nope-9x7z.mjolnir` does not resolve — so a new app name needs
-  # a new record. Verify rather than assume:
-  #
-  #   dig +short A wiki.mjolnir @10.0.0.1
+  # Traefik (kept in k3s for exactly this, see the `disable` list in
+  # nix/services/k3s.nix) terminates TLS on mjolnir:80/443 and proxies to the pod
+  # over the CNI network.
   enabled: true
   className: traefik
   host: wiki.mjolnir
-  # Self-signed at activation and regenerated every pass so it stays inside
-  # the prune scope — the grafana-tls precedent, including its accepted wart:
-  # the browser warns on first use and on every regeneration.
+  # Self-signed at activation and regenerated every pass so it stays inside the
+  # prune scope — the grafana-tls precedent, including its accepted wart: the
+  # browser warns on first use and on every regeneration.
   tlsSecret: wiki-tls # pragma: allowlist secret (a Kubernetes Secret name, not a credential)
 
 database:
   image: mariadb:11@sha256:c4124d1afa875e47f2892edf26b482fa54f796e2f342d3717a04ca091a22a9bd
-  # The mariadb image's own user. Pre-owned host dir, same reasoning as above.
-  uid: 999
-  gid: 999
   port: 3306
   database: bookstack
   username: bookstack
@@ -87,71 +83,33 @@ database:
     limits:
       memory: 512Mi
 
-# Invariant: this chart REFERENCES the Secret and never creates one. Who
-# creates it is nix/services/k3s.nix (see SECRETS.md for the contract). Keys
-# are the container's own env var names, because that is what the pod reads.
-# The allowlist pragma is for the word "secret" in a key whose value is a
-# fixed name, not a credential — no secret value ever appears in this file.
+# This chart REFERENCES the Secret and never creates one; nix/services/k3s.nix
+# creates it (SECRETS.md is the contract). Keys are the container's own env var
+# names, because that is what the pod reads. The allowlist pragma is for the word
+# "secret" in a key whose value is a fixed name, not a credential.
 secretName: bookstack # pragma: allowlist secret
 
 oidc:
-  # The source of truth for this value is Pocket ID's APP_URL in
-  # nix/services/homelab/homelab.nix: Pocket ID signs the `iss` claim from its
-  # own APP_URL, and BookStack validates `iss` against this exact string. A
-  # mismatch does not error — the login simply never completes.
-  #
-  # BookStack fetches <issuer>/.well-known/openid-configuration from inside
-  # its own pod, so this must be reachable from the cluster.
-  issuer: https://auth.struble.app
-  # Pocket ID emits group NAMES under the `groups` scope; BookStack matches
-  # them (lower-cased, spaces to hyphens) against each role's External
-  # Authentication IDs, falling back to the role display name.
+  # Pocket ID emits group NAMES under the `groups` scope; BookStack matches them
+  # (lower-cased, spaces to hyphens) against each role's External Authentication
+  # IDs, falling back to the role display name.
   groupsClaim: groups
-  # Destinations the app may reach on 443 — the OIDC issuer's discovery
-  # endpoint, which BookStack fetches server-side.
-  #
-  # A CIDR list rather than a hostname is a limit of k3s' policy controller:
-  # the embedded kube-router netpol controller has no FQDN or L7 rules, so
-  # `auth.struble.app` cannot be expressed at all.
-  #
-  # The LAN segment is deliberately absent: it contains the node itself, where
-  # traefik answers for every SNI route in the cluster (measured 2026-11-12:
-  # from this pod, `https://10.0.0.4` with SNI `grafana.mjolnir` returned 302).
-  # roque is on the tailnet at 100.110.196.68, outside the segment.
-  #
-  # Invariant: a NetworkPolicy egress rule with no peer matches every
-  # destination, so an empty list is a WILDCARD, not a refusal — the chart
-  # fails the render on empty or missing, and closing the traffic for real
-  # means deleting the rule from templates/networkpolicy.yaml. 0.0.0.0/0 is
-  # not the default and should not become one: a real exfil path from a PHP
-  # pod.
-  #
-  # The edge address is a VPS's, so this entry can go stale with no commit
-  # here: when it does, the pod's discovery request is dropped, no login ever
-  # completes, and every pod still reports Ready.
-  # .github/workflows/wiki-egress-dns.yml asserts the resolved address against
-  # this list, but from the public DNS view — the pod's own in-cluster answer
-  # stays a hand measurement. Measured 2026-11-12 from inside the bookstack
-  # pod: auth.struble.app resolves to 66.63.168.18.
-  egressCidrs:
-    - 66.63.168.18/32
+  # The image the egress probe runs (templates/oidc-egress-probe.yaml). It is a
+  # one-shot `curl`, so it is the only wiki image that is not a stateful service.
+  probe:
+    image: curlimages/curl:8.23.0@sha256:3fb7e13e5d179a845c97d78204f3f1064d1907037f26a3ebf91710571151fd93
+  # `oidc.egressCidrs` is absent too: it is a host fact (the edge's address), so
+  # nix supplies it from `services.k3s.wikiOidcEgressCidrs`. The reasons it must
+  # be a /32 and never empty live with that option and in
+  # templates/networkpolicy.yaml, which refuses both at render.
 
 persistence:
-  # One local PV, two mounts: the database's data dir AND BookStack's
-  # /config (which holds storage/ and public/uploads/). A DB-only volume was
-  # rejected: it would lose every uploaded image on a pod delete, silently,
-  # because the volume is node-pinned and reschedules are rare enough to never
-  # notice.
+  # One local PV, two mounts: the database's data dir AND BookStack's /config
+  # (which holds storage/ and public/uploads/). A DB-only volume was rejected: it
+  # would lose every uploaded image on a pod delete, silently, because the volume
+  # is node-pinned and reschedules are rare enough to never notice.
   #
-  # What `size` does NOT do: enforce anything at runtime. This is a statically
-  # created local PV (k8s/manifests/wiki-local-pv.yaml), so the number is used
-  # only to match the claim to the volume at admission. Nothing stops the
-  # database and the uploads from writing past 10Gi — the real ceiling is the
-  # NVMe partition under the PV's host path, and filling it is a node-level
-  # failure, not a pod-level one. The number here is a label, not a guard.
-  size: 10Gi
-  # The storage class and the host directory are deliberately NOT values: the
-  # claim hardcodes storageClassName: wiki-data (templates/pvc.yaml) to match
-  # the PV, and the host directory on mjolnir's NVMe is spec.local.path in
-  # k8s/manifests/wiki-local-pv.yaml. A values key for either would be a knob
-  # wired to nothing.
+  # `size` is a label, not a guard: the PV is statically created, so the number
+  # is used only to match the claim to the volume at admission. The real ceiling
+  # is the NVMe partition under the PV's host path, and filling it is a
+  # node-level failure.

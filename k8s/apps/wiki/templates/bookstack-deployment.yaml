@@ -1,28 +1,11 @@
-# BookStack itself.
-#
-# The pod security exception: this is the least isolated container in the
-# cluster, and it is that way because the image is a LinuxServer s6-overlay
-# image. s6-overlay cannot start below uid 0 (`s6-overlay-suexec: fatal:
-# unable to setgid to root: Operation not permitted`); at init it chowns
-# /config to PUID and then, as root, creates directories inside what it just
-# chowned away, so dropping CAP_DAC_OVERRIDE answers `mkdir: cannot create
-# directory '/config/keys': Permission denied`. Both halves were tested
-# against the real image, not reasoned about.
-#
-# The exception is against `restricted`, which would additionally require a
-# non-root user and a read-only root filesystem, neither of which this image
-# can do — not against the namespace's `baseline`, which this pod meets with
-# no namespace-level exception at all.
-#
-# The trade is deliberate and it is bounded by the network policies, not by
-# the container: a PHP application, patched by a digest bump, running as root
-# at init. The policies bound what this pod can reach and which peers inside
-# the cluster reach it; nothing in them keeps it off the internet. What keeps
-# it off the internet is the absence of a publisher — nothing publishes
-# wiki.mjolnir to the edge (RUNBOOK.md, "What this runbook cannot check for
-# you"). The exception is written against the state after the connector lands,
-# where this is a public PHP app reachable through exactly one connector pod;
-# that is the blast radius being accepted here, not today's.
+# BookStack itself — the least isolated container in the cluster and the only Pod
+# Security exception in this chart. The exception is against `restricted` (a
+# non-root user and a read-only root filesystem, neither of which this image can
+# do), not against the namespace's `baseline`, which this pod meets with no
+# exception at all. What bounds it is the network policies, not the container:
+# nothing publishes wiki.mjolnir to the edge (RUNBOOK.md, "What this runbook
+# cannot check for you"), so the accepted blast radius is a PHP app running as
+# root at init, reachable through the one connector that would publish it.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -44,6 +27,9 @@ spec:
         app.kubernetes.io/part-of: wiki
     spec:
       securityContext:
+        # The image is a LinuxServer s6-overlay image and s6 cannot start below
+        # uid 0 (`s6-overlay-suexec: fatal: unable to setgid to root: Operation
+        # not permitted`); verified against the pinned image.
         runAsUser: 0
         runAsNonRoot: false
         # No fsGroup here, and none on the mariadb pod either: both pods
@@ -71,7 +57,10 @@ spec:
               add:
                 # What the image's init does as root before it drops: chown
                 # /config to PUID/PGID, create directories inside the tree it
-                # just chowned away, then setgid/setuid to the app user.
+                # just chowned away, then setgid/setuid to the app user. Dropping
+                # DAC_OVERRIDE answers `mkdir: cannot create directory
+                # '/config/keys': Permission denied`; verified against the pinned
+                # image.
                 - CHOWN
                 - DAC_OVERRIDE
                 - FOWNER
@@ -79,9 +68,9 @@ spec:
                 - SETUID
           env:
             - name: PUID
-              value: "{{ .Values.bookstack.uid }}"
+              value: {{ required "bookstack.uid: set by wikiStorage in nix/services/k3s.nix, which also owns the host directory" .Values.bookstack.uid | quote }}
             - name: PGID
-              value: "{{ .Values.bookstack.gid }}"
+              value: {{ required "bookstack.gid: set by wikiStorage in nix/services/k3s.nix, which also owns the host directory" .Values.bookstack.gid | quote }}
             - name: TZ
               value: Etc/UTC
             - name: APP_URL
@@ -90,7 +79,7 @@ spec:
               valueFrom:
                 secretKeyRef:
                   name: {{ .Values.secretName }}
-                  key: APP_KEY
+                  key: {{ include "wiki.secretKey" (dict "ctx" $ "key" "APP_KEY") }}
             - name: DB_HOST
               value: wiki-mariadb
             - name: DB_PORT
@@ -103,7 +92,7 @@ spec:
               valueFrom:
                 secretKeyRef:
                   name: {{ .Values.secretName }}
-                  key: DB_PASSWORD
+                  key: {{ include "wiki.secretKey" (dict "ctx" $ "key" "DB_PASSWORD") }}
             - name: APP_PROXIES
               value: {{ .Values.bookstack.trustedProxies | quote }}
             # Without this BookStack renders every member's avatar as
@@ -135,7 +124,9 @@ spec:
             - name: OIDC_NAME
               value: Pocket ID
             - name: OIDC_ISSUER
-              value: {{ .Values.oidc.issuer | quote }}
+              # Must byte-match Pocket ID's APP_URL, which is what signs `iss`:
+              # both read issuerUrl, so a drift between them is not expressible.
+              value: {{ required "oidc.issuer: set from issuerUrl in nix/flake-parts.nix, which Pocket ID signs iss from" .Values.oidc.issuer | quote }}
             - name: OIDC_ISSUER_DISCOVER
               value: "true"
             - name: OIDC_END_SESSION_ENDPOINT
@@ -151,12 +142,12 @@ spec:
               valueFrom:
                 secretKeyRef:
                   name: {{ .Values.secretName }}
-                  key: OIDC_CLIENT_ID
+                  key: {{ include "wiki.secretKey" (dict "ctx" $ "key" "OIDC_CLIENT_ID") }}
             - name: OIDC_CLIENT_SECRET
               valueFrom:
                 secretKeyRef:
                   name: {{ .Values.secretName }}
-                  key: OIDC_CLIENT_SECRET
+                  key: {{ include "wiki.secretKey" (dict "ctx" $ "key" "OIDC_CLIENT_SECRET") }}
             # BookStack resolves a missing entity grant by walking up the
             # parent chain, so an absent allow is not a deny: what group →
             # role sync hands out is roles, never a denial — closing content
@@ -180,15 +171,14 @@ spec:
             # that role as always-matched and assigns it.
             - name: OIDC_REMOVE_FROM_GROUPS
               value: "true"
-            # Group → role sync happens at login only, so a session's lifetime
-            # is the window in which a removed member keeps the roles they were
-            # issued. SESSION_LIFETIME is the minutes of inactivity after which
-            # BookStack expires it, and app/Config/session.php reads no other
-            # session expiry. It revokes nobody: a member who keeps using the
-            # app refreshes the session indefinitely. 120 is BookStack's own
-            # default; pinning a no-op is what makes the window a recorded
-            # decision a diff can change and a reviewer can object to, rather
-            # than an image default nobody chose.
+            # The window in which a removed member keeps issued roles is a
+            # session's lifetime: group → role sync happens at login only.
+            # SESSION_LIFETIME is the minutes of inactivity after which BookStack
+            # expires it and app/Config/session.php reads no other expiry, so it
+            # revokes nobody — a member who keeps using the app refreshes it
+            # indefinitely. 120 is BookStack's own default; pinning the no-op makes
+            # the window a decision a diff can change rather than an image default
+            # nobody chose.
             #
             # SESSION_ACTIVITY_LIMIT and SESSION_TOKEN_TIME are not BookStack
             # options at all: pre-Laravel names this image ignores. Do not

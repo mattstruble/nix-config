@@ -7,15 +7,13 @@
 # (bookstack-deployment.yaml), which bypasses the 0750 999:999 mode on the
 # datadir — so the app container can read and overwrite the InnoDB files.
 #
-# Accepted risk, considered and declined. Splitting the datadir onto a second
-# volume would close it, and was declined: both directories live under one
-# host path (spec.local.path /var/lib/wiki in
-# k8s/manifests/wiki-local-pv.yaml), so a split buys nothing against the
-# failure that actually matters here — filling or corrupting the single NVMe
-# partition — while costing the one-directory backup story. The residual risk
-# is integrity, not confidentiality. The control that closes it is the backup,
-# and there is no backup job in this repo yet, so the risk is currently
-# unmitigated.
+# Accepted, and considered: a second volume for the datadir was declined, because
+# both directories live under one host path (`spec.local.path` /var/lib/wiki,
+# generated from `wikiStorage` in nix/services/k3s.nix), so a split buys nothing
+# against the failure that actually matters here — filling or corrupting the single
+# NVMe partition — while costing the one-directory backup story. The residual risk
+# is integrity, not confidentiality, and the control that closes it is a backup,
+# which this repo does not have yet.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -37,8 +35,8 @@ spec:
         app.kubernetes.io/part-of: wiki
     spec:
       securityContext:
-        runAsUser: {{ .Values.database.uid }}
-        runAsGroup: {{ .Values.database.gid }}
+        runAsUser: {{ required "database.uid: set by wikiStorage in nix/services/k3s.nix, which also owns the host directory" .Values.database.uid }}
+        runAsGroup: {{ required "database.gid: set by wikiStorage in nix/services/k3s.nix, which also owns the host directory" .Values.database.gid }}
         # No fsGroup: this pod and the BookStack pod mount the same claim by
         # different subPaths, and kubelet reconciles fsGroup ownership and
         # mode per pod at the volume root, so a fsGroup here would recursively
@@ -71,7 +69,8 @@ spec:
               valueFrom:
                 secretKeyRef:
                   name: {{ .Values.secretName }}
-                  key: DB_PASSWORD
+                  # The env name is the image's; the key is the Secret's.
+                  key: {{ include "wiki.secretKey" (dict "ctx" $ "key" "DB_PASSWORD") }}
             # The entrypoint refuses to initialise an empty data dir without
             # one of the root-password options set; nothing here needs a known
             # root credential, so this one is random. initdb prints it to this
@@ -80,8 +79,8 @@ spec:
             # and Loki receives lines only through Alloy), still present in
             # `kubectl logs` and the host log file. Ignored once the data dir
             # exists. Getting at that password after the log line is gone is a
-            # hand sequence, not a flag: RUNBOOK.md, Standing notes, "Recover
-            # the MariaDB root password with the grant tables skipped".
+            # hand sequence, not a flag: RUNBOOK.md, Standing notes, "The MariaDB
+            # root password is unrecoverable by design, and recoverable by hand".
             - name: MARIADB_RANDOM_ROOT_PASSWORD
               value: "1"
             # The entrypoint defaults this to '%' and, during initdb, creates

@@ -1,4 +1,4 @@
-{ ... }:
+{ inputs, ... }:
 {
   flake.modules.nixos.k3s =
     {
@@ -39,29 +39,176 @@
       #
       # Empty on hosts that build no strata bundle; the chart then refuses to
       # render a strata model rather than mounting an empty path.
-      strataBundleValues = pkgs.writeText "strata-bundle-values.yaml" ''
-        strataBundle: ${cfg.aiChart.strataBundle}
+      strataBundleValuesText = ''
+        strataBundle: ${builtins.unsafeDiscardStringContext cfg.aiChart.strataBundle}
       '';
       # Same rule for the swap head-end bundle (llama-swap + swapk8s): the store
       # path travels through the render, so the generation that produced it - and
       # the one before it, which is what a rollback needs - both retain it. Empty
       # means this host builds no head-end, and the chart renders none.
-      headEndValues = pkgs.writeText "head-end-values.yaml" ''
+      headEndValuesText = ''
         headEnd:
-          bundle: ${cfg.aiChart.headEndBundle}
+          bundle: ${builtins.unsafeDiscardStringContext cfg.aiChart.headEndBundle}
       '';
-      # Render the ai chart (helm from nixpkgs) into one manifest file; the
-      # ai-chart-apply oneshot below applies it, so `just deploy mjolnir` ships
-      # host config + cluster manifests in one generation. ponytail: one chart
-      # hardcoded — generalize to a chart list when a second app lands.
+      # The wiki's numeric ids, volume size and host path exist once, here. The
+      # chart reads them by --set, the host directories by tmpfiles below, and
+      # the static PV by generation — three consumers in three languages (helm,
+      # systemd, k3s' manifest loader) that nothing else connects. Drift is
+      # quiet in both directions: a pod running as an id that cannot write the
+      # directory it mounts, and a claim larger than its pre-bound PV sitting
+      # Pending with an event that names no file.
+      wikiStorage = {
+        hostPath = "/var/lib/wiki";
+        # 983 is unassigned on mjolnir; 999 is the image's own user.
+        bookstackUid = 983;
+        bookstackGid = 983;
+        databaseUid = 999;
+        databaseGid = 999;
+        size = "10Gi";
+        storageClass = "wiki-data";
+        claimName = "wiki-data";
+        claimNamespace = "wiki";
+      };
+      # The `bookstack` Secret's keys, in one place. The shell variable, the sops
+      # path, the 0600 temp file and the --from-file argument are each derived
+      # from the key, and the same list reaches the chart as `secret.keys`, where
+      # every secretKeyRef is a lookup that fails the render when the key is
+      # absent. A key the chart references and this module does not create is a
+      # render error, not a pod wedged in CreateContainerConfigError.
+      wikiSecretKeys = [ "APP_KEY" "DB_PASSWORD" "OIDC_CLIENT_ID" "OIDC_CLIENT_SECRET" ];
+      # The sops secret name and the temp file name are both the key lower-cased
+      # with hyphens.
+      wikiSecretName = key: lib.replaceStrings [ "_" ] [ "-" ] (lib.toLower key);
+      wikiSecretReads = lib.concatMapStringsSep "\n"
+        (k: ''${"WIKI_${k}"}="$(cat ${config.sops.secrets."services/wiki/${wikiSecretName k}".path})"'')
+        wikiSecretKeys;
+      wikiSecretSentinelPairs = lib.concatMapStringsSep " "
+        (k: "\"${wikiSecretName k}:$WIKI_${k}\"")
+        wikiSecretKeys;
+      wikiSecretFiles = lib.concatMapStringsSep "\n"
+        (k: "    printf '%s' \"$WIKI_${k}\" > \"$T/secret-wiki-${wikiSecretName k}\"")
+        wikiSecretKeys;
+      wikiSecretFromArgs = lib.concatStrings (map
+        (k: " \\\n                    --from-file=${k}=\"$T/secret-wiki-${wikiSecretName k}\"")
+        wikiSecretKeys);
+      wikiValuesText = ''
+        bookstack:
+          uid: ${toString wikiStorage.bookstackUid}
+          gid: ${toString wikiStorage.bookstackGid}
+        database:
+          uid: ${toString wikiStorage.databaseUid}
+          gid: ${toString wikiStorage.databaseGid}
+        persistence:
+          size: ${wikiStorage.size}
+          claimName: ${wikiStorage.claimName}
+          storageClass: ${wikiStorage.storageClass}
+        secret:
+          keys:
+        ${lib.concatMapStringsSep "\n" (k: "    - ${k}") wikiSecretKeys}
+        oidc:
+          issuer: ${inputs.self.lib.issuerUrl}
+          egressCidrs:
+        ${lib.concatMapStringsSep "\n" (c: "    - ${c}") cfg.wikiOidcEgressCidrs}
+      '';
+      # The PV is generated rather than checked against the claim: it is
+      # pre-bound by claimRef, so a capacity below the claim's request never
+      # binds and never errors.
+      wikiPvManifest = pkgs.writeText "wiki-local-pv.yaml" ''
+        # Local PV for the wiki: the BookStack database and its uploads, on
+        # mjolnir's NVMe. Not NFS — a database on NFS is a latency story nobody
+        # needs — and not a hostPath in the pod, which would break the
+        # namespace's Pod Security posture. Same shape as
+        # k8s/manifests/local-pvs.yaml, including the reason for selecting on
+        # the stable `storage=mjolnir` label rather than kubernetes.io/hostname:
+        # a node rename would otherwise orphan the volume.
+        #
+        # ONE volume, TWO mounts. The chart mounts it twice with subPath (mysql/
+        # for the database, bookstack/ for the app's /config). The alternative —
+        # a database-only volume — loses every uploaded image on a pod delete,
+        # and loses it quietly, because a node-pinned volume reschedules so
+        # rarely that nobody sees it happen.
+        #
+        # Reclaim is Retain: this is the only copy of the wiki's content until
+        # the backup timer exists, and a deleted PVC should not also delete the
+        # data.
+        #
+        # Generated from wikiStorage in nix/services/k3s.nix, which is also what
+        # owns the host subdirectories and what the chart renders the claim from.
+        apiVersion: v1
+        kind: PersistentVolume
+        metadata:
+          name: ${wikiStorage.claimName}
+          labels:
+            app.kubernetes.io/part-of: wiki
+        spec:
+          capacity:
+            storage: ${wikiStorage.size}
+          accessModes:
+            - ReadWriteOnce
+          persistentVolumeReclaimPolicy: Retain
+          storageClassName: ${wikiStorage.storageClass}
+          # Pre-bound to the wiki claim: while this PV sat Available, any claim
+          # in any namespace asking for this storage class could have won it,
+          # and on a single-node cluster the node affinity would never have
+          # refused them.
+          claimRef:
+            namespace: ${wikiStorage.claimNamespace}
+            name: ${wikiStorage.claimName}
+          local:
+            path: ${wikiStorage.hostPath}
+          nodeAffinity:
+            required:
+              nodeSelectorTerms:
+                - matchExpressions:
+                    - key: storage
+                      operator: In
+                      values:
+                        - mjolnir
+      '';
+      # A directory under k8s/apps/ is an app chart when it carries a Chart.yaml.
+      # `just k8s-render` and the CI preview render apply the same rule, so an
+      # app cannot be discovered by one of the three and missed by another.
       # NOTE (h1j.1, 2026-09-24): we deliberately do NOT use
       # services.k3s.autoDeployCharts — it only takes a remote-repo URL or a
       # pre-packaged .tgz with a SINGLE values source, and can't do a local
       # unpacked chart + 9 merged -f values files + .Files.Get. See
       # docs/h1j.1-autodeploycharts.md. Use autoDeployCharts for future
       # remote-repo charts only.
-      aiChartRendered =
-        pkgs.runCommand "ai-chart-rendered"
+      appCharts = builtins.filter (
+        name: builtins.pathExists (k8sDir + "/apps/${name}/Chart.yaml")
+      ) (builtins.attrNames (builtins.readDir (k8sDir + "/apps")));
+
+      # The values a build supplies rather than the chart: a store path or a host
+      # fact that must enter the render so the generation retains it, and so the
+      # host and the manifest cannot disagree. Held as text so a preview can eval
+      # it without building; a chart absent from this list renders with no extras,
+      # and the charts that need one `required` those values, so forgetting an
+      # entry fails the render instead of passing quietly.
+      # The values a build supplies rather than the chart, as text.
+      #
+      # `unsafeDiscardStringContext` on the two bundle paths is what lets
+      # `nix eval .#...appChartValues.ai` work at all: a string carrying a store
+      # path's context makes nix realise that derivation, and the swap head-end is
+      # a dynamic derivation, so the eval dies on `dynamic-derivations is
+      # disabled`. Dropping the context costs nothing here — the garbage-collector
+      # link this design depends on is the store path appearing in the writeText
+      # derivation's `text`, which `aiChartRendered` then takes as an input drv.
+      # That is a property of the store graph, not of eval-time string context.
+      chartBuildValuesText = {
+        # The strata bundle is BUILT here, not pinned in a values file: this is
+        # what links config.system.build.strata into the pod. See
+        # strataBundleValuesText above for why that link is the whole design.
+        ai = strataBundleValuesText + headEndValuesText;
+        wiki = wikiValuesText;
+      };
+
+      chartBuildValues = lib.mapAttrs (
+        name: text: pkgs.writeText "${name}-build-values.yaml" text
+      ) chartBuildValuesText;
+
+      renderAppChart =
+        name:
+        pkgs.runCommand "${name}-chart-rendered"
           {
             src = k8sDir;
             nativeBuildInputs = [ pkgs.kubernetes-helm ];
@@ -69,33 +216,13 @@
           ''
             mkdir -p $out
             # one -f per values file (a bare glob expands to positional chart args)
-            F=(-f $src/apps/ai/values.yaml)
-            for f in $src/apps/ai/values/*.yaml; do F+=(-f "$f"); done
-            # The strata bundle is BUILT here, not pinned in a values file: this
-            # -f is what links config.system.build.strata into the pod. See
-            # strataBundleValues below for why that link is the whole design.
-            F+=(-f ${strataBundleValues})
-            F+=(-f ${headEndValues})
-            helm template ai $src/apps/ai "''${F[@]}" > $out/rendered.yaml
+            F=(-f $src/apps/${name}/values.yaml)
+            for f in $src/apps/${name}/values/*.yaml; do F+=(-f "$f"); done
+            ${lib.optionalString (chartBuildValues ? ${name}) ''F+=(-f ${chartBuildValues.${name}})''}
+            helm template ${name} $src/apps/${name} "''${F[@]}" > $out/rendered.yaml
           '';
 
-      # The wiki chart: BookStack + MariaDB, and nothing else. Rendered at build
-      # time like the ai chart — no sops values are needed to render it, because
-      # the workloads read a Secret by name and the Secret is created at
-      # activation (k8s/apps/wiki/SECRETS.md explains why the chart deliberately
-      # cannot create it). There is no seed Job: the roles, shelves and grants
-      # are configured once in the BookStack UI and protected by the database
-      # backup, with the steps and their traps in k8s/apps/wiki/RUNBOOK.md.
-      wikiChartRendered = pkgs.runCommand "wiki-chart-rendered"
-        {
-          src = k8sDir;
-          nativeBuildInputs = [ pkgs.kubernetes-helm ];
-        }
-        ''
-          mkdir -p $out
-          helm template wiki $src/apps/wiki -f $src/apps/wiki/values.yaml \
-            --namespace wiki > $out/rendered.yaml
-        '';
+      appChartRenders = lib.genAttrs appCharts renderAppChart;
 
       # curl for the oneshot below (the metrics-key registration talks to the
       # gateway's /metrics + /key/generate over HTTP). Wrapped in a
@@ -196,6 +323,38 @@
       ) monitoringCharts;
     in
     {
+      options.services.k3s.appChartValues = lib.mkOption {
+        type = lib.types.attrsOf lib.types.str;
+        default = { };
+        internal = true;
+        description = ''
+          Per app chart, the values YAML this build supplies rather than the
+          chart: store paths and host facts the render has to own. Set by this
+          module. `just k8s-render` and the CI preview eval it and apply the same
+          text, so a preview cannot render something other than what the deploy
+          applies, and neither has to build anything to get it:
+          `nix eval .#nixosConfigurations.<host>.config.services.k3s.appChartValues.<chart>`.
+        '';
+      };
+
+      options.services.k3s.wikiOidcEgressCidrs = lib.mkOption {
+        type = lib.types.listOf lib.types.str;
+        default = [ ];
+        description = ''
+          IPv4 /32 host routes the BookStack pod may reach on TCP/443: the OIDC
+          issuer's address, which the pod resolves through public DNS and so
+          leaves the cluster for the edge. k3s' kube-router policy controller has
+          no FQDN or L7 rules, so a hostname cannot be expressed at all.
+
+          An empty list is a wildcard, not a refusal - a NetworkPolicy egress rule
+          with no peer matches every destination - so the chart fails the render on
+          empty, and templates/networkpolicy.yaml refuses anything wider than a /32.
+          The address belongs to a VPS, so it can go stale with no commit here; the
+          wiki chart's wiki-oidc-egress CronJob re-tests the whole path from inside
+          the namespace and alerts on failure.
+        '';
+      };
+
       options.services.k3s.aiChart = {
         strataBundle = lib.mkOption {
           type = lib.types.str;
@@ -233,15 +392,14 @@
         # local-path PVs are root-owned. See k8s/manifests/local-pvs.yaml.
         systemd.tmpfiles.rules = [
           "d /var/lib/postgres-data 0700 999 999 -"
-          # The wiki's local PV (k8s/manifests/wiki-local-pv.yaml) is one host
-          # directory mounted into both workloads by subPath, so both
-          # subdirectories are pre-owned here. Same reason as postgres above:
-          # these pods cannot chown for themselves, and BookStack's own
-          # root-at-init chown runs on a directory it first has to be able to
-          # write.
-          "d /var/lib/wiki 0755 root root -"
-          "d /var/lib/wiki/mysql 0750 999 999 -"
-          "d /var/lib/wiki/bookstack 0770 983 983 -"
+          # The wiki's PV is one host directory mounted into both workloads by
+          # subPath, so both subdirectories are pre-owned here. Same reason as
+          # postgres above: these pods cannot chown for themselves, and
+          # BookStack's own root-at-init chown runs on a directory it first has
+          # to be able to write.
+          "d ${wikiStorage.hostPath} 0755 root root -"
+          "d ${wikiStorage.hostPath}/mysql 0750 ${toString wikiStorage.databaseUid} ${toString wikiStorage.databaseGid} -"
+          "d ${wikiStorage.hostPath}/bookstack 0770 ${toString wikiStorage.bookstackUid} ${toString wikiStorage.bookstackGid} -"
         ];
 
         # Monitoring secrets (mjolnir-decryptable). Consumed by the rendered
@@ -303,6 +461,7 @@
 
         services.k3s = {
           role = "server";
+          appChartValues = chartBuildValuesText;
           # Lean: no metrics-server (model pods expose their own --metrics later).
           # traefik + coredns kept (LAN-name ingress).
           disable = [ "metrics-server" ];
@@ -343,7 +502,7 @@
               source = "${k8sDir}/manifests/local-pvs.yaml";
             };
             wiki-pvs = {
-              source = "${k8sDir}/manifests/wiki-local-pv.yaml";
+              source = wikiPvManifest;
             };
           };
         };
@@ -353,15 +512,14 @@
         # inside strings, which Nix does NOT track as a dependency on its own —
         # without this the paths are never built and the apply fails at deploy
         # time.
-        system.build = {
-          aiChartRendered = aiChartRendered;
-          wikiChartRendered = wikiChartRendered;
-          # kps chart (fetched .tgz) — rendered at activation, not build time.
-          kpsChart = kpsChart;
-        }
-        // lib.mapAttrs' (
-          name: chart: lib.nameValuePair "${name}ChartRendered" chart
-        ) monitoringChartRendered;
+        system.build =
+          {
+            # kps chart (fetched .tgz) — rendered at activation, not build time.
+            kpsChart = kpsChart;
+          }
+          // lib.mapAttrs' (
+            name: chart: lib.nameValuePair "${name}ChartRendered" chart
+          ) (appChartRenders // monitoringChartRendered);
 
         # Apply the rendered loki/alloy/ai/dcgm charts, and render + apply kps,
         # as a systemd oneshot AFTER k3s is up. Runs as root, `k3s kubectl` picks
@@ -464,14 +622,11 @@
             # never allowed either: it skips the wiki pass loudly (below) and
             # lets the rest of the generation land — the unit exits 0 — because
             # an empty secret is a mistake and not a state of the world.
-            WIKI_APP_KEY="$(cat ${config.sops.secrets."services/wiki/app-key".path})"
-            WIKI_DB_PASSWORD="$(cat ${config.sops.secrets."services/wiki/db-password".path})"
-            WIKI_OIDC_CLIENT_ID="$(cat ${config.sops.secrets."services/wiki/oidc-client-id".path})"
-            WIKI_OIDC_CLIENT_SECRET="$(cat ${config.sops.secrets."services/wiki/oidc-client-secret".path})"
+            ${wikiSecretReads}
             WIKI_DEPLOY=1
             WIKI_SKIP_REASON=""
             WIKI_UNSET_SEEN=0
-            for wv in "app-key:$WIKI_APP_KEY" "db-password:$WIKI_DB_PASSWORD" "oidc-client-id:$WIKI_OIDC_CLIENT_ID" "oidc-client-secret:$WIKI_OIDC_CLIENT_SECRET"; do
+            for wv in ${wikiSecretSentinelPairs}; do
               [ -n "''${wv#*:}" ] || { echo "wiki: error: services/wiki sops secret ''${wv%%:*} is empty; skipping the wiki pass" >&2; WIKI_DEPLOY=0; WIKI_SKIP_REASON="''${WIKI_SKIP_REASON:+''$WIKI_SKIP_REASON; }sops secret ''${wv%%:*} is empty"; }
               [ "''${wv#*:}" = "unset" ] && [ "$WIKI_UNSET_SEEN" = "0" ] && { WIKI_DEPLOY=0; WIKI_UNSET_SEEN=1; WIKI_SKIP_REASON="''${WIKI_SKIP_REASON:+''$WIKI_SKIP_REASON; }OIDC client values are still the 'unset' sentinel; create the Pocket ID client, put its id and secret into nix/services/homelab/homelab-wiki-secrets.yaml, and re-activate"; }
             done
@@ -683,14 +838,14 @@
             # role lived only in the manifest (the 2026-10-05 kubelet 403).
             label_all monitoring ".kind == \"ServiceAccount\"" ${k8sDir}/manifests/kubelet-monitoring.yaml > "$T/monitoring-kubelet-sa.json"
             label_all cluster ".kind == \"ClusterRoleBinding\" or .kind == \"ClusterRole\"" ${k8sDir}/manifests/kubelet-monitoring.yaml > "$T/cluster-kubelet-crb.json"
-            label_all default "true" ${aiChartRendered}/rendered.yaml ${k8sDir}/manifests/ai-networkpolicies.yaml > "$T/default-ai.json"
+            label_all default "true" ${appChartRenders.ai}/rendered.yaml ${k8sDir}/manifests/ai-networkpolicies.yaml > "$T/default-ai.json"
             label_all monitoring "true" ${monitoringChartRendered.loki}/rendered.yaml ${monitoringChartRendered.alloy}/rendered.yaml ${k8sDir}/manifests/cloud-model-rates.yaml ${k8sDir}/manifests/ai-model-metrics.yaml > "$T/monitoring-charts.json"
             # gpu/ pass: dcgm-exporter + its netpol + its ServiceMonitor
             # (standalone manifest, not a kps additionalServiceMonitor — the
             # chart renders those as one v1 List that cannot be split by
             # namespace, and the SM must live in gpu/ to select the pod).
             label_all gpu "true" ${monitoringChartRendered.dcgm}/rendered.yaml ${k8sDir}/manifests/dcgm-networkpolicy.yaml ${k8sDir}/manifests/dcgm-servicemonitor.yaml > "$T/gpu-charts.json"
-            label_all wiki "true" ${wikiChartRendered}/rendered.yaml > "$T/wiki-chart.json"
+            label_all wiki "true" ${appChartRenders.wiki}/rendered.yaml > "$T/wiki-chart.json"
             cat "$T/cluster-kps.json" "$T/cluster-kubelet-crb.json" > "$T/cluster.yaml"
             cat "$T/monitoring-kubelet-sa.json" "$T/monitoring-kps.json" "$T/monitoring-charts.json" > "$T/monitoring-static.json"
             cat "$T/kube-system-kps.json" > "$T/kube-system.yaml"
@@ -879,10 +1034,7 @@
                 printf '%s' "$POD_API_KEY" > "$T/secret-pod-api-key"
                 printf '%s' "$GRAFANA_PW" > "$T/secret-grafana-pw"
                 printf '%s' "$METRICS_KEY" > "$T/secret-metrics-key"
-                printf '%s' "$WIKI_APP_KEY" > "$T/secret-wiki-app-key"
-                printf '%s' "$WIKI_DB_PASSWORD" > "$T/secret-wiki-db-password"
-                printf '%s' "$WIKI_OIDC_CLIENT_ID" > "$T/secret-wiki-oidc-client-id"
-                printf '%s' "$WIKI_OIDC_CLIENT_SECRET" > "$T/secret-wiki-oidc-client-secret"
+            ${wikiSecretFiles}
               )
               $KCTL apply -f "$T/monitoring-kubelet-sa.json" \
                 && $KCTL create token kubelet-monitoring --namespace monitoring \
@@ -1043,11 +1195,7 @@
                                fi
                              } \
                             && $KCTL create secret generic bookstack \
-                                --namespace wiki \
-                                --from-file=APP_KEY="$T/secret-wiki-app-key" \
-                                --from-file=DB_PASSWORD="$T/secret-wiki-db-password" \
-                                --from-file=OIDC_CLIENT_ID="$T/secret-wiki-oidc-client-id" \
-                                --from-file=OIDC_CLIENT_SECRET="$T/secret-wiki-oidc-client-secret" \
+                                --namespace wiki${wikiSecretFromArgs} \
                                 --dry-run=client -o yaml | label_all wiki "true" > "$T/wiki-secret.json" \
                             && nonempty "$T/wiki-secret.json" "create secret generic" \
                             && cat "$T/wiki-secret.json" "$T/wiki-tls.json" "$T/wiki-chart.json" > "$T/wiki.yaml" \
