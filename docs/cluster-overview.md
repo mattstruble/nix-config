@@ -193,6 +193,7 @@ Rollouts are `Recreate` (the model owns its card) and there is no livenessProbe
 120 s termination grace, so a rollout during one does interrupt it.
 
 ### Dormant chart models (enable: false)
+
 gemma-4-26b-a4b (non-thinking), gemma-4-26b-a4b-think (same weights, reasoning
 left on — thinking is an endpoint property, so voice and deliberating agents
 cannot share a server), qwen3-6-35b-iq4xs. All are image-based; none needs a
@@ -380,8 +381,9 @@ These hard limits shaped every decision:
 - **Kernel/NVIDIA driver bumps:** cannot activate in place — use `nix run .#deploy-rs -- --boot .#mjolnir` then `ssh mjolnir 'sudo reboot'`. In-place `nixos-rebuild switch` leaves the old kernel module loaded, CDI generator hits 'Driver/library version mismatch', and containers exit 125 with auto-rollback.
 - **Model storage:** `/var/lib/llama-models/` (GGUF files)
 - **Which model runs where:** the helm chart in `k8s/apps/ai/` — one
-  values file per model (`enable`, `gpu`, `port`, flags), rendered and applied
-  by `just k8s-deploy`. A swap edits the values files; the pod restarts and
+  values file per model (`enable`, `gpu`, `port`, flags), rendered at build
+  and applied by the ai-chart-apply oneshot on `just deploy mjolnir`. A swap
+  edits the values files; the pod restarts and
   the model reloads from page cache (~90s).
 - **New files must be `git add`ed before deploying:** deploy-rs runs
   `nix flake check`, which evaluates the git tree and skips untracked files —

@@ -1,0 +1,21 @@
+# The claim that binds the wiki's single local PV. Both workloads mount it, with
+# different subPaths: one volume, one backup story, one thing to move.
+#
+# Name, storage class and size all come from `wikiStorage` in
+# nix/services/k3s.nix, which is also what generates the PV they have to match.
+# The PV is pre-bound by claimRef, so a claim whose name, class or size
+# disagrees is never bound: it sits Pending forever, and the events say only that
+# no persistent volume found.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ required "persistence.claimName: set by wikiStorage in nix/services/k3s.nix, which generates the PV's claimRef from it" .Values.persistence.claimName }}
+  labels:
+    app.kubernetes.io/part-of: wiki
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: {{ required "persistence.storageClass: set by wikiStorage in nix/services/k3s.nix, which generates the PV's storageClassName from it" .Values.persistence.storageClass }}
+  resources:
+    requests:
+      storage: {{ required "persistence.size: set by wikiStorage in nix/services/k3s.nix, which generates the PV's capacity from it" .Values.persistence.size }}

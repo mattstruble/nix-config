@@ -1,0 +1,120 @@
+{{- /*
+k3s enforces these: its embedded kube-router network-policy controller is on by
+default (only --disable-network-policy turns it off, and services.k3s.disable
+lists just metrics-server), so they bite on stock Flannel with no Cilium or
+Calico.
+*/ -}}
+{{- /* A CIDR list is only safe if it is the shape the rule below needs; both
+checks exist because a NetworkPolicy egress rule with no peer matches every
+destination, so the two ways this list can be wrong both widen 443 to the whole
+internet rather than closing it. IPv6 is refused because the issuer is reached
+over A records. */ -}}
+{{- $egressCidrs := .Values.oidc.egressCidrs -}}
+{{- if not $egressCidrs -}}
+  {{- fail "oidc.egressCidrs must list at least one CIDR. An empty list is not a refusal: it renders the TCP/443 egress rule with no `to` peer, and a NetworkPolicy rule with no peer matches EVERY destination — so emptying it opens 443 from the bookstack pod to the whole internet. List the IdP address as a /32 in services.k3s.wikiOidcEgressCidrs, or delete the rule from templates/networkpolicy.yaml to actually close it." -}}
+{{- end -}}
+{{- $octet := `(0|[1-9][0-9]?|1[0-9]{2}|2[0-4][0-9]|25[0-5])` -}}
+{{- $host_route := `^%s\.%s\.%s\.%s/32$` -}}
+{{- range $cidr := $egressCidrs -}}
+  {{- if not (regexMatch (printf $host_route $octet $octet $octet $octet) $cidr) -}}
+    {{- fail (printf "oidc.egressCidrs entry %q is not an IPv4 /32 host route. A wider entry gives the wiki pods TCP/443 egress toward the whole internet; list the IdP address as an IPv4 /32 (services.k3s.wikiOidcEgressCidrs in nix/services/k3s.nix) or delete the rule from templates/networkpolicy.yaml to actually close it." $cidr) -}}
+  {{- end -}}
+{{- end -}}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  # This document must stay first: a namespace with no policy selecting a pod is
+  # DEFAULT ALLOW, so an apply that lands the workloads before the deny leaves
+  # BookStack open until the next pass. Helm's install order puts NetworkPolicy
+  # after Namespace, and the apply feeds this file to kubectl in document order.
+  name: wiki-default-deny
+  labels:
+    app.kubernetes.io/part-of: wiki
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: wiki-bookstack
+  labels:
+    app.kubernetes.io/part-of: wiki
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/component: bookstack
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    {{- /*
+    Templated on ingress.enabled so the route and its permission cannot drift
+    apart. Traefik is a pod in kube-system, not hostNetwork, so a pod selector
+    reaches it; naming traefik rather than the pod CIDR keeps every other pod in
+    the cluster out, which allowing the CIDR would not. bookstack.trustedProxies
+    in values.yaml trusts X-Forwarded-* from that whole CIDR only because this is
+    the one peer allowed in: add a peer here without narrowing it and login
+    throttling collapses onto one bucket and every audit line records the forged
+    source IP.
+    */ -}}
+    {{- if .Values.ingress.enabled }}
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: traefik
+      ports:
+        - protocol: TCP
+          port: {{ .Values.bookstack.port }}
+    {{- end }}
+  # Identical to the probe's, by way of templates/_helpers.tpl: a probe holding
+  # more rights than this pod reports green for a path this pod cannot take.
+  egress:
+    {{- include "wiki.egress" . | nindent 4 }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: wiki-mariadb
+  labels:
+    app.kubernetes.io/part-of: wiki
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/component: database
+  policyTypes:
+    # Ingress only, deliberately: egress is already denied by the
+    # namespace-wide policy, and omitting the type here keeps the intent
+    # unambiguous — the database listens, it does not call out.
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/component: bookstack
+      ports:
+        - protocol: TCP
+          port: {{ .Values.database.port }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  # The probe is a pod in this namespace, so the default-deny above applies to it
+  # too; without this policy it could not make the request whose failure it
+  # reports. See templates/_helpers.tpl for why its rights must equal BookStack's.
+  name: wiki-oidc-probe
+  labels:
+    app.kubernetes.io/part-of: wiki
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/component: oidc-egress-probe
+  policyTypes:
+    - Egress
+  egress:
+    {{- include "wiki.egress" . | nindent 4 }}

@@ -1,4 +1,4 @@
-{ ... }:
+{ inputs, ... }:
 {
   flake.modules.nixos.k3s =
     {
@@ -39,29 +39,172 @@
       #
       # Empty on hosts that build no strata bundle; the chart then refuses to
       # render a strata model rather than mounting an empty path.
-      strataBundleValues = pkgs.writeText "strata-bundle-values.yaml" ''
-        strataBundle: ${cfg.aiChart.strataBundle}
+      strataBundleValuesText = ''
+        strataBundle: ${builtins.unsafeDiscardStringContext cfg.aiChart.strataBundle}
       '';
       # Same rule for the swap head-end bundle (llama-swap + swapk8s): the store
       # path travels through the render, so the generation that produced it - and
       # the one before it, which is what a rollback needs - both retain it. Empty
       # means this host builds no head-end, and the chart renders none.
-      headEndValues = pkgs.writeText "head-end-values.yaml" ''
+      headEndValuesText = ''
         headEnd:
-          bundle: ${cfg.aiChart.headEndBundle}
+          bundle: ${builtins.unsafeDiscardStringContext cfg.aiChart.headEndBundle}
       '';
-      # Render the ai chart (helm from nixpkgs) into one manifest file; the
-      # post-activation hook below applies it, so `just deploy mjolnir` ships
-      # host config + cluster manifests in one generation. ponytail: one chart
-      # hardcoded — generalize to a chart list when a second app lands.
+      # The wiki's numeric ids, volume size and host path exist once, here. The
+      # chart reads them by --set, the host directories by tmpfiles below, and
+      # the static PV by generation — three consumers in three languages (helm,
+      # systemd, k3s' manifest loader) that nothing else connects. Drift is
+      # quiet in both directions: a pod running as an id that cannot write the
+      # directory it mounts, and a claim larger than its pre-bound PV sitting
+      # Pending with an event that names no file.
+      wikiStorage = {
+        hostPath = "/var/lib/wiki";
+        # 983 is unassigned on mjolnir; 999 is the image's own user.
+        bookstackUid = 983;
+        bookstackGid = 983;
+        databaseUid = 999;
+        databaseGid = 999;
+        size = "10Gi";
+        storageClass = "wiki-data";
+        claimName = "wiki-data";
+        claimNamespace = "wiki";
+      };
+      # The `bookstack` Secret's keys, in one place. The shell variable, the sops
+      # path, the 0600 temp file and the --from-file argument are each derived
+      # from the key, and the same list reaches the chart as `secret.keys`, where
+      # every secretKeyRef is a lookup that fails the render when the key is
+      # absent. A key the chart references and this module does not create is a
+      # render error, not a pod wedged in CreateContainerConfigError.
+      wikiSecretKeys = [ "APP_KEY" "DB_PASSWORD" "OIDC_CLIENT_ID" "OIDC_CLIENT_SECRET" ];
+      # The sops secret name and the temp file name are both the key lower-cased
+      # with hyphens.
+      wikiSecretName = key: lib.replaceStrings [ "_" ] [ "-" ] (lib.toLower key);
+      wikiSecretReads = lib.concatMapStringsSep "\n"
+        (k: ''${"WIKI_${k}"}="$(cat ${config.sops.secrets."services/wiki/${wikiSecretName k}".path})"'')
+        wikiSecretKeys;
+      wikiSecretSentinelPairs = lib.concatMapStringsSep " "
+        (k: "\"${wikiSecretName k}:$WIKI_${k}\"")
+        wikiSecretKeys;
+      wikiSecretFiles = lib.concatMapStringsSep "\n"
+        (k: "    printf '%s' \"$WIKI_${k}\" > \"$T/secret-wiki-${wikiSecretName k}\"")
+        wikiSecretKeys;
+      wikiSecretFromArgs = lib.concatStrings (map
+        (k: " \\\n                    --from-file=${k}=\"$T/secret-wiki-${wikiSecretName k}\"")
+        wikiSecretKeys);
+      wikiValuesText = ''
+        bookstack:
+          uid: ${toString wikiStorage.bookstackUid}
+          gid: ${toString wikiStorage.bookstackGid}
+        database:
+          uid: ${toString wikiStorage.databaseUid}
+          gid: ${toString wikiStorage.databaseGid}
+        persistence:
+          size: ${wikiStorage.size}
+          claimName: ${wikiStorage.claimName}
+          storageClass: ${wikiStorage.storageClass}
+        secret:
+          keys:
+        ${lib.concatMapStringsSep "\n" (k: "    - ${k}") wikiSecretKeys}
+        oidc:
+          issuer: ${inputs.self.lib.issuerUrl}
+          egressCidrs:
+        ${lib.concatMapStringsSep "\n" (c: "    - ${c}") cfg.wikiOidcEgressCidrs}
+      '';
+      # The PV is generated rather than checked against the claim: it is
+      # pre-bound by claimRef, so a capacity below the claim's request never
+      # binds and never errors.
+      wikiPvManifest = pkgs.writeText "wiki-local-pv.yaml" ''
+        # Generated from `wikiStorage` in nix/services/k3s.nix, which also owns
+        # the host subdirectories and the claim this volume binds to.
+        #
+        # Local, not NFS: a database on NFS is a latency story nobody needs. Not a
+        # hostPath volume in the pod, which would break the namespace's Pod
+        # Security posture.
+        #
+        # ONE volume, TWO mounts: the chart mounts it twice with subPath (mysql/
+        # for the database, bookstack/ for the app's /config). A database-only
+        # volume loses every uploaded image on a pod delete, and loses it quietly,
+        # because a node-pinned volume reschedules so rarely that nobody sees it
+        # happen.
+        apiVersion: v1
+        kind: PersistentVolume
+        metadata:
+          name: ${wikiStorage.claimName}
+          labels:
+            app.kubernetes.io/part-of: wiki
+        spec:
+          capacity:
+            storage: ${wikiStorage.size}
+          accessModes:
+            - ReadWriteOnce
+          # The only copy of the wiki's content until the backup timer exists: a
+          # deleted PVC must not also delete the data.
+          persistentVolumeReclaimPolicy: Retain
+          storageClassName: ${wikiStorage.storageClass}
+          # Pre-bound to the wiki claim: while this PV sat Available, any claim
+          # in any namespace asking for this storage class could have won it,
+          # and on a single-node cluster the node affinity would never have
+          # refused them.
+          claimRef:
+            namespace: ${wikiStorage.claimNamespace}
+            name: ${wikiStorage.claimName}
+          local:
+            path: ${wikiStorage.hostPath}
+          nodeAffinity:
+            required:
+              nodeSelectorTerms:
+                - matchExpressions:
+                    # The stable `storage` label, not kubernetes.io/hostname: a
+                    # node rename would otherwise orphan the volume.
+                    - key: storage
+                      operator: In
+                      values:
+                        - mjolnir
+      '';
+      # A directory under k8s/apps/ is an app chart when it carries a Chart.yaml.
+      # `just k8s-render` and the CI preview render apply the same rule, so an
+      # app cannot be discovered by one of the three and missed by another.
       # NOTE (h1j.1, 2026-09-24): we deliberately do NOT use
       # services.k3s.autoDeployCharts — it only takes a remote-repo URL or a
       # pre-packaged .tgz with a SINGLE values source, and can't do a local
       # unpacked chart + 9 merged -f values files + .Files.Get. See
       # docs/h1j.1-autodeploycharts.md. Use autoDeployCharts for future
       # remote-repo charts only.
-      aiChartRendered =
-        pkgs.runCommand "ai-chart-rendered"
+      appCharts = builtins.filter (
+        name: builtins.pathExists (k8sDir + "/apps/${name}/Chart.yaml")
+      ) (builtins.attrNames (builtins.readDir (k8sDir + "/apps")));
+
+      # The values a build supplies rather than the chart: a store path or a host
+      # fact that must enter the render so the generation retains it, and so the
+      # host and the manifest cannot disagree. Held as text so a preview can eval
+      # it without building; a chart absent from this list renders with no extras,
+      # and the charts that need one `required` those values, so forgetting an
+      # entry fails the render instead of passing quietly.
+      # The values a build supplies rather than the chart, as text.
+      #
+      # `unsafeDiscardStringContext` on the two bundle paths is what lets
+      # `nix eval .#...appChartValues.ai` work at all: a string carrying a store
+      # path's context makes nix realise that derivation, and the swap head-end is
+      # a dynamic derivation, so the eval dies on `dynamic-derivations is
+      # disabled`. Dropping the context costs nothing here — the garbage-collector
+      # link this design depends on is the store path appearing in the writeText
+      # derivation's `text`, which `aiChartRendered` then takes as an input drv.
+      # That is a property of the store graph, not of eval-time string context.
+      chartBuildValuesText = {
+        # The strata bundle is BUILT here, not pinned in a values file: this is
+        # what links config.system.build.strata into the pod. See
+        # strataBundleValuesText above for why that link is the whole design.
+        ai = strataBundleValuesText + headEndValuesText;
+        wiki = wikiValuesText;
+      };
+
+      chartBuildValues = lib.mapAttrs (
+        name: text: pkgs.writeText "${name}-build-values.yaml" text
+      ) chartBuildValuesText;
+
+      renderAppChart =
+        name:
+        pkgs.runCommand "${name}-chart-rendered"
           {
             src = k8sDir;
             nativeBuildInputs = [ pkgs.kubernetes-helm ];
@@ -69,15 +212,13 @@
           ''
             mkdir -p $out
             # one -f per values file (a bare glob expands to positional chart args)
-            F=(-f $src/apps/ai/values.yaml)
-            for f in $src/apps/ai/values/*.yaml; do F+=(-f "$f"); done
-            # The strata bundle is BUILT here, not pinned in a values file: this
-            # -f is what links config.system.build.strata into the pod. See
-            # strataBundleValues below for why that link is the whole design.
-            F+=(-f ${strataBundleValues})
-            F+=(-f ${headEndValues})
-            helm template ai $src/apps/ai "''${F[@]}" > $out/rendered.yaml
+            F=(-f $src/apps/${name}/values.yaml)
+            for f in $src/apps/${name}/values/*.yaml; do F+=(-f "$f"); done
+            ${lib.optionalString (chartBuildValues ? ${name}) ''F+=(-f ${chartBuildValues.${name}})''}
+            helm template ${name} $src/apps/${name} "''${F[@]}" > $out/rendered.yaml
           '';
+
+      appChartRenders = lib.genAttrs appCharts renderAppChart;
 
       # curl for the oneshot below (the metrics-key registration talks to the
       # gateway's /metrics + /key/generate over HTTP). Wrapped in a
@@ -178,6 +319,38 @@
       ) monitoringCharts;
     in
     {
+      options.services.k3s.appChartValues = lib.mkOption {
+        type = lib.types.attrsOf lib.types.str;
+        default = { };
+        internal = true;
+        description = ''
+          Per app chart, the values YAML this build supplies rather than the
+          chart: store paths and host facts the render has to own. Set by this
+          module. `just k8s-render` and the CI preview eval it and apply the same
+          text, so a preview cannot render something other than what the deploy
+          applies, and neither has to build anything to get it:
+          `nix eval .#nixosConfigurations.<host>.config.services.k3s.appChartValues.<chart>`.
+        '';
+      };
+
+      options.services.k3s.wikiOidcEgressCidrs = lib.mkOption {
+        type = lib.types.listOf lib.types.str;
+        default = [ ];
+        description = ''
+          IPv4 /32 host routes the BookStack pod may reach on TCP/443: the OIDC
+          issuer's address, which the pod resolves through public DNS and so
+          leaves the cluster for the edge. k3s' kube-router policy controller has
+          no FQDN or L7 rules, so a hostname cannot be expressed at all.
+
+          An empty list is a wildcard, not a refusal - a NetworkPolicy egress rule
+          with no peer matches every destination - so the chart fails the render on
+          empty, and templates/networkpolicy.yaml refuses anything wider than a /32.
+          The address belongs to a VPS, so it can go stale with no commit here; the
+          wiki chart's wiki-oidc-egress CronJob re-tests the whole path from inside
+          the namespace and alerts on failure.
+        '';
+      };
+
       options.services.k3s.aiChart = {
         strataBundle = lib.mkOption {
           type = lib.types.str;
@@ -215,6 +388,14 @@
         # local-path PVs are root-owned. See k8s/manifests/local-pvs.yaml.
         systemd.tmpfiles.rules = [
           "d /var/lib/postgres-data 0700 999 999 -"
+          # The wiki's PV is one host directory mounted into both workloads by
+          # subPath, so both subdirectories are pre-owned here. Same reason as
+          # postgres above: these pods cannot chown for themselves, and
+          # BookStack's own root-at-init chown runs on a directory it first has
+          # to be able to write.
+          "d ${wikiStorage.hostPath} 0755 root root -"
+          "d ${wikiStorage.hostPath}/mysql 0750 ${toString wikiStorage.databaseUid} ${toString wikiStorage.databaseGid} -"
+          "d ${wikiStorage.hostPath}/bookstack 0770 ${toString wikiStorage.bookstackUid} ${toString wikiStorage.bookstackGid} -"
         ];
 
         # Monitoring secrets (mjolnir-decryptable). Consumed by the rendered
@@ -251,6 +432,23 @@
           "services/ai/litellm/metrics-key" = {
             sopsFile = ./homelab/homelab-secrets-ai.yaml;
           };
+          # Wiki (BookStack). Deliberately a different sops file from every
+          # secret above: homelab-wiki-secrets.yaml is encrypted to the human
+          # and mjolnir only, so the wiki's database password and OIDC client
+          # secret are not decryptable on roque, which holds the IdP, the NAS
+          # mount and n8n's credential store.
+          "services/wiki/app-key" = {
+            sopsFile = ./homelab/homelab-wiki-secrets.yaml;
+          };
+          "services/wiki/db-password" = {
+            sopsFile = ./homelab/homelab-wiki-secrets.yaml;
+          };
+          "services/wiki/oidc-client-id" = {
+            sopsFile = ./homelab/homelab-wiki-secrets.yaml;
+          };
+          "services/wiki/oidc-client-secret" = {
+            sopsFile = ./homelab/homelab-wiki-secrets.yaml;
+          };
         };
         # Materialise secrets in the activation script (setupSecrets) instead of
         # a systemd oneshot at boot — the aiChart activation script below reads
@@ -259,6 +457,7 @@
 
         services.k3s = {
           role = "server";
+          appChartValues = chartBuildValuesText;
           # Lean: no metrics-server (model pods expose their own --metrics later).
           # traefik + coredns kept (LAN-name ingress).
           disable = [ "metrics-server" ];
@@ -298,6 +497,9 @@
             local-pvs = {
               source = "${k8sDir}/manifests/local-pvs.yaml";
             };
+            wiki-pvs = {
+              source = wikiPvManifest;
+            };
           };
         };
 
@@ -306,14 +508,14 @@
         # inside strings, which Nix does NOT track as a dependency on its own —
         # without this the paths are never built and the apply fails at deploy
         # time.
-        system.build = {
-          aiChartRendered = aiChartRendered;
-          # kps chart (fetched .tgz) — rendered at activation, not build time.
-          kpsChart = kpsChart;
-        }
-        // lib.mapAttrs' (
-          name: chart: lib.nameValuePair "${name}ChartRendered" chart
-        ) monitoringChartRendered;
+        system.build =
+          {
+            # kps chart (fetched .tgz) — rendered at activation, not build time.
+            kpsChart = kpsChart;
+          }
+          // lib.mapAttrs' (
+            name: chart: lib.nameValuePair "${name}ChartRendered" chart
+          ) (appChartRenders // monitoringChartRendered);
 
         # Apply the rendered loki/alloy/ai/dcgm charts, and render + apply kps,
         # as a systemd oneshot AFTER k3s is up. Runs as root, `k3s kubectl` picks
@@ -404,6 +606,27 @@
             METRICS_KEY="$(cat ${config.sops.secrets."services/ai/litellm/metrics-key".path})"
             [ -n "$METRICS_KEY" ] || { echo "error: services/ai/litellm/metrics-key sops secret is empty" >&2; exit 1; }
 
+            # Wiki secrets. The Pocket ID OIDC client is created by hand, so a
+            # fresh scope ships the two client values as the literal string
+            # "unset". All four values below are read on activation and
+            # judged on two separate states, and the two states fail
+            # differently: the sentinel is an allowed configuration, so seeing
+            # it skips the whole wiki pass, loudly, and everything else still
+            # applies — deploying BookStack against a client that does not
+            # exist produces a login redirect to an error page, which reads as
+            # a broken wiki rather than an unconfigured one. An empty value is
+            # never allowed either: it skips the wiki pass loudly (below) and
+            # lets the rest of the generation land — the unit exits 0 — because
+            # an empty secret is a mistake and not a state of the world.
+            ${wikiSecretReads}
+            WIKI_DEPLOY=1
+            WIKI_SKIP_REASON=""
+            WIKI_UNSET_SEEN=0
+            for wv in ${wikiSecretSentinelPairs}; do
+              [ -n "''${wv#*:}" ] || { echo "wiki: error: services/wiki sops secret ''${wv%%:*} is empty; skipping the wiki pass" >&2; WIKI_DEPLOY=0; WIKI_SKIP_REASON="''${WIKI_SKIP_REASON:+''$WIKI_SKIP_REASON; }sops secret ''${wv%%:*} is empty"; }
+              [ "''${wv#*:}" = "unset" ] && [ "$WIKI_UNSET_SEEN" = "0" ] && { WIKI_DEPLOY=0; WIKI_UNSET_SEEN=1; WIKI_SKIP_REASON="''${WIKI_SKIP_REASON:+''$WIKI_SKIP_REASON; }OIDC client values are still the 'unset' sentinel; create the Pocket ID client, put its id and secret into nix/services/homelab/homelab-wiki-secrets.yaml, and re-activate"; }
+            done
+
             # Every resource this script applies carries the managed-by label,
             # and each `kubectl apply --prune` pass is scoped to it, so a prune
             # can never delete anything outside our charts (k3s built-ins,
@@ -422,6 +645,7 @@
             SEL_MONITORING="$MANAGED,mjolnir/prune-group=monitoring"
             SEL_KUBE_SYSTEM="$MANAGED,mjolnir/prune-group=kube-system"
             SEL_GPU="$MANAGED,mjolnir/prune-group=gpu"
+            SEL_WIKI="$MANAGED,mjolnir/prune-group=wiki"
             # Kinds a prune pass may delete. kubectl's default allowlist has
             # no CRs, so the monitoring.coreos.com kinds must be listed.
             PRUNE_ALLOWLIST=(
@@ -467,6 +691,15 @@
               else
                 $KCTL apply --prune -l "$sel" "''${pargs[@]}" "''${fargs[@]}"
               fi
+            }
+            # $1 = file, $2 = the step that should have filled it. The wiki
+            # pass is non-fatal, so a failure here must name its step: for an
+            # empty document there is nothing in the output above — every
+            # command in the pipeline can exit 0 on empty input, so the
+            # generic guard line is the only signal an operator gets.
+            nonempty() {
+              local f="$1" step="$2"
+              [ -s "$f" ] || { echo "error: $step left $f empty" >&2; return 1; }
             }
 
             # Idempotently ensure the gateway's key store knows the dedicated
@@ -581,13 +814,14 @@
             # role lived only in the manifest (the 2026-10-05 kubelet 403).
             label_all monitoring ".kind == \"ServiceAccount\"" ${k8sDir}/manifests/kubelet-monitoring.yaml > "$T/monitoring-kubelet-sa.json"
             label_all cluster ".kind == \"ClusterRoleBinding\" or .kind == \"ClusterRole\"" ${k8sDir}/manifests/kubelet-monitoring.yaml > "$T/cluster-kubelet-crb.json"
-            label_all default "true" ${aiChartRendered}/rendered.yaml ${k8sDir}/manifests/ai-networkpolicies.yaml > "$T/default-ai.json"
+            label_all default "true" ${appChartRenders.ai}/rendered.yaml ${k8sDir}/manifests/ai-networkpolicies.yaml > "$T/default-ai.json"
             label_all monitoring "true" ${monitoringChartRendered.loki}/rendered.yaml ${monitoringChartRendered.alloy}/rendered.yaml ${k8sDir}/manifests/cloud-model-rates.yaml ${k8sDir}/manifests/ai-model-metrics.yaml > "$T/monitoring-charts.json"
             # gpu/ pass: dcgm-exporter + its netpol + its ServiceMonitor
             # (standalone manifest, not a kps additionalServiceMonitor — the
             # chart renders those as one v1 List that cannot be split by
             # namespace, and the SM must live in gpu/ to select the pod).
             label_all gpu "true" ${monitoringChartRendered.dcgm}/rendered.yaml ${k8sDir}/manifests/dcgm-networkpolicy.yaml ${k8sDir}/manifests/dcgm-servicemonitor.yaml > "$T/gpu-charts.json"
+            label_all wiki "true" ${appChartRenders.wiki}/rendered.yaml > "$T/wiki-chart.json"
             cat "$T/cluster-kps.json" "$T/cluster-kubelet-crb.json" > "$T/cluster.yaml"
             cat "$T/monitoring-kubelet-sa.json" "$T/monitoring-kps.json" "$T/monitoring-charts.json" > "$T/monitoring-static.json"
             cat "$T/kube-system-kps.json" > "$T/kube-system.yaml"
@@ -599,6 +833,8 @@
             [ -s "$T/kube-system.yaml" ] || { echo "error: rendered kube-system.yaml is empty" >&2; exit 1; }
             [ -s "$T/default-ai.json" ] || { echo "error: rendered default-ai.json is empty" >&2; exit 1; }
             [ -s "$T/gpu-charts.json" ] || { echo "error: rendered gpu-charts.json is empty" >&2; exit 1; }
+            # wiki check differs from its five siblings on purpose: a wiki failure must not fail the generation, so it skips the wiki pass and continues (siblings stay fatal — they are not wiki).
+            [ -s "$T/wiki-chart.json" ] || { echo "wiki: error: rendered wiki-chart.json is empty; skipping the wiki pass" >&2; WIKI_DEPLOY=0; WIKI_SKIP_REASON="''${WIKI_SKIP_REASON:+''$WIKI_SKIP_REASON; }rendered wiki-chart.json is empty"; }
             set +e
 
             # CIDR containment: is $2 (net/prefix) a subnet of $1? The node's
@@ -619,6 +855,8 @@
               [ $(( $(ip_to_int "$outer_ip") & mask )) -eq $(( $(ip_to_int "$inner_ip") & mask )) ]
             }
 
+            WIKI_DATADIR_CHECKED=0
+
             # 150 x 2s = 5min: the API server can take well over 60s to be
             # ready after a fresh boot (large etcd, slow disk). A failed
             # apply persists until the next chart-changing activation, so
@@ -626,6 +864,40 @@
             for i in $(seq 1 150); do
               $KCTL get namespace monitoring >/dev/null 2>&1 || $KCTL create namespace monitoring
               $KCTL get namespace gpu >/dev/null 2>&1 || $KCTL create namespace gpu
+              $KCTL get namespace wiki >/dev/null 2>&1 || $KCTL create namespace wiki
+              # The one signal in this stack that tells a wiped wiki from a
+              # fresh one: the install record present, the datadir marker absent.
+              #
+              # The marker is /var/lib/wiki/mysql/mysql — the system schema
+              # directory mariadb:11's initdb creates, and the engine-independent
+              # one (aria_log_control and ibdata1 are Aria/InnoDB artifacts). The
+              # tmpfiles rule above pre-creates /var/lib/wiki/mysql at every boot,
+              # so its presence says nothing; only the inner directory does. An
+              # image that reorganised the datadir layout would fire this on a
+              # fresh install — a false alarm, never a false silence.
+              #
+              # "Was installed before" means the wiki/bookstack Secret exists,
+              # because every activation that deploys the wiki writes it. That
+              # record is deletable: step 2 of the SECRETS.md rotation deletes
+              # this Secret, and until step 3 re-activates, the read below is
+              # NotFound and the check stays silent.
+              #
+              # Only a NotFound naming this Secret is an answer. kubectl also
+              # exits non-zero for a namespace that does not exist yet (the create
+              # above runs under set +e) and for a transport error; latching on
+              # either would silence the check for the rest of the run.
+              if [ "$WIKI_DATADIR_CHECKED" = 0 ]; then
+                if WIKI_SECRET_ERR="$($KCTL get secret bookstack -n wiki 2>&1 >/dev/null)"; then
+                  WIKI_DATADIR_CHECKED=1
+                  if [ ! -d /var/lib/wiki/mysql/mysql ]; then
+                    echo "wiki: the wiki/bookstack Secret exists but the MariaDB datadir marker /var/lib/wiki/mysql/mysql is absent — a wiki was installed here before and its database is gone; the apply continues (the loss already happened), see the \"An empty database reads as healthy\" standing note in k8s/apps/wiki/RUNBOOK.md" >&2
+                  fi
+                else
+                  case "$WIKI_SECRET_ERR" in
+                    *'Error from server (NotFound): secrets "bookstack"'*) WIKI_DATADIR_CHECKED=1 ;;
+                  esac
+                fi
+              fi
               # Divergence check: the nftables rule for 9100/10250 is scoped
               # to $CLUSTER_CIDR (k3s' default; the nix k3s module exposes no
               # cluster-cidr option). The node's podCIDR is a /24 slice of the
@@ -655,6 +927,16 @@
               # existing namespace gets the label too.
               $KCTL label namespace gpu pod-security.kubernetes.io/enforce=privileged --overwrite
               $KCTL label namespace monitoring pod-security.kubernetes.io/enforce=privileged --overwrite
+              # The wiki namespace is baseline, not privileged, and that is a
+              # claim about the BookStack container rather than an aspiration:
+              # it starts as root (s6-overlay cannot start any other way — as
+              # uid 983 it dies with "unable to setgid to root"), and it needs
+              # CHOWN, DAC_OVERRIDE, FOWNER, SETGID and SETUID, all five of
+              # which are on baseline's allowed add-list, with
+              # allowPrivilegeEscalation: false (verified against the image,
+              # including with no_new_privs). See the header of
+              # k8s/apps/wiki/templates/bookstack-deployment.yaml.
+              $KCTL label namespace wiki pod-security.kubernetes.io/enforce=baseline --overwrite
               # Migration: older deploys applied three kubernetes-system
               # PrometheusRules (controller-manager/kube-proxy/scheduler) that
               # are now disabled in values. They carry no managed label, so
@@ -716,6 +998,7 @@
                 printf '%s' "$POD_API_KEY" > "$T/secret-pod-api-key"
                 printf '%s' "$GRAFANA_PW" > "$T/secret-grafana-pw"
                 printf '%s' "$METRICS_KEY" > "$T/secret-metrics-key"
+            ${wikiSecretFiles}
               )
               $KCTL apply -f "$T/monitoring-kubelet-sa.json" \
                 && $KCTL create token kubelet-monitoring --namespace monitoring \
@@ -765,6 +1048,125 @@
                 && apply_pruned "$SEL_KUBE_SYSTEM" "kube-system" "$T/kube-system.yaml" \
                 && $KCTL label configmap mjolnir-dashboards --namespace monitoring grafana_dashboard=1 --overwrite \
                 && register_metrics_key \
+                && {
+                      # The wiki pass runs last and it is the one apply pass
+                      # whose failure does NOT abort the activation: a broken
+                      # optional service must not cost the monitoring stack that
+                      # sits behind it in the chain. Every wiki failure — the
+                      # rotation guard below included — is loud in the journal,
+                      # lets the rest of the generation land, and leaves the
+                      # unit green. Nor is it retried: the realistic wiki
+                      # failure is not transient — raising persistence.size
+                      # (k8s/apps/wiki/templates/pvc.yaml) makes the existing
+                      # claim mismatch its own immutable spec, and kubectl
+                      # answers "field is immutable", which no retry fixes.
+                      if [ "$WIKI_DEPLOY" = "1" ]; then
+                        # DB_PASSWORD rotation guard. The cluster's own
+                        # wiki/bookstack Secret is the only record of the value
+                        # last applied, so the comparison is against that and not
+                        # against sops. Proceed on a match, on no Secret yet (a
+                        # fresh install), or on a get that itself fails: the guard
+                        # is skipped then, accepted because an API server
+                        # unreachable enough to fail this read fails the apply
+                        # chain below too, and that reports itself.
+                        #
+                        # Refuse without failing the generation: exiting 1 makes
+                        # deploy-rs roll the whole system generation back while
+                        # the five apply passes that already landed stay in the
+                        # cluster, and the two states then diverge until a human
+                        # notices. WIKI_ROTATE_OK=0 gates the apply chain below.
+                        # Why the password cannot be rotated by editing sops, and
+                        # the one-sitting procedure that can: k8s/apps/wiki/SECRETS.md.
+                        WIKI_ROTATE_OK=1
+                        if APPLIED_DB_B64="$($KCTL get secret bookstack -n wiki -o jsonpath='{.data.DB_PASSWORD}' 2>/dev/null)"; then
+                          APPLIED_DB_PASSWORD="$(printf '%s' "$APPLIED_DB_B64" | base64 -d 2>/dev/null)"
+                          if [ -n "$APPLIED_DB_PASSWORD" ] && [ "$APPLIED_DB_PASSWORD" != "$WIKI_DB_PASSWORD" ]; then
+                            WIKI_ROTATE_OK=0
+                            echo "wiki: rotation refused — the wiki pass is skipped; the unit stays green" >&2
+                            echo "error: wiki db-password rotation refused: services/wiki/db-password no longer matches the DB_PASSWORD last applied to the wiki/bookstack Secret, and this stack cannot rotate it. The MariaDB image sets the bookstack account's password only while the data directory is empty, so applying the new value would update the Secret and BookStack's environment while the database account keeps the old password; the mismatch would surface as Access denied at the next BookStack start. The Secret is NOT updated and the wiki stays at its previous, consistent state." >&2
+                            echo "error: to change the password anyway (in one sitting — BookStack's live connections break at step 1): (1) k3s kubectl exec -it -n wiki deploy/wiki-mariadb -- mariadb -u bookstack -p  (old password at the prompt, so it stays out of any argv), then SET PASSWORD = '<the new password>';  (2) k3s kubectl delete secret bookstack -n wiki  — that Secret is this guard's memory of the last applied value;  (3) re-activate, which recreates the Secret from sops;  (4) k3s kubectl rollout restart deploy/wiki-bookstack -n wiki. Reasoning and the full version of these steps: k8s/apps/wiki/SECRETS.md." >&2
+                          fi
+                        fi
+                        # traefik terminates TLS at the LAN Ingress, so the
+                        # certificate must be for the host being served: host
+                        # and Secret name are read out of the render rather than
+                        # repeated here, so values.yaml stays the only place
+                        # they are written. Self-signed and regenerated every
+                        # pass — that keeps the Secret inside this pass's prune
+                        # scope, so it is never orphaned; cert-manager and a
+                        # real certificate belong to the canonical-URLs phase.
+                        # head -1 means only the first Ingress gets a
+                        # certificate: a second one's tls secretName would be
+                        # pruned like any Secret the apply does not carry.
+                        : > "$T/wiki-tls.json"
+                        # From the printf'd 0600 files, never the sops paths:
+                        # OIDC_CLIENT_SECRET must byte-match the value
+                        # registered in Pocket ID, newline for newline.
+                        #
+                        # The whole pass is one guard: core/v1/Secret is in
+                        # PRUNE_ALLOWLIST and both Secrets carry the wiki
+                        # selector, so an apply whose Secret document is missing
+                        # would prune the live Secrets while the activation
+                        # exits 0 — and the rotation guard above would lose its
+                        # record of the last applied value. Under set +e a bare
+                        # assignment discards yq's status, and a render whose
+                        # shape yq cannot read would answer "no Ingress"; hence
+                        # the extractions are spliced into the chain and an empty
+                        # or half-populated document is a failure in its own
+                        # right.
+                        #
+                        # A transient openssl failure therefore applies nothing in
+                        # this pass, with no red unit and no retry — the pass sits
+                        # in the && chain that ends in exit 0, so the retry loop is
+                        # short-circuited — and the wiki stays where it was until
+                        # the next activation.
+                        # The refusal gate wraps the whole pass: `if <false>; then
+                        # ...; fi` yields status 0, so a refusal leaves the enclosing
+                        # && chain unbroken and the unit still exits 0.
+                        if [ "$WIKI_ROTATE_OK" = "1" ]; then
+                          if ! {
+                            WIKI_TLS_HOST="$($YQ -r 'select(.kind == "Ingress") | .spec.tls[0].hosts[0] // empty' "$T/wiki-chart.json" | head -1)" \
+                            && WIKI_TLS_SECRET="$($YQ -r 'select(.kind == "Ingress") | .spec.tls[0].secretName // empty' "$T/wiki-chart.json" | head -1)" \
+                            && {
+                               # The disabled-Ingress path has to end in status
+                               # 0 (the echo): this if is spliced into the &&
+                               # chain, so a false test here fails the pass.
+                               if [ -n "$WIKI_TLS_HOST" ] && [ -n "$WIKI_TLS_SECRET" ]; then
+                                 $OPENSSL req -x509 -newkey rsa:2048 -nodes \
+                                     -keyout "$T/wiki-tls.key" \
+                                     -out "$T/wiki-tls.crt" \
+                                     -days 3650 \
+                                     -subj "/CN=$WIKI_TLS_HOST" \
+                                     -addext "subjectAltName=DNS:$WIKI_TLS_HOST" \
+                                   && $KCTL create secret tls "$WIKI_TLS_SECRET" \
+                                       --namespace wiki \
+                                       --cert="$T/wiki-tls.crt" \
+                                       --key="$T/wiki-tls.key" \
+                                       --dry-run=client -o yaml | label_all wiki "true" > "$T/wiki-tls.json" \
+                                   && nonempty "$T/wiki-tls.json" "create secret tls"
+                               else
+                                 [ -z "$WIKI_TLS_HOST" ] && [ -z "$WIKI_TLS_SECRET" ] && \
+                                   echo "note: ingress disabled — the wiki-tls Secret is outside this apply and will be pruned"
+                               fi
+                             } \
+                            && $KCTL create secret generic bookstack \
+                                --namespace wiki${wikiSecretFromArgs} \
+                                --dry-run=client -o yaml | label_all wiki "true" > "$T/wiki-secret.json" \
+                            && nonempty "$T/wiki-secret.json" "create secret generic" \
+                            && cat "$T/wiki-secret.json" "$T/wiki-tls.json" "$T/wiki-chart.json" > "$T/wiki.yaml" \
+                            && apply_pruned "$SEL_WIKI" "wiki" "$T/wiki.yaml"
+                          }; then
+                            echo "wiki: error: wiki apply pass failed (see output above); the wiki stays at its previous state and the rest of the activation continues" >&2
+                          fi
+                        fi
+                      else
+                        if [ -n "$WIKI_SKIP_REASON" ]; then
+                          echo "wiki: $WIKI_SKIP_REASON" >&2
+                        else
+                          echo "wiki: wiki pass skipped (no reason recorded)" >&2
+                        fi
+                      fi
+                    } \
                 && { if [ "$CRDS_NEW" -eq 1 ]; then
                     $KCTL rollout restart deploy/kps-kube-prometheus-stack-operator --namespace monitoring
                   fi

@@ -97,4 +97,4 @@ gateway:
   # every model pod. It lives here rather than in the templates because nothing
   # declarative can read a string out of a template - a pinned image the
   # automation cannot see is an image that never gets a security bump.
-  toolsImage: python:3.12-alpine@sha256:b658b05ce9c4eb97ec6fc19424818a1f31993659c2b505a532f470e83807815d
+  toolsImage: python:3.12-alpine@sha256:e064671ca452259bab50e8e2c7bd896e39e9a343bb06ca25234adf6fe18d0fc7

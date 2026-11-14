@@ -1,0 +1,15 @@
+---
+# Each disable is a rule that fights ops prose, not a rule this tree violates:
+# MD013 because commands and manifest paths do not wrap; MD024 because every
+# runbook has a "Deploy"; MD033 because tables need <br>; MD034 and MD041
+# because these files are included and rendered from elsewhere; MD040 because a
+# runbook fence is a thing you paste, and its language tag is a guess about the
+# reader's shell; MD060 because it demands one table pipe style across every
+# table in a file, and these tables are written to be read in a diff.
+MD013: false
+MD024: false
+MD033: false
+MD034: false
+MD041: false
+MD040: false
+MD060: false

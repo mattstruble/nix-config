@@ -152,10 +152,12 @@ decrypt — you can only drop its recipient from `.sops.yaml` and re-encrypt
    `/var/lib/sops-nix/key.txt`).
 2. Update the recipient in `.sops.yaml`.
 3. Re-encrypt the sops files to the new recipient set:
+
    ```bash
    sops updatekeys nix/services/homelab/homelab-secrets.yaml
    sops updatekeys nix/users/sops-secrets.yaml
    ```
+
 4. `git commit` + `just deploy mjolnir`.
 
 **Re-apply:** `just deploy mjolnir` (`nix run .#deploy-rs -- .#mjolnir`) is

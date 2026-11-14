@@ -1,0 +1,156 @@
+# The BookStack database. Single replica, Recreate: the PVC is RWO, and two
+# pods on one volume is data corruption, not high availability.
+#
+# The pod split is a process boundary, not a security boundary. Both pods
+# mount the same wiki-data claim (subPath mysql here, subPath bookstack
+# there), and the BookStack container runs runAsUser 0 with DAC_OVERRIDE
+# (bookstack-deployment.yaml), which bypasses the 0750 999:999 mode on the
+# datadir — so the app container can read and overwrite the InnoDB files.
+#
+# Accepted, and considered: a separate volume for the datadir would not close
+# that — both directories are subPaths of one host path (`spec.local.path`
+# /var/lib/wiki), so it separates nothing the NVMe does not already share, and it
+# costs the one-directory backup story. The residual risk is integrity, not
+# confidentiality, and the control that closes it is a backup, which this repo does
+# not have yet.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: wiki-mariadb
+  labels:
+    app.kubernetes.io/component: database
+    app.kubernetes.io/part-of: wiki
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/component: database
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/component: database
+        app.kubernetes.io/part-of: wiki
+    spec:
+      securityContext:
+        runAsUser: {{ required "database.uid: set by wikiStorage in nix/services/k3s.nix, which also owns the host directory" .Values.database.uid }}
+        runAsGroup: {{ required "database.gid: set by wikiStorage in nix/services/k3s.nix, which also owns the host directory" .Values.database.gid }}
+        # No fsGroup: this pod and the BookStack pod mount the same claim by
+        # different subPaths, and kubelet reconciles fsGroup ownership and
+        # mode per pod at the volume root, so a fsGroup here would recursively
+        # chown the other's subtree, this datadir included, and replace the
+        # intended 0750. Full reasoning in bookstack-deployment.yaml.
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      automountServiceAccountToken: false
+      containers:
+        - name: mariadb
+          image: {{ required "database.image is required" .Values.database.image }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          env:
+            - name: MARIADB_DATABASE
+              value: {{ .Values.database.database }}
+            - name: MARIADB_USER
+              value: {{ .Values.database.username }}
+            # The image reads MARIADB_PASSWORD only while the data directory
+            # is empty; from then on the bookstack account's password lives in
+            # the database and re-applying the Secret never touches it. That
+            # is why the wiki pass in nix/services/k3s.nix refuses a rotated
+            # DB_PASSWORD instead of half-applying it.
+            - name: MARIADB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secretName }}
+                  # The env name is the image's; the key is the Secret's.
+                  key: {{ include "wiki.secretKey" (dict "ctx" $ "key" "DB_PASSWORD") }}
+            # The entrypoint refuses to initialise an empty data dir without
+            # one of the root-password options set; nothing here needs a known
+            # root credential, so this one is random. initdb prints it to this
+            # container's stdout once and kubelet persists that stdout to a log
+            # file on the node: the line is redacted before Loki (at read time,
+            # and Loki receives lines only through Alloy), still present in
+            # `kubectl logs` and the host log file. Ignored once the data dir
+            # exists. Getting at that password after the log line is gone is a
+            # hand sequence, not a flag: RUNBOOK.md, Standing notes, "The MariaDB
+            # root password is unrecoverable by design, and recoverable by hand".
+            - name: MARIADB_RANDOM_ROOT_PASSWORD
+              value: "1"
+            # The entrypoint defaults this to '%' and, during initdb, creates
+            # root@'%' with the generated password; setting it to localhost
+            # skips that account entirely — verified against this image's
+            # docker-entrypoint.sh, where the CREATE USER 'root'@host block is
+            # guarded by MARIADB_ROOT_HOST != 'localhost'.
+            - name: MARIADB_ROOT_HOST
+              value: "localhost"
+            # Also what creates the healthcheck users the probes below sign in
+            # as, and what runs mariadb-upgrade when the data dir is older
+            # than the image; without it an image bump leaves the system
+            # tables on the old schema.
+            - name: MARIADB_AUTO_UPGRADE
+              value: "1"
+          ports:
+            - name: mysql
+              containerPort: {{ .Values.database.port }}
+          startupProbe:
+            exec:
+              command:
+                - /usr/local/bin/healthcheck.sh
+                - --connect
+                - --innodb_initialized
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 60
+          readinessProbe:
+            exec:
+              command:
+                - /usr/local/bin/healthcheck.sh
+                - --connect
+                - --innodb_initialized
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+          livenessProbe:
+            exec:
+              command:
+                - /usr/local/bin/healthcheck.sh
+                - --connect
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: {{ .Values.database.resources.requests.cpu }}
+              memory: {{ .Values.database.resources.requests.memory }}
+            limits:
+              memory: {{ .Values.database.resources.limits.memory }}
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/mysql
+              subPath: mysql
+            # The image writes its socket and pidfile here; with a read-only
+            # root filesystem it has to be an explicit empty directory.
+            - name: run
+              mountPath: /run/mysqld
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: wiki-data
+        # Both scratch volumes carry a sizeLimit: an unlimited emptyDir is
+        # charged to the node's root filesystem, and on this single node that
+        # is the partition holding the Nix store and the container images.
+        # Exceeding a limit evicts this pod rather than filling the root.
+        - name: run
+          emptyDir:
+            sizeLimit: 32Mi
+        - name: tmp
+          emptyDir:
+            sizeLimit: 1Gi

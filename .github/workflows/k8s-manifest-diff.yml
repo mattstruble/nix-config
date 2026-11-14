@@ -60,41 +60,58 @@ jobs:
 
       - name: Render PR and base, build comment
         run: |
-          # Eval a bundle path the way `just k8s-render` does. Only stdout may reach
-          # the value: nix writes noise to stderr ("Using saved setting for...",
-          # "warning: Git tree is dirty" once the base restore dirties the tree), and
-          # a multi-line value lands inside a YAML block scalar and breaks the render.
-          # A failed or unrecognisable result degrades to a labelled placeholder - a
-          # broken eval should not block manifest review, and strata-bundle-linked is
-          # the job that asserts the real link.
-          get_bundle() {
-            local opt=$1 placeholder=$2 out
-            out=$(nix eval --raw "$opt" 2>/dev/null) || out=""
-            if [[ "$out" == /nix/store/* && "$out" != *$'\n'* ]]; then
-              printf '%s' "$out"
-            else
-              echo "::warning::nix eval $opt gave no store path; the preview uses a placeholder" >&2
-              printf '%s' "$placeholder"
+          set -euo pipefail
+          # The values a build supplies, per chart, eval'd from nix — the same text
+          # the nix render reads and `just k8s-render` reads, so the preview cannot
+          # render something production does not. A chart the eval cannot produce
+          # renders without them and its own `required` guards decide whether that
+          # is a failure; the preview never papers over a missing input with a
+          # placeholder store path, which is a value no pod ever mounts.
+          CHART_VALUES=$(mktemp -d)
+          chart_values() {
+            local chart=$1
+            if nix eval --raw ".#nixosConfigurations.mjolnir.config.services.k3s.appChartValues.$chart" > "$CHART_VALUES/$chart" 2>/dev/null; then
+              return 0
             fi
+            rm -f "$CHART_VALUES/$chart"
+            echo "::warning::nix eval gave no values for the $chart chart; its render must fail rather than preview something else" >&2
           }
-          STRATA_BUNDLE=$(get_bundle .#nixosConfigurations.mjolnir.config.services.k3s.aiChart.strataBundle /nix/store/00000000000000000000000000000000-strata-preview)
-          HEADEND_BUNDLE=$(get_bundle .#nixosConfigurations.mjolnir.config.services.k3s.aiChart.headEndBundle /nix/store/00000000000000000000000000000000-head-end-preview)
           render() {
-            # Render the chart under $1 (default: this checkout). Same values-file
-            # glob as `just k8s-render` and the nix render derivation
-            # (modules/services/k3s.nix); the chart dir is detected so a pre-rename
-            # base renders too.
+            # Render every chart under $1 (default: this checkout). A directory is a
+            # chart when it carries a Chart.yaml — the rule nix/services/k3s.nix and
+            # `just k8s-render` apply. Rendering the base from its own tree is what
+            # makes a newly added app show as entirely new instead of invisible.
             local root=${1:-$PWD}
-            local CHART="$root/k8s/apps/ai"; [ -d "$CHART" ] || CHART="$root/k8s/llama-fleet"
-            local F=(-f "$CHART/values.yaml")
-            local f
-            for f in "$CHART"/values/*.yaml; do F+=(-f "$f"); done
-            # the nix render injects the bundles it built; without them the preview
-            # shows empty mount paths and disagrees with production
-            F+=(--set "strataBundle=$STRATA_BUNDLE" --set "headEnd.bundle=$HEADEND_BUNDLE")
-            helm template "$(basename "$CHART")" "$CHART" "${F[@]}"
+            local chart dir f rc=0
+            for dir in "$root"/k8s/apps/*/; do
+              [ -f "$dir/Chart.yaml" ] || continue
+              chart=$(basename "$dir")
+              local F=(-f "$dir/values.yaml")
+              for f in "$dir"values/*.yaml; do F+=(-f "$f"); done
+              [ -f "$CHART_VALUES/$chart" ] && F+=(-f "$CHART_VALUES/$chart")
+              helm template "$chart" "$dir" "${F[@]}" || rc=1
+            done
+            return $rc
           }
+          for dir in k8s/apps/*/; do [ -f "$dir/Chart.yaml" ] && chart_values "$(basename "$dir")"; done
           render > /tmp/pr.yaml
+          # The render lands in a public pull-request comment. The contract in
+          # k8s/apps/wiki/SECRETS.md is that the chart references a Secret and
+          # never creates one, so assert the output holds no Secret document
+          # before anything is posted — and assert on /tmp/pr.yaml, the document
+          # about to be posted, not on a separate render.
+          #
+          # The wiki chart's documents must be present first: a renamed or removed
+          # chart would leave the Secret-free grep with nothing to find, and it
+          # would report "clean" for a PR that removed the app.
+          if ! grep -q '^# Source: wiki/' /tmp/pr.yaml; then
+            echo "::error::the render contains no wiki chart documents; the Secret-free assertion would pass vacuously (chart renamed? render failed?)"
+            exit 1
+          fi
+          if grep -Eq '^[[:space:]]*kind:[[:space:]]*Secret[[:space:]]*$' /tmp/pr.yaml; then
+            echo "::error::the rendered manifest contains a kind: Secret document; the chart must only reference the Secret the activation script creates (see k8s/apps/wiki/SECRETS.md)"
+            exit 1
+          fi
           # Render the base from its own worktree. `git restore --source=base -- k8s/`
           # is not a base checkout: it rewrites the files the base has and leaves the
           # PR's new files where they are, so the "base" render mixes base values with
@@ -123,6 +140,11 @@ jobs:
         uses: peter-evans/find-comment@v4
         with:
           issue-number: ${{ github.event.pull_request.number }}
+          # Without an author filter this matches whatever comment a human
+          # wrote last, and the next step then writes a rendered manifest diff
+          # into their remark.
+          comment-author: 'github-actions[bot]'
+          body-includes: '## Rendered manifest diff'
           direction: last
 
       - name: Post or update comment
@@ -131,4 +153,9 @@ jobs:
           comment-id: ${{ steps.fc.outputs.comment-id }}
           issue-number: ${{ github.event.pull_request.number }}
           body-path: /tmp/comment.md
+          # The action's default is `append`, which stacks a second full diff
+          # section under the first on every push: the stale one stays on top,
+          # and the body grows toward GitHub's 65536-character comment limit
+          # until the update itself starts failing.
+          edit-mode: replace
           reactions: "+1"

@@ -1,0 +1,234 @@
+# BookStack itself — the least isolated container in the cluster and the only Pod
+# Security exception in this chart. The exception is against `restricted` (a
+# non-root user and a read-only root filesystem, neither of which this image can
+# do), not against the namespace's `baseline`, which this pod meets with no
+# exception at all. What bounds it is the network policies, not the container:
+# nothing publishes wiki.mjolnir to the edge (RUNBOOK.md, "What this runbook
+# cannot check for you"), so the accepted blast radius is a PHP app running as
+# root at init, reachable through the one connector that would publish it.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: wiki-bookstack
+  labels:
+    app.kubernetes.io/component: bookstack
+    app.kubernetes.io/part-of: wiki
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/component: bookstack
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/component: bookstack
+        app.kubernetes.io/part-of: wiki
+    spec:
+      securityContext:
+        # The image is a LinuxServer s6-overlay image and s6 cannot start below
+        # uid 0 (`s6-overlay-suexec: fatal: unable to setgid to root: Operation
+        # not permitted`); verified against the pinned image.
+        runAsUser: 0
+        runAsNonRoot: false
+        # No fsGroup here, and none on the mariadb pod either: both pods
+        # mount the SAME claim (wiki-data) through different subPaths, and
+        # kubelet reconciles fsGroup ownership and volume modes per pod at the
+        # VOLUME ROOT, not at the subPath — so a fsGroup here would recursively
+        # chown the mariadb subtree at every pod start and overwrite the
+        # intended 0750/0770. The host subdirectories are owned by
+        # systemd.tmpfiles in nix/services/k3s.nix instead. Do not add fsGroup
+        # back to either pod without first giving each workload its own PV.
+        seccompProfile:
+          type: RuntimeDefault
+      automountServiceAccountToken: false
+      containers:
+        - name: bookstack
+          image: {{ required "bookstack.image is required" .Values.bookstack.image }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            # Not read-only: nginx and php-fpm write pidfiles and sockets
+            # under /var/run and /var/log, and s6's stage1 unpacks into /run.
+            readOnlyRootFilesystem: false
+            capabilities:
+              drop:
+                - ALL
+              add:
+                # What the image's init does as root before it drops: chown
+                # /config to PUID/PGID, create directories inside the tree it
+                # just chowned away, then setgid/setuid to the app user. Dropping
+                # DAC_OVERRIDE answers `mkdir: cannot create directory
+                # '/config/keys': Permission denied`; verified against the pinned
+                # image.
+                - CHOWN
+                - DAC_OVERRIDE
+                - FOWNER
+                - SETGID
+                - SETUID
+          env:
+            - name: PUID
+              value: {{ required "bookstack.uid: set by wikiStorage in nix/services/k3s.nix, which also owns the host directory" .Values.bookstack.uid | quote }}
+            - name: PGID
+              value: {{ required "bookstack.gid: set by wikiStorage in nix/services/k3s.nix, which also owns the host directory" .Values.bookstack.gid | quote }}
+            - name: TZ
+              value: Etc/UTC
+            - name: APP_URL
+              value: {{ .Values.bookstack.appUrl | quote }}
+            - name: APP_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secretName }}
+                  key: {{ include "wiki.secretKey" (dict "ctx" $ "key" "APP_KEY") }}
+            - name: DB_HOST
+              value: wiki-mariadb
+            - name: DB_PORT
+              value: "{{ .Values.database.port }}"
+            - name: DB_DATABASE
+              value: {{ .Values.database.database }}
+            - name: DB_USERNAME
+              value: {{ .Values.database.username }}
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secretName }}
+                  key: {{ include "wiki.secretKey" (dict "ctx" $ "key" "DB_PASSWORD") }}
+            - name: APP_PROXIES
+              value: {{ .Values.bookstack.trustedProxies | quote }}
+            # Without this BookStack renders every member's avatar as
+            # gravatar.com/avatar/<md5(email)>: a household email hash leaves
+            # the cluster per member, and a gravatar profile lookup confirms
+            # the address. The same switch turns off the draw.io integration.
+            # DISABLE_EXTERNAL_SERVICES is the name this pinned version reads
+            # (app/Config/services.php); the legacy DISABLE_GRAVATAR name no
+            # longer exists in it.
+            - name: DISABLE_EXTERNAL_SERVICES
+              value: "true"
+            # BookStack's docs warn debug mode can expose configuration
+            # credentials to visitors.
+            - name: APP_DEBUG
+              value: "false"
+            # No update-check variable is set because the pinned version has
+            # none to set: v26.09.2 ships no update checker at all — no
+            # APP_UPDATE_CHECK or UPDATE_CHECK key in app/Config, the image's
+            # .env.example.complete, the routes, or the settings code. Do not
+            # add a dead one here.
+            - name: AUTH_METHOD
+              value: oidc
+            # Presentation, not policy: app/Config/auth.php defaults
+            # auto_initiate to false, so dropping this reinstates an
+            # intermediate provider screen at every login, and
+            # app/Config/oidc.php defaults the provider name to "SSO".
+            - name: AUTH_AUTO_INITIATE
+              value: "true"
+            - name: OIDC_NAME
+              value: Pocket ID
+            - name: OIDC_ISSUER
+              # Must byte-match Pocket ID's APP_URL, which is what signs `iss`:
+              # both read issuerUrl, so a drift between them is not expressible.
+              value: {{ required "oidc.issuer: set from issuerUrl in nix/flake-parts.nix, which Pocket ID signs iss from" .Values.oidc.issuer | quote }}
+            - name: OIDC_ISSUER_DISCOVER
+              value: "true"
+            - name: OIDC_END_SESSION_ENDPOINT
+              value: "true"
+            # Both keys exist whenever this pod is created: the activation
+            # refuses to apply this chart while either is the "unset"
+            # sentinel. They are printf'd without a trailing newline because
+            # the client secret must byte-match what Pocket ID holds.
+            # The image serves the app through php-fpm with clear_env = no
+            # (checked against the pinned digest), so these reach Laravel's
+            # env() and a persisted /config/www/.env line cannot shadow them.
+            - name: OIDC_CLIENT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secretName }}
+                  key: {{ include "wiki.secretKey" (dict "ctx" $ "key" "OIDC_CLIENT_ID") }}
+            - name: OIDC_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secretName }}
+                  key: {{ include "wiki.secretKey" (dict "ctx" $ "key" "OIDC_CLIENT_SECRET") }}
+            # BookStack resolves a missing entity grant by walking up the
+            # parent chain, so an absent allow is not a deny: what group →
+            # role sync hands out is roles, never a denial — closing content
+            # off happens on the entity, in the database (RUNBOOK.md §6.5).
+            - name: OIDC_USER_TO_GROUPS
+              value: "true"
+            - name: OIDC_GROUPS_CLAIM
+              value: {{ .Values.oidc.groupsClaim }}
+            # BookStack only asks for openid/profile/email; Pocket ID puts
+            # group names behind a `groups` scope it will not otherwise
+            # honour. Without this the claim is simply absent and every user
+            # silently loses their roles at their next login.
+            - name: OIDC_ADDITIONAL_SCOPES
+              value: {{ .Values.oidc.groupsClaim }}
+            # Revocation runs inside the OIDC login flow and BookStack never
+            # revisits a session that is already live, so removing someone from
+            # a Pocket ID group takes effect at their NEXT LOGIN, not when the
+            # membership changes — closing that window is an operator action
+            # (RUNBOOK.md, Revoke). It is also why the registration default
+            # role must be an empty one: while this is on, BookStack treats
+            # that role as always-matched and assigns it.
+            - name: OIDC_REMOVE_FROM_GROUPS
+              value: "true"
+            # The window in which a removed member keeps issued roles is a
+            # session's lifetime: group → role sync happens at login only.
+            # SESSION_LIFETIME is the minutes of inactivity after which BookStack
+            # expires it and app/Config/session.php reads no other expiry, so it
+            # revokes nobody — a member who keeps using the app refreshes it
+            # indefinitely. 120 is BookStack's own default; pinning the no-op makes
+            # the window a decision a diff can change rather than an image default
+            # nobody chose.
+            #
+            # SESSION_ACTIVITY_LIMIT and SESSION_TOKEN_TIME are not BookStack
+            # options at all: pre-Laravel names this image ignores. Do not
+            # reintroduce them.
+            - name: SESSION_LIFETIME
+              value: "120"
+          ports:
+            - name: http
+              containerPort: {{ .Values.bookstack.port }}
+          startupProbe:
+            httpGet:
+              path: /status
+              port: http
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 40
+          readinessProbe:
+            httpGet:
+              path: /status
+              port: http
+            initialDelaySeconds: 20
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 6
+          # tcpSocket while readiness above is httpGet /status: with the
+          # image default SESSION_DRIVER=database, and settings read from the
+          # same table, every routed request touches MariaDB — no HTTP path on
+          # this app is dependency-free. An HTTP liveness probe therefore
+          # restarts this pod through a MariaDB outage, each start re-running
+          # `artisan migrate --force` against a database that is not there.
+          livenessProbe:
+            tcpSocket:
+              port: http
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 6
+          resources:
+            requests:
+              cpu: {{ .Values.bookstack.resources.requests.cpu }}
+              memory: {{ .Values.bookstack.resources.requests.memory }}
+            limits:
+              memory: {{ .Values.bookstack.resources.limits.memory }}
+          volumeMounts:
+            # The image's entire persistent state: .env is supplied by env
+            # vars, but storage/, bootstrap/cache/ and public/uploads/ live
+            # here and are the only copies of every uploaded image.
+            - name: data
+              mountPath: /config
+              subPath: bookstack
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: wiki-data

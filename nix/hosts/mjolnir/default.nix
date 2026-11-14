@@ -99,8 +99,9 @@
 
       # ── k3s (LLM fleet as k8s pods) ────────────────────────────────────
       # Server + nvidia runtime + local PVs: nix/services/k3s.nix (keyed
-      # off this flag). Model pods + LiteLLM gateway: k8s/apps/ai chart
-      # (`just k8s-deploy`).
+      # off this flag). Model pods + LiteLLM gateway: k8s/apps/ai chart,
+      # rendered at build and applied by the ai-chart-apply oneshot on
+      # `just deploy mjolnir`.
       services.k3s.enable = true;
 
       # Required by the k3s nvidia runtime (k3s.nix), which is CDI-mode: it
@@ -131,6 +132,13 @@
       # a running pod. None of them were needed once the path was linked; a
       # generation is not a reference to paths merely mentioned in its scripts,
       # which is why the literal needed all that scaffolding and this does not.
+      # Measured 2026-11-12 from inside the bookstack pod: auth.struble.app resolves
+      # to this through public DNS, and the pod's OIDC discovery request goes there,
+      # not to roque. The LAN segment is deliberately absent - it contains the node,
+      # where traefik answers for every SNI route in the cluster (measured the same
+      # day: https://10.0.0.4 with SNI grafana.mjolnir returned 302).
+      services.k3s.wikiOidcEgressCidrs = [ "66.63.168.18/32" ];
+
       services.k3s.aiChart.strataBundle = toString config.system.build.strata;
 
       # Swap head-end bundle: llama-swap at a pinned commit plus this repo's
