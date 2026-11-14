@@ -80,6 +80,12 @@ spec:
     - Ingress
     - Egress
   ingress:
+    {{- /*
+    This traefik rule is the only ingress peer, and bookstack.trustedProxies in
+    values.yaml trusts X-Forwarded-* from the whole pod CIDR only because of
+    that: add a peer here without narrowing it and login throttling collapses
+    onto one bucket and every audit line records the forged source IP.
+    */ -}}
     {{- if .Values.ingress.enabled }}
     - from:
         - namespaceSelector:
