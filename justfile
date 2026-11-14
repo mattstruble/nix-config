@@ -30,39 +30,35 @@ build-rpi-images:
 build: build-rpi-images
 
 # Render every app chart under k8s/apps/. A directory is an app chart when it
-# carries a Chart.yaml, which is what excludes k8s/apps/monitoring: dashboard
-# JSON plus values for the vendored upstream charts, which nix renders from the
-# upstream release tarballs, never from a local chart dir. Same values glob,
-# release name and bundle injection as the nix render (nix/services/k3s.nix) and
-# the CI manifest diff, so the preview matches production: without the strata
-# bundle the pod mounts an empty path, and without the head-end bundle the chart
-# renders no head-end at all, so a preview that skips them silently shows the
-# world as it was before the swapper. The bundles are ai's values, so only ai
-# asks nix for them - and only ai pays for the eval.
-# One chart's render failure must neither stop the others nor hide: the loop
-# keeps going and the recipe still exits non-zero, because a preview that shows
-# the healthy charts and says nothing about the broken one reads as "nothing
-# changed here".
+# carries a Chart.yaml — the same rule nix/services/k3s.nix applies, so an app
+# cannot render here and be missing from the deploy, or the other way round.
+# k8s/apps/monitoring is excluded by that rule: dashboard JSON plus values for the
+# vendored upstream charts, which nix renders from the release tarballs.
+# The values a build supplies (store paths, host ids) are eval'd from nix and
+# written per chart, so the preview applies exactly what production applies. A
+# chart that needs them and does not get them fails its render rather than
+# rendering something else — `required` in its templates is what makes that true.
+# One chart's render failure must neither stop the others nor hide: the loop keeps
+# going and the recipe still exits non-zero, because a preview that shows the
+# healthy charts and says nothing about the broken one reads as "nothing changed".
 # The per-chart helm arguments accumulate in the positional parameters (`set --`),
 # not in a bash array: just runs this under the default `sh -cu`, and where
 # /bin/sh is a true POSIX shell (dash) `F=(...)` is a syntax error that kills the
 # recipe before the first chart renders.
 [doc("Render every app chart under k8s/apps/")]
 k8s-render:
-	rc=0; \
+	rc=0; V=$(mktemp -d); \
 	for c in k8s/apps/*/; do \
 	[ -f "$c/Chart.yaml" ] || continue; \
 	name=$(basename "$c"); \
 	set -- -f "$c/values.yaml"; \
 	for f in "$c"values/*.yaml; do if [ -f "$f" ]; then set -- "$@" -f "$f"; fi; done; \
-	if [ "$name" = ai ]; then \
-	B=$(nix eval --raw .#nixosConfigurations.mjolnir.config.services.k3s.aiChart.strataBundle); \
-	H=$(nix eval --raw .#nixosConfigurations.mjolnir.config.services.k3s.aiChart.headEndBundle); \
-	set -- "$@" --set "strataBundle=$B" --set "headEnd.bundle=$H"; \
-	fi; \
+	if nix eval --raw ".#nixosConfigurations.mjolnir.config.services.k3s.appChartValues.$name" > "$V/$name.yaml" 2>/dev/null; then \
+	set -- "$@" -f "$V/$name.yaml"; \
+	else rm -f "$V/$name.yaml"; fi; \
 	helm template "$name" "$c" "$@" || { echo "error: the $name chart failed to render" >&2; rc=1; }; \
 	done; \
-	exit $rc
+	rm -rf "$V"; exit $rc
 
 # Mint a named LiteLLM key (alias=<name> -> per-source prometheus label), store
 # it in sops, print it. Requires the gateway deployed (just deploy mjolnir).

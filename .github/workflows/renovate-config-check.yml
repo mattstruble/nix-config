@@ -1,24 +1,18 @@
 name: renovate-config-check
 
-# renovate.json is the only file here whose failure is invisible. A pattern that
-# matches nothing is a perfectly valid config: Renovate extracts fewer
-# dependencies, files fewer PRs, and the cluster quietly stops receiving security
-# bumps. Two of the three defects in the update pipeline were exactly this - a
-# regex that saw 1 of 9 image keys, and a chart manager that extracted all three
-# charts and proposed nothing - and neither was visible in review or in CI.
+# A Renovate pattern that matches nothing is a valid config: Renovate extracts
+# fewer dependencies, files fewer PRs, and the cluster quietly stops receiving
+# security bumps. So validate the schema, then run the real extractor and require
+# it to account for every pin in the tree.
 #
-# So validate the schema, then run the real extractor and require it to account
-# for every pin in the tree. The comparison is deliberately not a hardcoded
-# count: adding a model values file changes both sides, so the check keeps its
-# teeth without needing to be edited, and a pin that becomes invisible - or a
-# pattern that starts matching something that is not a pin - goes red.
+# Neither side of the comparison is a hardcoded count or a per-app list: adding a
+# values file changes both sides, so the check keeps its teeth without being
+# edited, and a pin that becomes invisible goes red.
 on:
   pull_request:
     paths:
       - "renovate.json"
-      - "k8s/apps/ai/values.yaml"
-      - "k8s/apps/ai/values/**"
-      - "k8s/apps/wiki/values.yaml"
+      - "k8s/apps/**"
       - "nix/services/k3s.nix"
       - ".github/workflows/renovate-config-check.yml"
   push:
@@ -62,7 +56,7 @@ jobs:
             renovate/renovate:44 > /tmp/renovate.jsonl 2>&1 || true
 
           cat > /tmp/compare.py <<'PY'
-          import json, subprocess, sys
+          import glob, json, subprocess, sys
 
           # The authoritative extraction: renovate logs its whole packageFiles
           # structure under `config`, keyed by manager.
@@ -98,30 +92,32 @@ jobs:
 
           # Deliberately key-agnostic. Counting `@sha256:<64hex>` occurrences says
           # "a digest pin exists here" without restating the manager's pattern: if
-          # the tree side used the same pattern, a rename that hides a pin from
+          # the tree side used the same pattern, a rename that hid a pin from
           # renovate would hide it from this check too, and both sides would drop
-          # together and pass. (That is exactly how the first version of this check
-          # behaved when tested.)
+          # together and pass.
           IMAGE = r'@sha256:[a-f0-9]{64}'
           CHART = r'url = "https://github[.]com/[^"]+/releases/download/[^"]+";'
 
-          # (label, how a renovate file belongs to this group, where to grep the tree)
+          # Both sides of every image group are discovered from the tree, matching
+          # the globs renovate.json's managerFilePatterns use. A per-app list here
+          # would grep only the listed paths, so an app missing from those globs
+          # would be missing from this check too - the exact failure the comparison
+          # exists to catch. `recursive` because Renovate's `**` crosses a `/` and
+          # Python's `*` does not: at a deeper path the two would disagree.
+          chart_values = sorted(glob.glob("k8s/apps/**/values*.yaml", recursive=True))
+          model_values = sorted(glob.glob("k8s/apps/**/values/*.yaml", recursive=True))
           groups = [
-              ("gateway values", lambda f: f == "k8s/apps/ai/values.yaml",
-               IMAGE, "k8s/apps/ai/values.yaml"),
-              ("model values",   lambda f: f.startswith("k8s/apps/ai/values/"),
-               IMAGE, "k8s/apps/ai/values"),
-              ("wiki values",    lambda f: f == "k8s/apps/wiki/values.yaml",
-               IMAGE, "k8s/apps/wiki/values.yaml"),
+              ("chart values", lambda f: f in set(chart_values), IMAGE, chart_values),
+              ("model values", lambda f: f in set(model_values), IMAGE, model_values),
               ("chart tarballs", lambda f: f == "nix/services/k3s.nix",
-               CHART, "nix/services/k3s.nix"),
+               CHART, ["nix/services/k3s.nix"]),
           ]
 
           failed = False
-          for label, belongs, pattern, path in groups:
+          for label, belongs, pattern, paths in groups:
               got = len({t for t in found if belongs(t[0])})
-              want = count(pattern, path)
-              print(f"  {label:16} renovate {got:2}   tree {want:2}")
+              want = sum(count(pattern, p) for p in paths)
+              print(f"  {label:14} renovate {got:2}   tree {want:2}  ({len(paths)} files)")
               if got != want:
                   failed = True
 

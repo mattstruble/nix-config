@@ -23,28 +23,35 @@ k8s/
 └── manifests/         # cluster-level yaml auto-applied by k3s (nix/services/k3s.nix)
 ```
 
+A chart's values that are really host facts — a uid the host directory is owned by, a
+PV capacity, an issuer URL — are not in `values.yaml`. nix supplies them at render
+(`services.k3s.appChartValues`); the templates `required` them, so a bare
+`helm template` fails rather than inventing defaults.
+
 ### Adding an app
 
-A directory under `apps/<domain>/` that carries a `Chart.yaml` is the small part:
-`just k8s-render` picks it up the moment it lands. `./scripts/check-app-wiring.sh`
-(the `k8s-app-wiring` job) asks the three places that name apps by hand whether each
-names the chart directory — the nix render derivation, the PR preview render step,
-and Renovate's `managerFilePatterns` — so forgetting one fails the PR. These points
-are not in that check, and each is silent when missing:
+Drop a directory under `apps/<domain>/` carrying a `Chart.yaml`. That single fact is
+what makes it an app: `nix/services/k3s.nix` enumerates `k8s/apps/*/Chart.yaml` for
+the render derivations, `just k8s-render` and the PR preview apply the same rule, and
+`renovate.json`'s `managerFilePatterns` are globs over `k8s/apps/**`. Nothing lists
+apps by hand, so there is nothing to forget and no check that a missed listing slips
+past. `k8s/apps/monitoring/` is not an app by that rule — it carries no `Chart.yaml`.
 
-- `system.build.<app>ChartRendered` in `nix/services/k3s.nix`. Without it the render
-  derivation is never in the system closure, and the failure lands on the cluster at
-  switch time.
+What still has to be written per app, each silent when missing:
+
+- The apply pass in `nix/services/k3s.nix`: it creates the Secret the chart references
+  and must never define, applies the rendered manifest, and labels it into the app's
+  namespace.
 - The `sops.secrets."services/<app>/*"` declarations, their `.sops.yaml` path rule,
   and the sops file itself. A secret no one declares is simply absent when the pod
   reads it.
-- The apply oneshot in `nix/services/k3s.nix`: it creates the Secret the chart
-  references and must never define, applies the rendered manifest, and labels it
-  into the app's namespace.
 - `services.k3s.manifests.<app>-pvs`, and the host directories those PVs bind to in
   `tmpfiles.rules`, for an app that needs local storage.
-- The per-app lists in `.github/workflows/renovate-config-check.yml` and
-  `.github/workflows/chart-image-digests.yml`.
+- `services.k3s.appChartValues.<app>` if a build product or a host fact has to reach
+  the render. A chart that `required`s such a value and does not get it fails its
+  render, which is the loud half of that contract.
+- The automerge policy in `renovate.json`'s `packageRules`, if the app's images should
+  not follow the patch-only default. Extraction itself needs no edit.
 
 ## Keeping images current
 

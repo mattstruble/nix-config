@@ -1,6 +1,6 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
-  "description": "Keeps the k3s cluster's images current. Depends on the convention in k8s/README.md: every image is `repository:tag@digest` and resolves from a values file, never a chart template. Validated by running Renovate against this repo: the image manager extracts 11 of 11 pins. The chart-image-digests workflow fails CI if a pin drifts from its tag, so a reference that stops matching this config is loud rather than silent.",
+  "description": "Keeps the k3s cluster's images current. Depends on the convention in k8s/README.md: every image is `repository:tag@digest` and resolves from a values file, never a chart template. Every chart values file is reached by a glob, so a new app needs no edit here; renovate-config-check.yml compares the extractor against the tree and fails when they disagree. The chart-image-digests workflow fails CI if a pin drifts from its tag, so a reference that stops matching this config is loud rather than silent.",
   "extends": [
     "config:recommended",
     ":semanticCommits",
@@ -17,11 +17,10 @@
   "customManagers": [
     {
       "customType": "regex",
-      "description": "Container images in the chart values files (ai + wiki). Keys are matched as *image:/*Image: because the charts name them per consumer (image, toolsImage, postgresImage) - a literal image: pattern silently drops the others. Patterns are globs, not /regex/: an unescaped / inside a slash-delimited pattern ends the regex early and matches nothing. There is deliberately no autoReplaceStringTemplate here: Renovate replaces the whole match, and the match starts at the key, so a template that emits `image:` renames toolsImage/postgresImage and breaks the helm render. Without a template Renovate substitutes the tag and digest inside the match and leaves the key and repository alone.",
+      "description": "Container images in every chart values file. The patterns are globs so a new app is covered by landing, not by an edit here - renovate-config-check fails if the extractor and the tree disagree, which is what makes the glob safe. Keys are matched as *image:/*Image: because the charts name them per consumer (image, toolsImage, postgresImage) - a literal image: pattern silently drops the others. Patterns are globs, not /regex/: an unescaped / inside a slash-delimited pattern ends the regex early and matches nothing. There is deliberately no autoReplaceStringTemplate here: Renovate replaces the whole match, and the match starts at the key, so a template that emits `image:` renames toolsImage/postgresImage and breaks the helm render. Without a template Renovate substitutes the tag and digest inside the match and leaves the key and repository alone.",
       "managerFilePatterns": [
-        "k8s/apps/ai/values.yaml",
-        "k8s/apps/ai/values/*.yaml",
-        "k8s/apps/wiki/values.yaml"
+        "k8s/apps/**/values*.yaml",
+        "k8s/apps/**/values/*.yaml"
       ],
       "matchStrings": [
         "[A-Za-z0-9_-]*[iI]mage:\\s*(?<depName>[^\\s:@]+):(?<currentValue>[^\\s@]+)@sha256:(?<currentDigest>[a-f0-9]{64})"
