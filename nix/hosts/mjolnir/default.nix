@@ -121,17 +121,19 @@
       system.build.strata = pkgs.callPackage ./_strata.nix { };
       # The bundle reaches the pod through the build, not through a value typed
       # into a values file: services.k3s.aiChart.strataBundle feeds the chart
-      # render (nix/services/k3s.nix), so aiChartRendered takes the bundle as a
-      # build input and the system generation that produced it retains it - and
+      # render (nix/services/k3s.nix) so the pod mounts the path the build
+      # produced, and the bundle is retained because system.build.strata is in
+      # the toplevel closure - so the generation that produced it retains it, and
       # so does the previous generation, which is what a rollback needs.
       #
       # This replaced three workarounds for the transcription that used to sit
       # here: a literal /nix/store path in the values file, a CI job to notice
       # when it drifted from what the config built, and a manual GC root (plus a
       # -prev root for rollbacks) to stop the path being collected out from under
-      # a running pod. None of them were needed once the path was linked; a
-      # generation is not a reference to paths merely mentioned in its scripts,
-      # which is why the literal needed all that scaffolding and this does not.
+      # a running pod. None of them were needed once the bundle was in the
+      # toplevel closure; a generation is not a reference to paths merely
+      # mentioned in its scripts, which is why the literal needed all that
+      # scaffolding and this does not.
       # Measured 2026-11-12 from inside the bookstack pod: auth.struble.app resolves
       # to this through public DNS, and the pod's OIDC discovery request goes there,
       # not to roque. The LAN segment is deliberately absent - it contains the node,

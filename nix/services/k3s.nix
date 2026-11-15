@@ -32,20 +32,22 @@
       # profiles showed zero strata hits). Three separate mechanisms existed to
       # work around that one omission: a hand-maintained pin that drifted
       # silently, a CI job to notice the drift, and a manual GC root to stop the
-      # path being collected out from under a running pod. With the path flowing
-      # through the render, aiChartRendered takes the bundle as a build input, so
-      # the generation that produced it retains it and a rollback still has the
-      # bundle its pod was built against.
+      # path being collected out from under a running pod. The bundle is retained
+      # because `system.build.strata` is in the toplevel closure (not because the
+      # path flows through the render — a store path in a derivation's output is
+      # not a GC reference), so a rollback still has the bundle its pod was built
+      # against.
       #
       # Empty on hosts that build no strata bundle; the chart then refuses to
       # render a strata model rather than mounting an empty path.
       strataBundleValuesText = ''
         strataBundle: ${builtins.unsafeDiscardStringContext cfg.aiChart.strataBundle}
       '';
-      # Same rule for the swap head-end bundle (llama-swap + swapk8s): the store
-      # path travels through the render, so the generation that produced it - and
-      # the one before it, which is what a rollback needs - both retain it. Empty
-      # means this host builds no head-end, and the chart renders none.
+      # Same rule for the swap head-end bundle (llama-swap + swapk8s): retained
+      # because `system.build.swapHeadEnd` is in the toplevel closure, so the
+      # generation that produced it - and the one before it, which is what a
+      # rollback needs - both keep it. Empty means this host builds no head-end,
+      # and the chart renders none.
       headEndValuesText = ''
         headEnd:
           bundle: ${builtins.unsafeDiscardStringContext cfg.aiChart.headEndBundle}
@@ -192,10 +194,11 @@
       # `nix eval .#...appChartValues.ai` work at all: a string carrying a store
       # path's context makes nix realise that derivation, and the swap head-end is
       # a dynamic derivation, so the eval dies on `dynamic-derivations is
-      # disabled`. Dropping the context costs nothing here — the garbage-collector
-      # link this design depends on is the store path appearing in the writeText
-      # derivation's `text`, which `aiChartRendered` then takes as an input drv.
-      # That is a property of the store graph, not of eval-time string context.
+      # disabled`. Dropping the context costs nothing for retention: the bundles
+      # are held in the generation by `system.build.strata` and
+      # `system.build.swapHeadEnd` (the toplevel closure), not by the path
+      # appearing in this text — a store path in a derivation's output is not a GC
+      # reference.
       chartBuildValuesText = {
         # The strata bundle is BUILT here, not pinned in a values file: this is
         # what links config.system.build.strata into the pod. See
@@ -224,7 +227,7 @@
             for f in $src/apps/${name}/values/*.yaml; do
               if [ -f "$f" ]; then F+=(-f "$f"); fi
             done
-            ${lib.optionalString (chartBuildValues ? ${name}) ''F+=(-f ${chartBuildValues.${name}})''}
+            ${lib.optionalString (chartBuildValues ? "${name}") ''F+=(-f ${chartBuildValues.${name}})''}
             helm template ${name} $src/apps/${name} "''${F[@]}" > $out/rendered.yaml
           '';
 
