@@ -1,6 +1,5 @@
 # Research: autoDeployCharts vs runCommand for the local ai chart
 
-**Ticket:** nix-config-h1j.1
 **Question:** Does `services.k3s.autoDeployCharts` support deploying a LOCAL in-repo helm chart with multiple merged values files? If not, what is the canonical nix pattern?
 
 **Verdict: KEEP the current `pkgs.runCommand` + `system.activationScripts` approach.**

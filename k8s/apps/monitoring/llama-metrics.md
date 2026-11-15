@@ -1,6 +1,6 @@
 # LLM fleet metric names (captured live, 2026-09-28)
 
-Real metric names for the Grafana dashboards (6lg.5) + source tracking (6lg.7).
+Real metric names for the Grafana dashboards, and source tracking.
 Captured from the running pods — do not guess from older llama.cpp docs
 (pre-b10xxx builds used `llama_server_*`; b11151 uses `llamacpp:*`).
 
@@ -91,7 +91,7 @@ available in Prometheus.
 | `litellm_llm_api_latency_metric` | histogram | LLM API latency |
 | `litellm_spend_metric_total` | counter | spend (all $0 for local models) |
 
-- **Per-source tracking (6lg.7)**: the `api_key_alias` label is already emitted
+- **Per-source tracking**: the `api_key_alias` label is already emitted
   (currently `"None"` — the shared placeholder key has no alias). Creating
   LiteLLM keys with `--key-alias pi` / `--key-alias opencode` populates it;
   no gateway config change needed for the label itself.

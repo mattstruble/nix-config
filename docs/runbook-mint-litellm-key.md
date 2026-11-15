@@ -4,8 +4,6 @@ Mint a named API key for the LiteLLM gateway, store it in sops, and hand it to a
 client (pi, opencode, …). The key's name becomes the `api_key_alias` prometheus
 label, so the LLM-fleet dashboard can break down requests/tokens per source.
 
-**Ticket:** nix-config-mestruble-6lg.7
-
 ---
 
 ## What the key does

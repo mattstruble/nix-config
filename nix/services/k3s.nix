@@ -172,7 +172,7 @@
       # A directory under k8s/apps/ is an app chart when it carries a Chart.yaml.
       # `just k8s-render` and the CI preview render apply the same rule, so an
       # app cannot be discovered by one of the three and missed by another.
-      # NOTE (h1j.1, 2026-09-24): we deliberately do NOT use
+      # NOTE (2026-09-24): we deliberately do NOT use
       # services.k3s.autoDeployCharts — it only takes a remote-repo URL or a
       # pre-packaged .tgz with a SINGLE values source, and can't do a local
       # unpacked chart + 9 merged -f values files + .Files.Get. See
@@ -275,7 +275,7 @@
 
       # DCGM exporter: the chart is BUNDLED in the NVIDIA repo (not a remote
       # helm repo), so fetch the source at the pinned tag and render it — same
-      # render-then-apply pattern as the ai chart (see h1j.1 note).
+      # render-then-apply pattern as the ai chart (see the appCharts note).
       dcgmChartSrc = pkgs.fetchFromGitHub {
         owner = "NVIDIA";
         repo = "dcgm-exporter";

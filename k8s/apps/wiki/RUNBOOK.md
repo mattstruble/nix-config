@@ -5,11 +5,11 @@ containment. It deliberately does **not** configure the wiki: no roles, no
 shelves, no permissions. That part is a one-time click-through in the BookStack
 UI, specified below.
 
-The permission model exists in exactly one place: the database.
-`nix-config-bk9.8` owns the seed Job that will rebuild it from reviewable code;
-until that lands the database holds the permission model alone — what sections 5
-and 6 build by hand is the only copy of it, and the database backup is what
-protects it.
+The permission model exists in exactly one place: the database. The seed Job
+that will rebuild it from reviewable code is planned and not yet written; until
+it lands the database holds the permission model alone — what sections 5 and 6
+build by hand is the only copy of it, and the database backup is what protects
+it.
 
 Sections 1–3 are the hand work, 4 is the deploy, 5–7 are the first-run
 configuration and the checks that say it took.

@@ -1,4 +1,4 @@
-# Module Audit (h1j.6)
+# Module Audit
 
 **Summary:** 37 files (~2300 lines) audited. Verdicts: 22 keep, 11 delete, 3 trim, 1 split. The tier layer (`base.nix`, `server.nix`) is pure indirection—every host imports `tier-server`, so flatten into direct imports. The biggest wins are deleting 5 dead homeManager modules (~646 lines) and 3 dead host-specific files (~176 lines).
 
@@ -76,7 +76,7 @@
 
 ## Approved plan (2026-09-24, user decisions)
 
-The audit's recommendations above were reviewed. Final approved scope for h1j.7:
+The audit's recommendations above were reviewed. Final approved scope:
 
 **DO:**
 
