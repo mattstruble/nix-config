@@ -1,0 +1,6 @@
+apiVersion: v2
+name: wiki
+description: BookStack wiki + MariaDB for mjolnir, audience-scoped by shelf
+type: application
+version: 0.1.0
+appVersion: "26.09.2"

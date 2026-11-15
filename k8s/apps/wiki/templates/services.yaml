@@ -1,0 +1,29 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: wiki-bookstack
+  labels:
+    app.kubernetes.io/component: bookstack
+    app.kubernetes.io/part-of: wiki
+spec:
+  selector:
+    app.kubernetes.io/component: bookstack
+  ports:
+    - name: http
+      port: {{ .Values.bookstack.port }}
+      targetPort: http
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: wiki-mariadb
+  labels:
+    app.kubernetes.io/component: database
+    app.kubernetes.io/part-of: wiki
+spec:
+  selector:
+    app.kubernetes.io/component: database
+  ports:
+    - name: mysql
+      port: {{ .Values.database.port }}
+      targetPort: mysql

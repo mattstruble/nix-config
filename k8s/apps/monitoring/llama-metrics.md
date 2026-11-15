@@ -1,6 +1,6 @@
 # LLM fleet metric names (captured live, 2026-09-28)
 
-Real metric names for the Grafana dashboards (6lg.5) + source tracking (6lg.7).
+Real metric names for the Grafana dashboards, and source tracking.
 Captured from the running pods — do not guess from older llama.cpp docs
 (pre-b10xxx builds used `llama_server_*`; b11151 uses `llamacpp:*`).
 
@@ -28,6 +28,7 @@ Prometheus `job` label = Service name: `gemma-4-26b-a4b`, `swift-qwen3-8-27b`,
 | `llamacpp:spec_decode_num_drafts_total` | counter | MTP: verification steps |
 
 Derived:
+
 - **TTFT** ≈ prompt processing time: `llamacpp:prompt_seconds_total / llamacpp:prompt_tokens_total` (s/token; × prompt length for per-request TTFT). No per-request TTFT histogram on the pod.
 - **Decode tok/s**: `rate(llamacpp:tokens_predicted_total[5m])` (or the `predicted_tokens_seconds` gauge).
 - **MTP acceptance rate**: `rate(spec_decode_num_accepted_tokens_total) / rate(spec_decode_num_draft_tokens_total)`.
@@ -90,7 +91,7 @@ available in Prometheus.
 | `litellm_llm_api_latency_metric` | histogram | LLM API latency |
 | `litellm_spend_metric_total` | counter | spend (all $0 for local models) |
 
-- **Per-source tracking (6lg.7)**: the `api_key_alias` label is already emitted
+- **Per-source tracking**: the `api_key_alias` label is already emitted
   (currently `"None"` — the shared placeholder key has no alias). Creating
   LiteLLM keys with `--key-alias pi` / `--key-alias opencode` populates it;
   no gateway config change needed for the label itself.
@@ -109,9 +110,13 @@ that block is the single source of truth (including the procedure for
 updating them), so no rate table is duplicated here.
 
 Used by the `mjolnir LLM overview` dashboard's `rate_profile` variable to
-cost tokens per type: input (excl. cached) × input rate + cached × cached rate
-+ output × output rate. Cached tokens are a subset of input (OpenAI
-`prompt_tokens` convention).
+cost tokens per type:
+
+```text
+input (excl. cached) × input rate + cached × cached rate + output × output rate
+```
+
+Cached tokens are a subset of input (OpenAI `prompt_tokens` convention).
 
 ## DCGM (dcgm-exporter, job `dcgm-exporter`)
 

@@ -60,9 +60,12 @@ spec:
               app: litellm
     # swap head-end -> the backend it summoned. The shim proxies to the pod IP
     # directly, so without this a summoned model answers the head-end's own
-    # readiness probe forever. Inert until a policy-capable CNI lands (Flannel
-    # ignores NetworkPolicy), but the head-end is designed around this path, so
-    # the rule belongs with it.
+    # readiness probe forever. k3s enforces this today: its embedded
+    # kube-router network-policy controller is on unless
+    # --disable-network-policy is passed, so these rules bite on stock Flannel
+    # with no Cilium or Calico. (An earlier comment here said Flannel ignores
+    # NetworkPolicy and the rules were inert; that was wrong, and believing it
+    # is how a working containment layer gets deleted.)
     - from:
         - podSelector:
             matchLabels:

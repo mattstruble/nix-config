@@ -6,25 +6,60 @@ Helm charts and cluster manifests for the homelab k3s cluster (mjolnir).
 
 ```
 k8s/
-├── apps/<domain>/     # one helm chart per app domain (ai = LLM fleet + gateway)
-│   └── ai/
+├── apps/<domain>/     # one directory per app domain; a helm chart where we own one
+│   ├── ai/            #   LLM fleet + LiteLLM gateway
+│   │   ├── templates/
+│   │   ├── values.yaml        # shared values (gateway, chat template)
+│   │   └── values/<model>.yaml  # one file per model; maps merge across -f
+│   ├── monitoring/    #   NOT a chart: values for the upstream monitoring charts
+│   │   ├── values/<chart>.yaml  #   (kube-prometheus-stack, loki, alloy,
+│   │   ├── dashboards/          #   dcgm-exporter), plus the Grafana dashboards
+│   │   └── llama-metrics.md     #   metrics contract the dashboards assume
+│   └── wiki/          #   BookStack + MariaDB; permissions are set in the UI
 │       ├── templates/
-│       ├── values.yaml        # shared values (gateway, chat template)
-│       └── values/<model>.yaml  # one file per model; maps merge across -f
+│       ├── values.yaml        # images, resources, OIDC, storage
+│       ├── SECRETS.md         # the Secret this chart references and never creates
+│       └── RUNBOOK.md         # activation, and the one-time UI configuration
 └── manifests/         # cluster-level yaml auto-applied by k3s (nix/services/k3s.nix)
 ```
 
-Adding an app: new dir under `apps/<domain>/` with its own chart. Adding a model
-to the ai chart: one `values/<model>.yaml` — the chart renders a Deployment +
-Service for it and adds it to the LiteLLM gateway model_list.
+A chart's values that are really host facts — a uid the host directory is owned by, a
+PV capacity, an issuer URL — are not in `values.yaml`. nix supplies them at render
+(`services.k3s.appChartValues`); the templates `required` them, so a bare
+`helm template` fails rather than inventing defaults.
+
+### Adding an app
+
+Drop a directory under `apps/<domain>/` carrying a `Chart.yaml`. That single fact is
+what makes it an app: `nix/services/k3s.nix` enumerates `k8s/apps/*/Chart.yaml` for
+the render derivations, `just k8s-render` and the PR preview apply the same rule, and
+`renovate.json`'s `managerFilePatterns` are globs over `k8s/apps/**`. Nothing lists
+apps by hand, so there is nothing to forget and no check that a missed listing slips
+past. `k8s/apps/monitoring/` is not an app by that rule — it carries no `Chart.yaml`.
+
+What still has to be written per app, each silent when missing:
+
+- The apply pass in `nix/services/k3s.nix`: it creates the Secret the chart references
+  and must never define, applies the rendered manifest, and labels it into the app's
+  namespace.
+- The `sops.secrets."services/<app>/*"` declarations, their `.sops.yaml` path rule,
+  and the sops file itself. A secret no one declares is simply absent when the pod
+  reads it.
+- `services.k3s.manifests.<app>-pvs`, and the host directories those PVs bind to in
+  `tmpfiles.rules`, for an app that needs local storage.
+- `services.k3s.appChartValues.<app>` if a build product or a host fact has to reach
+  the render. A chart that `required`s such a value and does not get it fails its
+  render, which is the loud half of that contract.
+- The automerge policy in `renovate.json`'s `packageRules`, if the app's images should
+  not follow the patch-only default. Extraction itself needs no edit.
 
 ## Keeping images current
 
-`renovate.json` reads the chart's values files with a regex manager, so a new model
+`renovate.json` reads the chart values files with a regex manager, so a new model
 file is covered the moment it lands — no annotation to remember, as long as the key
-ends in `image:`/`Image:` and the file lives under `values/`. Renovate was run against
-this repo to confirm it extracts all nine pins; a literal `image:` pattern matches one
-of them, which is the trap.
+ends in `image:`/`Image:` and the file is listed in `managerFilePatterns`. Renovate
+was run against this repo to confirm it extracts all eleven pins across both apps; a
+literal `image:` pattern matches one of them, which is the trap.
 
 - **Weekly, grouped.** Control-plane images (`values.yaml`) and model serving images
   (`values/*.yaml`) are separate PRs, because "bump the gateway" and "bump what three
@@ -57,9 +92,12 @@ access; the config validates and extracts without it, but nothing files a PR.
 
 ## Deploy
 
-- `just deploy mjolnir` — nix build + post-activation hook renders the chart and
-  `kubectl apply`s it (one generation covers host config + cluster manifests).
-- `just k8s-deploy` — fast manual path: render + scp + apply, no nix build.
+- `just deploy mjolnir` — nix build renders the chart and the ai-chart-apply
+  oneshot `kubectl apply`s it after k3s is up (one generation covers host
+  config + cluster manifests).
+- `just k8s-render` — render every app chart to stdout. There is no
+  render-and-apply recipe; a manual apply is `helm template … | ssh mjolnir
+  kubectl apply -f -`, and the next `just deploy` reconciles whatever it did.
 - PRs touching `k8s/` get a rendered-manifest diff comment (`.github/workflows/k8s-manifest-diff.yml`).
 
 ## Conventions
@@ -68,7 +106,8 @@ access; the config validates and extracts without it, but nothing files a PR.
 - **Every image resolves from values, never from a template literal.** A string inside a template is invisible to update automation, so the chart's own base images are `gateway.toolsImage` (head-end init containers, the llama-swap container, the log-exporter sidecar) and `gateway.postgresImage`, and the templates read them through `required` - a missing value fails the render instead of emitting an empty image field.
 - **One values file per model** under `values/`; `enable: false` = no pod, no route.
 - **GPU pinning:** `gpu: "0"|"1"` → `NVIDIA_VISIBLE_DEVICES` + `runtimeClassName: nvidia` (CDI mode). Never two models on one GPU.
-- **PSS restricted** on every pod: runAsNonRoot, drop ALL, seccomp, no SA token, readOnlyRootFilesystem (container-level — k3s drops the pod-level field).
+- **PSS restricted** is the target for every pod: runAsNonRoot, drop ALL, seccomp, no SA token, readOnlyRootFilesystem (container-level — k3s drops the pod-level field). It is not what every namespace is labelled: `wiki` is `enforce=baseline`, because the BookStack image is an s6-overlay image that cannot start below root and must write inside a directory it has just chowned — that container sets `runAsNonRoot: false` and `readOnlyRootFilesystem: false` on purpose, and the header of `k8s/apps/wiki/templates/bookstack-deployment.yaml` records what was measured, what the five added capabilities buy back, and what bounds the exception. Read that header before copying this convention into the next chart. (`gpu` and `monitoring` are labelled `enforce=privileged` for their DaemonSets; the labels are applied in `nix/services/k3s.nix`.)
 - **Resource limits on every pod.**
 - Fork-binary models (`nixBinary: true`) hardcode a `/nix/store/<hash>` path — update it when the fork is rebuilt.
 - `k8s/manifests/` is auto-applied by k3s at node start; keep it node-agnostic (per-node files go in `manifests/<node>/` if that day comes).
+- **What a document may contain** is written once, in [AGENTS.md](../AGENTS.md), which governs this file too.

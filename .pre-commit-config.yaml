@@ -7,8 +7,10 @@ repos:
       - id: end-of-file-fixer # All files only end in newline
       - id: check-yaml # verify yaml syntax
         args: [--allow-multiple-documents]
-        # helm templates are Go templates ({{ }}), not plain YAML — helm lint covers them
-        exclude: k8s/apps/ai/templates/
+        # helm templates are Go templates ({{ }}), not plain YAML — helm lint
+        # covers them. Matched per app rather than listing one chart, because
+        # the reason is a property of helm, not of the ai chart.
+        exclude: k8s/apps/[^/]+/templates/
       - id: check-added-large-files # prevent extremely large files from being committed
         args: [--maxkb=10000]
       - id: mixed-line-ending # force linux line endings
@@ -17,6 +19,22 @@ repos:
       - id: check-case-conflict # prevent file namings that would fail on case insensitive file systems
       - id: detect-private-key
       - id: check-shebang-scripts-are-executable
+  # Generic linters over the languages this repo is mostly made of. The cheap
+  # gate: one config each, every file. A bespoke scripts/check-*.sh that
+  # re-implements a parser to test one convention is the expensive alternative.
+  - repo: https://github.com/igorshubovych/markdownlint-cli
+    rev: v0.43.0
+    hooks:
+      - id: markdownlint
+        args: [--config, .github/linters/.markdown-lint.yml]
+  - repo: https://github.com/koalaman/shellcheck-precommit
+    rev: v0.10.0
+    hooks:
+      - id: shellcheck
+  - repo: https://github.com/rhysd/actionlint
+    rev: v1.7.7
+    hooks:
+      - id: actionlint
   # Check for common spelling errors
   - repo: https://github.com/codespell-project/codespell
     rev: v2.2.6

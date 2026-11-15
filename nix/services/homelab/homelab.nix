@@ -80,7 +80,7 @@ in
           dataDir = "/mnt/pocket-id";
           environmentFile = config.sops.secrets."services/pocket-id/env".path;
           settings = {
-            APP_URL = "https://auth.struble.app";
+            APP_URL = inputs.self.lib.issuerUrl;
             TRUST_PROXY = true;
           };
         };
