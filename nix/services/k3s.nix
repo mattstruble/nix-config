@@ -175,9 +175,8 @@
       # NOTE (2026-09-24): we deliberately do NOT use
       # services.k3s.autoDeployCharts — it only takes a remote-repo URL or a
       # pre-packaged .tgz with a SINGLE values source, and can't do a local
-      # unpacked chart + 9 merged -f values files + .Files.Get. See
-      # docs/h1j.1-autodeploycharts.md. Use autoDeployCharts for future
-      # remote-repo charts only.
+      # unpacked chart + several merged -f values files + .Files.Get. Use
+      # autoDeployCharts for future remote-repo charts only.
       appCharts = builtins.filter (
         name: builtins.pathExists (k8sDir + "/apps/${name}/Chart.yaml")
       ) (builtins.attrNames (builtins.readDir (k8sDir + "/apps")));
