@@ -17,7 +17,7 @@ Declarative config for my NixOS cluster. One repo, two deployable surfaces:
 │   └── nix/        # nix/nixpkgs settings, overlays, secrets, tools (deploy.nix)
 ├── k8s/            # k3s cluster on mjolnir (charts + manifests + values)
 ├── patches/        # source patches (nixpkgs, llama.cpp, ...)
-├── docs/           # design docs + research notes
+├── docs/           # design docs + runbooks
 ├── flake.nix       # flake-parts + import-tree; nixosConfigurations + deploy
 └── justfile        # deploy + k8s + lint tasks
 ```
