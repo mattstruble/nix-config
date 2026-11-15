@@ -26,19 +26,20 @@ is in `admin`. The OIDC client is named **Wiki**: confidential, PKCE on, skip
 consent on, admitted groups `admin` and `books`. In the cluster, `wiki-bookstack`
 and `wiki-mariadb` are `1/1 Running`, `/status` answers 200 through traefik, and the
 pod fetches `<issuer>/.well-known/openid-configuration` in 0.27 s. BookStack has the
-built-in Admin, Editor, Viewer and Public roles, all with an empty Authentication
-ID, plus one audience role **Books User** whose Authentication ID is `books`.
+built-in **Admin** role, whose Authentication ID is `admin`, the built-in Editor,
+Viewer and Public roles, which have none, and one audience role **Books User** whose
+Authentication ID is `books`.
 
 **Not live.** The `books` group has no members, so the one working group → role
 mapping grants nothing to anyone. The other seven accounts are in `member`, which
 the Wiki client does not admit, so they cannot reach the wiki at all. The wiki is
 single-user, and section 7's checks have never been run.
 
-**One of these is load-bearing and accidental.** The Admin role's Authentication ID
-is empty, so BookStack matches it to a Pocket ID group by display name: "Admin" →
-`admin`, which is a group that exists and that the client admits. That is the whole
-reason the admin account is still an admin after login, and section 2 explains what
-breaks it.
+**One of these was load-bearing by accident, and is not any more.** The Admin role
+used to have an empty Authentication ID, so BookStack matched it to a Pocket ID group
+by display name: "Admin" → `admin`. Setting the ID to `admin` on 2026-11-14 made the
+match explicit, so the role can now be renamed without anyone losing admin rights.
+Section 2 covers what the fallback still does to the other built-in roles.
 
 Sections 1–3 below are the **redo** procedure — a second host, a rotated client, a
 rebuilt database. Do not run section 3 against the live scope without reading
@@ -135,24 +136,25 @@ can list several groups — equals one of those names. If the Authentication ID 
 **empty**, BookStack normalizes the role's **display name** the same way and
 compares that instead.
 
-That fallback cuts both ways, and both edges are live here.
+That fallback is a live grant path for two of the built-in roles and a latent one for
+the rest.
 
-- **It grants.** A Pocket ID group named `admin`, `editor` or `viewer` matches the
-  built-in role of that name, because those roles have no Authentication ID and
-  their display names normalize to exactly those strings. The `admin` group exists
-  and the Wiki client admits it, so membership in `admin` *is* BookStack admin —
-  not because anyone assigned it, and renaming either side ends it.
+- **It grants.** `Editor` and `Viewer` still have no Authentication ID, so a Pocket
+  ID group named `editor` or `viewer` would hand out those roles the moment it
+  existed and reached the client. No such group exists. The built-in `Admin` role had
+  the same exposure until 2026-11-14, when it was given the Authentication ID
+  `admin`; it is now matched explicitly and its display name is cosmetic.
 - **It strips.** With `OIDC_REMOVE_FROM_GROUPS=true` a login runs
   `roles()->sync(<matched roles>)` and then attaches the default role. Every role
-  the groups do not match is detached, including one assigned by hand in the UI.
-  So the Admin role the setup CLI created survives only while the group name keeps
-  matching it.
+  the groups do not match is detached, including one assigned by hand in the UI. So
+  the Admin role the setup CLI created survives a login only while the account stays
+  in a group some role matches — for `admin`, now by ID rather than by name.
 
 The four groups that exist, and what each does:
 
 | group | in the Wiki client | effect in BookStack |
 |---|---|---|
-| `admin` | yes | matches the built-in **Admin** role by display name |
+| `admin` | yes | matches the built-in **Admin** role by Authentication ID, set 2026-11-14 |
 | `books` | yes | matches **Books User** by Authentication ID; no members, so it grants nothing yet |
 | `member` | no | seven of the eight accounts are only here, so they cannot sign in |
 | `plex` | no | nothing until the client admits it and a role carries the ID |
@@ -389,7 +391,7 @@ role hands out read access by default, silently, to people you have never met.
 | role | Authentication ID | permissions |
 |---|---|---|
 | `no-access` | *(empty)* | none; a group named `no-access` would match it by display name, which is harmless and probably what you want |
-| built-in **Admin** | `admin` | set the ID explicitly so the match stops depending on the display name; do not create a second admin role |
+| built-in **Admin** | `admin` | **done 2026-11-14**; the ID is set, so the match no longer depends on the display name. Do not create a second admin role |
 | **Books User** *(exists)* | `books` | already correct; the group has no members, so it grants nothing yet |
 | `family` | `family` | see 6.3; the Pocket ID group does not exist yet — create it before adding members |
 | `plex` | `plex` | see 6.3; the group exists but the client does not admit it |
@@ -598,7 +600,8 @@ image's source, and one is still open.
   runs `roles()->sync(<matched>)` and detaches whatever the claim did not match. The
   one OIDC account was created with the Admin role at 21:41:47, logged in twice more
   at 21:54 and 21:55, and still holds exactly the Admin role — so the claim arrived
-  and carried a name that matched it (`admin`, by display name; see section 2). An
+  and carried a name that matched it (`admin`; the Admin role had no Authentication ID
+  then, so the match was by display name — see section 2). An
   empty claim would have left that account with nothing but the default role. To
   capture the claim itself rather than infer it, set `OIDC_DUMP_USER_DETAILS=true`
   and log in once; that env var blocks logins while it is on, so turn it straight
