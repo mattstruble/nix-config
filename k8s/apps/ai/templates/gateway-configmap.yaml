@@ -48,6 +48,13 @@ data:
       {{- end }}
       {{- end }}
       fallbacks: {{ toYaml $fallbacks | nindent 8 }}
+      # 60 min: LiteLLM's default request_timeout (600s) kills streaming
+      # responses during long prefills on the local fleet. A 200k prefill on
+      # flash-next with --batch 2 concurrent slots takes ~388s per stream; with
+      # queueing the upstream call exceeds 600s and the gateway closes the
+      # connection, surfacing as UND_ERR_BODY_TIMEOUT in pi. The subagent
+      # timeoutMs (60m) is the real deadline.
+      request_timeout: 3600
       callbacks:
         - prometheus
       # The litellm ServiceMonitor presents the dedicated metrics key
