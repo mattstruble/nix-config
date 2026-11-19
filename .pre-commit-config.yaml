@@ -40,7 +40,9 @@ repos:
     rev: v2.2.6
     hooks:
       - id: codespell
-        args: [-w]
+        # 'mane' is the ruff of fur on a cat's neck, which the forecats household
+        # file has to describe accurately; codespell reads it as a typo for 'main'.
+        args: [-w, --ignore-words-list=mane]
   # Try to detect strings that are likely to be passwords or secrets
   - repo: https://github.com/Yelp/detect-secrets
     rev: v1.4.0
