@@ -7,3 +7,9 @@ result-*
 .envrc*
 
 docs/review
+
+# Python: this repo now carries test suites under src/ (forecats-eink,
+# forecats-day-context) and these are build droppings, not artifacts.
+__pycache__/
+*.py[cod]
+.pytest_cache/
