@@ -1,0 +1,22 @@
+{
+  "entity_id": "weather.forecast_home",
+  "state": "sunny",
+  "attributes": {
+    "temperature": 8.4,
+    "temperature_unit": "°C",
+    "condition": "clear",
+    "forecastable": true,
+    "forecast": [
+      {
+        "datetime": "2026-03-07T12:00:00+00:00",
+        "templow": 1.2,
+        "temp_high": 9.8,
+        "precipitation": 0.0,
+        "precipitation_probability": 4,
+        "condition": "partlycloudy"
+      }
+    ]
+  },
+  "last_changed": "2026-03-08T10:00:04.123456+00:00",
+  "context": { "id": "01GZ0000000000000000000003", "parent_id": null, "user_id": null }
+}

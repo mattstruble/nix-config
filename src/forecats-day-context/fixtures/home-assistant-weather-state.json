@@ -1,0 +1,52 @@
+{
+  "entity_id": "weather.forecast_home",
+  "state": "cloudy",
+  "attributes": {
+    "temperature": 8.4,
+    "temperature_unit": "°C",
+    "humidity": 61,
+    "pressure": 1013.2,
+    "pressure_unit": "hPa",
+    "wind_bearing": 315,
+    "wind_speed": 11.3,
+    "wind_speed_unit": "km/h",
+    "visibility": 14.5,
+    "visibility_unit": "km",
+    "condition": "cloudy",
+    "forecastable": true,
+    "supported_features": 147,
+    "forecast": [
+      {
+        "datetime": "2026-03-07T12:00:00+00:00",
+        "templow": 1.2,
+        "temp_high": 9.8,
+        "precipitation": 0.0,
+        "precipitation_probability": 4,
+        "condition": "partlycloudy"
+      },
+      {
+        "datetime": "2026-03-08T12:00:00+00:00",
+        "templow": 2.6,
+        "temp_high": 11.4,
+        "precipitation": 6.4,
+        "precipitation_probability": 75,
+        "condition": "rainy",
+        "uv_index": 2.1
+      },
+      {
+        "datetime": "2026-03-09T12:00:00+00:00",
+        "templow": 3.1,
+        "temp_high": 12.0,
+        "precipitation_probability": 12,
+        "condition": "partlycloudy"
+      }
+    ]
+  },
+  "last_changed": "2026-03-08T10:00:04.123456+00:00",
+  "last_updated": "2026-03-08T10:00:04.123456+00:00",
+  "context": {
+    "id": "01GZ0000000000000000000001",
+    "parent_id": null,
+    "user_id": null
+  }
+}

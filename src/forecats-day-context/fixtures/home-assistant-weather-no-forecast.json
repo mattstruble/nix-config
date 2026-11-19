@@ -1,0 +1,14 @@
+{
+  "entity_id": "weather.outdoor_sensor",
+  "state": "rainy",
+  "attributes": {
+    "temperature": 6.1,
+    "temperature_unit": "°C",
+    "humidity": 88,
+    "condition": "rainy",
+    "forecastable": false,
+    "supported_features": 3
+  },
+  "last_changed": "2026-03-08T10:00:04.123456+00:00",
+  "context": { "id": "01GZ0000000000000000000002", "parent_id": null, "user_id": null }
+}
