@@ -1,0 +1,71 @@
+# Who the panel is about. Not secret — this is a description of two cats, and
+# it deliberately holds no coordinates, feed addresses or tokens.
+#
+# One feature, one mention. A trait stated twice gets exaggerated: Mochi's
+# pupils appeared in his description AND in the rules below, and the renders
+# answered with anime eyes. The description is where a look belongs; the rules
+# are only for telling the two brothers apart.
+#
+# `consistency_rules` are negative on purpose. Milo and Mochi are both fluffy
+# ginger tabbies with copper eyes and differ in a few markings, so a model left
+# to guess will merge them. The rules below are the difference.
+#
+# `visual_description` is load-bearing and was not always: the first
+# descriptions in this repo were invented, called a ginger tabby a black-and-
+# white tuxedo, and every render since was told to draw an animal that does not
+# live here.
+
+pets:
+  - name: Milo
+    type: cat
+    reference_photo: /tmp/h3image-ref/milo-01.jpg
+    visual_description: >
+      medium-haired orange-and-white tabby with darker orange stripes against a
+      lighter ginger coat, forming a mackerel pattern. Distinctive white facial
+      markings, white muzzle, white chest and white paws. No pronounced neck
+      mane. Fluffy coat, bushy tail, pink nose, true copper/golden-orange eyes.
+    personality: >
+      Extremely curious and inquisitive, always investigating everything
+      happening around him. Nicknamed FBI because he never misses anything.
+      Brave, confident and protective of his brother Mochi. Very affectionate
+      and loves cuddling with humans and his brother.
+    signature_details:
+      - Carries a little sparkling ball toy everywhere.
+      - Frequently investigates things with an intensely curious expression.
+      - Brave and protective of Mochi.
+      - Loves cuddling and sleeping with his brother.
+
+  - name: Mochi
+    type: cat
+    # img_1683, converted from the 4032x3024 HEIC: a whole-body view, which the
+    # head-and-shoulders crop it replaced could not carry.
+    reference_photo: /tmp/h3image-ref/mochi-02.jpg
+    visual_description: >
+      medium-haired ginger-orange tabby with traditional darker orange stripes
+      throughout his coat. Predominantly orange, without Milo's distinctive
+      white facial and chest markings. Very fluffy coat and bushy tail, always
+      curled in an inquisitive way. True copper/golden-orange eyes with large,
+      expressive pupils.
+    personality: >
+      Extremely playful, talkative and expressive. Silly and somewhat
+      theatrical. Loves attention, belly rubs and rolling around. More timid
+      than his brother and often relies on Milo for reassurance and protection.
+    signature_details:
+      - Frequently rolls onto his back to show his belly.
+      - Loves belly rubs.
+      - Often hangs upside down over ledges to look at people.
+      - Often hides behind Milo when feeling nervous.
+
+relationship:
+  - Biological brothers who cuddle and sleep snuggled together.
+  - Milo is the brave, curious and protective brother.
+  - Mochi is the playful, talkative and slightly timid brother.
+
+consistency_rules:
+  - Always depict Milo as orange-and-white with darker orange mackerel stripes.
+  - Always depict Mochi as predominantly ginger-orange with darker orange stripes.
+  - Never give Mochi Milo's distinctive white facial and chest markings.
+  - Never give Milo a pronounced neck mane.
+  - Both cats must have copper/golden-orange eyes, not green or yellow.
+  - Preserve their individual markings and identities across images.
+  - Do not depict either cat as grey, black, tuxedo or unstriped.
