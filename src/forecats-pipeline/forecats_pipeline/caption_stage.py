@@ -328,10 +328,9 @@ def table_scene(context: DayContext, household: Household) -> Scene:
         return Scene(
             activity=f"celebrating {_named(context.occasions)}",
             foreground=f"The two of them {play}, dressed for the occasion. {habit}".strip(),
-            # Both, not either: a festival is indoors and the forecast is still
-            # the forecast, so the weather keeps a window in the picture.
-            background=f"a room decorated for the day, full of {_dedupe(props)}, with "
-            f"today's weather visible through the window: {_background_for(summary, season)}",
+            # No props here: the template states what the day looks like, and
+            # naming them twice reads as a drafter who was unsure.
+            background=_background_for(summary, season),
         )
     return Scene(
         activity=play,
@@ -383,16 +382,22 @@ def _forecast(weather: WeatherToday) -> str:
 
 
 def _occasion(occasions) -> str:
-    """Name the day, and nothing about how it looks.
+    """Name the day and say what it looks like there.
 
-    What a festival looks like belongs to the Scene, which is the only thing in
-    this file that the renderer is told to draw. Saying it here too put the same
-    props in the prompt twice, and a noun listed twice reads as a hint that the
-    drafter was unsure.
+    The props are a fact about the day, researched and cached, not a composition
+    choice — which is why they live here and not inside the Scene. A generated
+    Scene is invented from the date and the sky and never sees them, so putting
+    them in the background meant a generated Diwali panel had no Diwali in it.
     """
     if not occasions:
         return ""
-    return f"It is also {_named(occasions)}.\n"
+    named = _named(occasions)
+    props = _dedupe(_props(occasions))
+    if not props:
+        # Naming the day is honest; inventing what it looks like is not, and an
+        # abstraction with no noun behind it renders as cats in an empty field.
+        return f"It is also {named}.\n"
+    return f"It is also {named}, and the household is full of it: {props}.\n"
 
 
 def _named(occasions) -> str:

@@ -326,3 +326,38 @@ def test_most_fallback_plays_have_something_in_their_paws():
     passive = [play for play in plays if PASSIVE_PLAY.search(play)]
 
     assert len(passive) * 3 <= len(plays), f"{len(passive)} of {len(plays)} plays are sitting"
+
+
+def test_researched_props_survive_a_generated_scene():
+    """A generated Scene is invented from the date and the sky, and never sees the
+    research. Carrying the props inside the Scene meant a generated Diwali panel
+    had no Diwali in it — the failure the research stage exists to prevent.
+
+    So the props are a fact about the day, stated by the template, whatever
+    supplied the composition.
+    """
+    from forecats_pipeline.contracts import Scene
+
+    diwali = Occasion("Diwali/Deepavali", all_day=True, described_as="oil lamps, a coloured rangoli")
+    day = context(occasions=(diwali,))
+    invented = Scene(
+        activity="Lighting the lamps",
+        foreground="The two of them wearing small silk scarves",
+        background="a living room with low furniture",
+    )
+
+    text = _draft_caption(day, two_pets(), invented).text
+
+    assert "Diwali/Deepavali" in text
+    assert "oil lamps" in text
+    assert "coloured rangoli" in text
+
+
+def test_researched_props_are_named_once_whatever_the_scene():
+    diwali = Occasion("Diwali/Deepavali", all_day=True, described_as="oil lamps, marigold garlands")
+    naraka = Occasion("Naraka Chaturdasi", all_day=True, described_as="oil lamps, brass plates")
+    day = context(occasions=(diwali, naraka))
+
+    text = draft_caption(day, two_pets()).text
+
+    assert text.count("oil lamps") == 1
