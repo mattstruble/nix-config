@@ -23,10 +23,15 @@ from day_context import WeatherCondition
 from day_context.weather_open_meteo import OpenMeteoWeatherProvider
 
 from forecats_pipeline.activity_stage import ActivityGenerator
-from forecats_pipeline.calendar_feeds import MultiFeedCalendarProvider
+from forecats_pipeline.calendar_feeds import MultiFeedCalendarProvider, upcoming_occasions
 from forecats_pipeline.caption_stage import draft_caption, table_scene
 from forecats_pipeline.contracts import Household, PipelineRefusal, Published
-from forecats_pipeline.day_context_stage import PayloadLog, RecordingFetcher, build_day_context
+from forecats_pipeline.day_context_stage import (
+    CachingFetcher,
+    PayloadLog,
+    RecordingFetcher,
+    build_day_context,
+)
 from forecats_pipeline.fixed_weather import FixedWeatherProvider
 from forecats_pipeline.household import load_household
 from forecats_pipeline.occasion_research import OccasionResearcher
@@ -91,6 +96,7 @@ def run_nightly(
     overlay_font: Path | None = None,
     researcher: OccasionResearcher | None = None,
     generator: ActivityGenerator | None = None,
+    lookahead_days: int = 0,
     payloads: PayloadLog | None = None,
     published_at: datetime | None = None,
 ) -> Published | Skipped | PipelineRefusal:
@@ -130,10 +136,16 @@ def run_nightly(
             occasions=tuple(researcher.research(o, day) for o in context.occasions),
         )
 
+    upcoming = (
+        upcoming_occasions(calendar_provider, location, day, lookahead_days)
+        if lookahead_days > 0
+        else ()
+    )
+
     caption = draft_caption(
         context,
         household,
-        (generator.scene_for(context, household) if generator else None)
+        (generator.scene_for(context, household, upcoming=upcoming) if generator else None)
         or table_scene(context, household),
         location=location.name,
     )
@@ -232,6 +244,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             overlay_font=font,
             researcher=_researcher(output_dir),
             generator=_generator(output_dir),
+            lookahead_days=args.lookahead_days,
             published_at=datetime.now(UTC),
         )
 
@@ -326,7 +339,7 @@ def _calendar_feeds() -> tuple[tuple[str, str], ...]:
 def _nightly_collaborators(
     args: argparse.Namespace, feeds: tuple[tuple[str, str], ...], payloads: PayloadLog
 ) -> dict[str, object]:
-    fetcher = RecordingFetcher(UrllibFetcher(), payloads)
+    fetcher = CachingFetcher(RecordingFetcher(UrllibFetcher(), payloads))
     renderer: Renderer = (
         FakeRenderer()
         if args.renderer == "fake"
@@ -383,6 +396,12 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     )
     parser.add_argument("--high", type=float, help="override the high temperature --weather implies")
     parser.add_argument("--low", type=float, help="override the low temperature --weather implies")
+    parser.add_argument(
+        "--lookahead-days",
+        type=int,
+        default=5,
+        help="how far ahead to look for an occasion, so the panel can prepare for it; 0 turns it off",
+    )
     parser.add_argument(
         "--sd-cli-binary",
         default="sd-cli",

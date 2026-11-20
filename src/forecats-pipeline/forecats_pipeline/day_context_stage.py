@@ -72,6 +72,31 @@ class RecordingFetcher:
         return text
 
 
+class CachingFetcher:
+    """An `HttpFetcher` that asks for a URL once per run.
+
+    A lookahead over five days asks the calendar the same question five times, and
+    every one of those questions downloads the whole ICS feed. The feeds do not
+    change during a run, and re-reading one five times is five chances for the
+    answer to disagree with itself.
+    """
+
+    def __init__(self, inner: HttpFetcher) -> None:
+        self._inner = inner
+        self._json: dict[str, dict[str, object]] = {}
+        self._text: dict[str, str] = {}
+
+    def get_json(self, url: str, headers: Mapping[str, str] | None = None) -> dict[str, object]:
+        if url not in self._json:
+            self._json[url] = self._inner.get_json(url, headers)
+        return self._json[url]
+
+    def get_text(self, url: str, headers: Mapping[str, str] | None = None) -> str:
+        if url not in self._text:
+            self._text[url] = self._inner.get_text(url, headers)
+        return self._text[url]
+
+
 def build_day_context(
     day: date,
     location: Location,

@@ -1,12 +1,15 @@
 """Merging calendar feeds must survive one feed being wrong."""
 
 from datetime import UTC, date, datetime
+from types import SimpleNamespace
 
 from conftest import DAY, FEED_URL, StubFeed
-from day_context import FailureKind, ProviderFailure
+from day_context import Fetched, FailureKind, Location, ProviderFailure
 from day_context.http_transport import TransportError
 from day_context.schedule_ics import IcsCalendarProvider
-from forecats_pipeline.calendar_feeds import MultiFeedCalendarProvider
+from forecats_pipeline.calendar_feeds import MultiFeedCalendarProvider, upcoming_occasions
+
+LOCATION = Location("home", 40.7128, -74.006, "America/New_York")
 
 WHEN = datetime(2026, 11, 18, 7, 30, tzinfo=UTC)
 DIWALI_ICS = (
@@ -86,3 +89,60 @@ def test_no_feeds_at_all_is_a_mistake_not_a_quiet_calendar():
 
     with pytest.raises(ValueError, match="no feeds"):
         MultiFeedCalendarProvider(StubFeed(text=""), ())
+
+
+class CountdownProvider:
+    """Answers some days and refuses others, to test what a lookahead tolerates."""
+
+    name = "countdown"
+
+    def __init__(self, events: dict, fails: tuple = ()) -> None:
+        self._events = events
+        self._fails = fails
+
+    def fetch_schedule(self, location, day):
+        if day in self._fails:
+            return ProviderFailure(source=self.name, kind=FailureKind.NO_DATA, reason="feed unreachable")
+        events = tuple(
+            SimpleNamespace(summary=title, all_day=True) for title in self._events.get(day, ())
+        )
+        return Fetched(
+            value=SimpleNamespace(day=day, timezone="America/New_York", events=events),
+            source=self.name,
+            fetched_at=datetime(2026, 10, 26, tzinfo=UTC),
+        )
+
+
+def test_a_festival_ahead_is_counted_not_just_named():
+    """The countdown is the whole point: five days means prepare, one means eve."""
+    halloween = date(2026, 10, 31)
+    provider = CountdownProvider({halloween: ("Halloween",)})
+
+    upcoming = upcoming_occasions(provider, LOCATION, date(2026, 10, 26), within_days=5)
+
+    assert upcoming == ("Halloween is in 5 days",)
+
+
+def test_tomorrow_says_day_not_days():
+    provider = CountdownProvider({date(2026, 10, 27): ("Halloween",)})
+
+    assert upcoming_occasions(provider, LOCATION, date(2026, 10, 26), within_days=5) == (
+        "Halloween is in 1 day",
+    )
+
+
+def test_a_feed_that_will_not_answer_about_the_future_is_skipped():
+    """The day being rendered was already gathered; a bad lookahead is not fatal."""
+    provider = CountdownProvider(
+        {date(2026, 10, 28): ("Diwali",)}, fails=(date(2026, 10, 27), date(2026, 10, 29))
+    )
+
+    assert upcoming_occasions(provider, LOCATION, date(2026, 10, 26), within_days=5) == (
+        "Diwali is in 2 days",
+    )
+
+
+def test_nothing_is_upcoming_when_the_window_is_empty():
+    provider = CountdownProvider({date(2026, 12, 25): ("Christmas Day",)})
+
+    assert upcoming_occasions(provider, LOCATION, date(2026, 10, 26), within_days=5) == ()

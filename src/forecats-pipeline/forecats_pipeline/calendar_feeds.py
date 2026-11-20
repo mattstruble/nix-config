@@ -13,9 +13,10 @@ arrive, and the `source` string names what did not.
 '''
 
 from collections.abc import Callable, Sequence
+from datetime import date, timedelta
 from typing import Protocol
 
-from day_context import Fetched, Location, ProviderFailure
+from day_context import CalendarProvider, Fetched, Location, ProviderFailure
 from day_context.contracts import CalendarDay
 from day_context.schedule_ics import IcsCalendarProvider
 from day_context.http_transport import HttpFetcher
@@ -95,3 +96,31 @@ def _source(answered: list[str], missing: list[str]) -> str:
     if not missing:
         return "+".join(answered)
     return f"{len(answered)}of{len(answered) + len(missing)} feeds, missing: {', '.join(missing)}"
+
+
+def upcoming_occasions(
+    provider: CalendarProvider,
+    location: Location,
+    from_day: date,
+    within_days: int,
+) -> tuple[str, ...]:
+    """Occasions in the next few days, phrased as a countdown.
+
+    A panel drawn on 26 October is a panel about a day with nothing on it, unless
+    somebody mentions that Halloween is five days away. The countdown is the whole
+    point: "in 5 days" invites preparation, "tomorrow" invites the event itself,
+    and the picture should know which one it is drawing.
+
+    A feed that will not answer about a future day is skipped rather than fatal.
+    The day being rendered has already been gathered; this is only a look ahead.
+    """
+    upcoming: list[str] = []
+    for offset in range(1, within_days + 1):
+        day = from_day + timedelta(days=offset)
+        answer = provider.fetch_schedule(location, day)
+        if isinstance(answer, ProviderFailure):
+            continue
+        for event in answer.value.events:
+            if event.summary.strip():
+                upcoming.append(f"{event.summary.strip()} is in {offset} day{'s' if offset != 1 else ''}")
+    return tuple(upcoming)

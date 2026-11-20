@@ -58,7 +58,11 @@ ACTIVITY_INSTRUCTIONS = (
     "outdoors.\n"
     "- Do not describe the weather itself, and do not describe what the pets look "
     "like apart from what they are wearing for the activity.\n"
-    "- The activity must not be similar to any you gave in the last twenty days."
+    "- The activity must not be similar to any you gave in the last twenty days.\n"
+    "- If a day is coming up, the household may be getting ready for it, and that "
+    "is a better picture than a day that ignores its own calendar. Count the days "
+    "honestly: five days away means preparation, tomorrow means the eve of it, and "
+    "only a day that has arrived may be shown as being celebrated."
 )
 
 _ANSWER = re.compile(
@@ -96,8 +100,13 @@ class ActivityGenerator:
         self._history = _read_json(history_path, [])
         self._cache = _read_json(cache_path, {})
 
-    def scene_for(self, context: DayContext, household: Household) -> Scene | None:
+    def scene_for(
+        self, context: DayContext, household: Household, *, upcoming: tuple[str, ...] = ()
+    ) -> Scene | None:
         """A scene for the day, or None when the model could not be asked.
+
+        `upcoming` is the countdown — "Halloween is in 5 days" — and it is the only
+        way the generator learns that a blank calendar is actually a busy week.
 
         None is the honest answer and the caller has a fallback for it. A
         generated scene is cached against the date, so re-rendering a date
@@ -108,16 +117,18 @@ class ActivityGenerator:
         if self._cache_path and key in self._cache:
             return Scene(**self._cache[key])
 
-        scene = self._ask(context, household)
+        scene = self._ask(context, household, upcoming)
         if scene is None:
             return None
 
         self._remember(context.for_day, scene)
         return scene
 
-    def _ask(self, context: DayContext, household: Household) -> Scene | None:
+    def _ask(
+        self, context: DayContext, household: Household, upcoming: tuple[str, ...]
+    ) -> Scene | None:
         weather = context.weather
-        request = f"{_brief(context, household, weather)}\n\nAlready used:\n{self._recent()}"
+        request = f"{_brief(context, household, weather, upcoming)}\n\nAlready used:\n{self._recent()}"
         body = {
             "model": self._model,
             "messages": [
@@ -166,7 +177,9 @@ class ActivityGenerator:
             _write_json(self._cache_path, self._cache)
 
 
-def _brief(context: DayContext, household: Household, weather) -> str:
+def _brief(
+    context: DayContext, household: Household, weather, upcoming: tuple[str, ...] = ()
+) -> str:
     lines = [
         f"The pets are: {', '.join(f'{pet.name} ({pet.kind})' for pet in household.pets)}.",
         f"The date is {context.for_day.isoformat()}.",
@@ -175,7 +188,9 @@ def _brief(context: DayContext, household: Household, weather) -> str:
         lines.append(f"The forecast is: {weather.summary.replace('-', ' ')}.")
     occasions = ", ".join(occasion.title for occasion in context.occasions[:2])
     if occasions:
-        lines.append(f"The day is also: {occasions}.")
+        lines.append(f"Today is: {occasions}.")
+    if upcoming:
+        lines.append("Coming up:\n" + "\n".join(f"- {item}" for item in upcoming))
     habits = _habits(household)
     if habits:
         lines.append(f"Their habits:\n{habits}")

@@ -158,3 +158,22 @@ def test_the_day_and_the_forecast_reach_the_model(tmp_path, monkeypatch):
     assert "Milo" in brief and "Mochi" in brief
     assert "clear" in brief
     assert "Diwali/Deepavali" in brief
+
+
+def test_the_countdown_reaches_the_model(tmp_path, monkeypatch):
+    """A blank calendar is not an empty week; only the lookahead knows otherwise."""
+    gateway = Gateway()
+
+    generator(tmp_path, gateway, monkeypatch).scene_for(
+        day(), two_pets(), upcoming=("Halloween is in 5 days",)
+    )
+
+    brief = gateway.bodies[-1]["messages"][-1]["content"]
+    assert "Coming up:" in brief
+    assert "Halloween is in 5 days" in brief
+
+
+def test_the_brief_distinguishes_preparation_from_celebration():
+    """Five days away means getting ready; only an arrived day may be celebrated."""
+    assert "five days away means preparation" in ACTIVITY_INSTRUCTIONS
+    assert "only a day that has arrived may be shown as being celebrated" in ACTIVITY_INSTRUCTIONS
