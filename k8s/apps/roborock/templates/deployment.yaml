@@ -1,0 +1,122 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: roborock-server
+  labels:
+    app.kubernetes.io/component: server
+    app.kubernetes.io/part-of: roborock
+spec:
+  replicas: 1
+  # One pod, one RWO claim: two replicas would schedule a second pod against a
+  # volume it cannot mount (or, if the claim were RWX, two brokers writing one
+  # data dir).
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/component: server
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/component: server
+        app.kubernetes.io/part-of: roborock
+    spec:
+      {{- $uid := required "server.uid: set by roborockStorage in nix/services/k3s.nix, which also owns the host directory" .Values.server.uid }}
+      {{- $gid := required "server.gid: set by roborockStorage in nix/services/k3s.nix, which also owns the host directory" .Values.server.gid }}
+      securityContext:
+        runAsUser: {{ $uid }}
+        runAsGroup: {{ $gid }}
+        runAsNonRoot: true
+        # No fsGroup: the host directory behind the PV is pre-owned by tmpfiles
+        # (d /var/lib/roborock 0770 <uid> <gid>) the same way the wiki's PV is,
+        # so kubelet has nothing to chown and there is no second source for the
+        # uid.
+        seccompProfile:
+          type: RuntimeDefault
+      automountServiceAccountToken: false
+      nodeAffinity:
+        required:
+          nodeSelectorTerms:
+            - matchExpressions:
+                # The stable `storage` label, not kubernetes.io/hostname: a node
+                # rename would otherwise strand the pod away from its volume.
+                - key: storage
+                  operator: In
+                  values:
+                    - {{ required "server.nodeLabel: the node this pod and its PV are welded to" .Values.server.nodeLabel }}
+      containers:
+        - name: server
+          image: {{ required "server.image is required" .Values.server.image }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            # Every write the server makes is either under /data (device
+            # snapshots, ACME state via acme.sh --home, the mosquitto.conf it
+            # writes into its state dir, logs) or /tmp - upstream runs acme.sh
+            # and the embedded mosquitto against paths under its data_dir, so
+            # the root filesystem itself can stay read-only. If the first
+            # deploy proves otherwise (a crash naming a rootfs path), the fix
+            # is an emptyDir for THAT path, not flipping this off.
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          ports:
+            - name: https
+              containerPort: {{ required "server.httpsPort is required" .Values.server.httpsPort }}
+              hostPort: {{ required "server.httpsPort is required" .Values.server.httpsPort }}
+            - name: mqtt-tls
+              containerPort: {{ required "server.mqttTlsPort is required" .Values.server.mqttTlsPort }}
+              hostPort: {{ required "server.mqttTlsPort is required" .Values.server.mqttTlsPort }}
+          env:
+            - name: TZ
+              value: Etc/UTC
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: config
+              mountPath: /app/config.toml
+              subPath: config.toml
+              readOnly: true
+            - name: config
+              mountPath: /run/secrets
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+          startupProbe:
+            exec:
+              command:
+                - curl
+                - -skf
+                - https://127.0.0.1:{{ .Values.server.httpsPort }}/admin
+            periodSeconds: {{ .Values.server.probes.startup.period }}
+            failureThreshold: {{ .Values.server.probes.startup.failureThreshold }}
+          readinessProbe:
+            exec:
+              command:
+                - curl
+                - -skf
+                - https://127.0.0.1:{{ .Values.server.httpsPort }}/admin
+            periodSeconds: {{ .Values.server.probes.readiness.period }}
+            failureThreshold: {{ .Values.server.probes.readiness.failureThreshold }}
+          resources:
+            requests:
+              cpu: {{ .Values.server.resources.requests.cpu }}
+              memory: {{ .Values.server.resources.requests.memory }}
+            limits:
+              cpu: {{ .Values.server.resources.limits.cpu }}
+              memory: {{ .Values.server.resources.limits.memory }}
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: {{ required "persistence.claimName: set by roborockStorage in nix/services/k3s.nix" .Values.persistence.claimName }}
+        - name: config
+          secret:
+            secretName: {{ required "secret.name: set by roborockSecretKeys in nix/services/k3s.nix" .Values.secret.name }}
+            defaultMode: 0400
+            items:
+              - key: CONFIG_TOML
+                path: config.toml
+              - key: CLOUDFLARE_TOKEN
+                path: cloudflare-token
+        - name: tmp
+          emptyDir: {}

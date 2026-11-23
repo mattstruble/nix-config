@@ -141,6 +141,14 @@
       # day: https://10.0.0.4 with SNI grafana.mjolnir returned 302).
       services.k3s.wikiOidcEgressCidrs = [ "66.63.168.18/32" ];
 
+      # CIDRs the roborock server's hostPorts (555/8881) accept through its
+      # NetworkPolicy. The main LAN is here; the vacuum's deadzone VLAN and
+      # the HA zone must be added BEFORE onboarding, together with their
+      # UniFi firewall policies — the two lists govern the same boundary and
+      # the RUNBOOK's curl-from-VLAN check is what says they agree
+      # (k8s/apps/home/roborock/RUNBOOK.md).
+      services.k3s.roborockIngressCidrs = [ "10.0.0.0/24" ];
+
       services.k3s.aiChart.strataBundle = toString config.system.build.strata;
 
       # Swap head-end bundle: llama-swap at a pinned commit plus this repo's

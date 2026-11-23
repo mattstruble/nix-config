@@ -1,0 +1,78 @@
+# Values for the roborock chart (local_roborock_server, on roque).
+#
+# `namespace`, `server.uid`/`server.gid`, everything under `persistence:`,
+# `secret.keys` and `ingress.cidrs` are deliberately absent: nix supplies them
+# at render (`roborockStorage`, `roborockSecretKeys` and
+# `roborockIngressCidrs` in nix/services/k3s.nix), because the namespace the
+# apply pass uses, the uid the host directory is owned by, the PV capacity,
+# the Secret's key list and the LAN/VLAN ranges allowed to reach the vacuum's
+# server are the same facts read by other software (tmpfiles, the static PV,
+# the kubectl create secret). `just k8s-render` and the CI preview pass the
+# same file; a bare `helm template` fails the `required` guards rather than
+# rendering defaults.
+#
+# No template emits `metadata.namespace`; the apply's `-n roborock` fixes it.
+# The one namespace written into a manifest is the PV's `claimRef`, because a
+# PV whose `claimRef` names the wrong namespace stays `Available` forever and
+# says nothing.
+#
+# There is deliberately no Service and no Ingress: the vacuum, the phone and
+# Home Assistant enter through the pod's hostPorts on roque (555 HTTPS, 8881
+# MQTT/TLS), and TLS termination happens inside the container. A Service would
+# be a second address for the same listener that nothing uses.
+
+secret:
+  # Created by the chart apply pass in nix/services/k3s.nix from sops material;
+  # this chart only references it. The keys carry the assembled config.toml and
+  # the Cloudflare token the config points at by path. See SECRETS.md.
+  #
+  # `name` is the chart's own, hardcoded here and in the apply pass the way the
+  # wiki's `bookstack` Secret is; the key LIST is nix's (`roborockSecretKeys`),
+  # because it is the contract between what this chart mounts and what the
+  # activation creates.
+  name: roborock-config
+
+server:
+  # ghcr publishes version tags (1.2.0 is the latest stable at the time of
+  # pinning); a versioned tag is what lets Renovate's regex manager read and
+  # bump the pin. The digest is the index digest (scripts/resolve-digest.sh).
+  image: ghcr.io/python-roborock/local_roborock_server:1.2.0@sha256:3441a7cbde8119388d49392aac5e8c21523b25f71e226fbaf637a505d1ac8b6e
+
+  # The ports the container listens on. The vacuum, the app and HA reach them
+  # through hostPorts on roque; the advertised ports ARE these listener ports
+  # (no reverse proxy, so no advertised_* overrides).
+  httpsPort: 555
+  mqttTlsPort: 8881
+
+  # Where the pod may be scheduled. The local PV is pinned to the same node
+  # label, so a pod that lost its node would also lose its data - this
+  # affinity is what keeps them together, not what pins a busy workload.
+  # `storage=roque` is set by the k3s agent config when roque joins the
+  # cluster (the same stable label scheme mjolnir's PVs select on); until
+  # that label exists the pod stays Pending, which is the correct answer to
+  # "the node is not joined yet".
+  nodeLabel: roque
+
+  resources:
+    requests:
+      # Upstream's own requirement: >=1 CPU and 1 GB while onboarding runs its
+      # key-generation step; the docs say the handshake silently stalls under
+      # starvation.
+      cpu: 250m
+      memory: 768Mi
+    limits:
+      cpu: "2"
+      memory: 2Gi
+
+  probes:
+    # The exec form, not httpGet: the listener is HTTPS with a real
+    # certificate for api-rr.local.struble.app, and a kubelet probe hitting
+    # https://<podIP>:555/admin would fail hostname verification. curl is in
+    # the image (upstream's own compose healthcheck uses it, with the same
+    # -k). `/admin` is the dashboard route upstream probes too.
+    startup:
+      period: 10
+      failureThreshold: 30
+    readiness:
+      period: 30
+      failureThreshold: 3

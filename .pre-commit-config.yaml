@@ -41,6 +41,11 @@ repos:
     hooks:
       - id: codespell
         args: [-w]
+        # Sops-encrypted files are ciphertext: any two-letter pair can appear
+        # in the base64 (the first roborock re-encryption tripped "ND"), a
+        # -w "fix" would rewrite the blob, and every re-encryption re-rolls
+        # the dice. detect-secrets excludes the same set already.
+        exclude: ^.*secrets.*\.yaml$
   # Try to detect strings that are likely to be passwords or secrets
   - repo: https://github.com/Yelp/detect-secrets
     rev: v1.4.0

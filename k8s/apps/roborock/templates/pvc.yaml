@@ -1,0 +1,13 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ required "persistence.claimName: set by roborockStorage in nix/services/k3s.nix" .Values.persistence.claimName }}
+  labels:
+    app.kubernetes.io/part-of: roborock
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: {{ required "persistence.storageClass: set by roborockStorage in nix/services/k3s.nix" .Values.persistence.storageClass }}
+  resources:
+    requests:
+      storage: {{ required "persistence.size: set by roborockStorage in nix/services/k3s.nix" .Values.persistence.size }}

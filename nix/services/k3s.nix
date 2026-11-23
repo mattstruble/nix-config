@@ -118,6 +118,130 @@
           egressCidrs:
         ${lib.concatMapStringsSep "\n" (c: "    - ${c}") cfg.wikiOidcEgressCidrs}
       '';
+
+      # ── roborock (local_roborock_server, on roque) ────────────────────
+      #
+      # The one app whose PV is welded to a node that is NOT the one this
+      # module runs on: the pod and its PV select on `storage=roque`, the label
+      # the k3s agent config sets when roque joins the cluster (the same
+      # stable label scheme the wiki's PV selects on). Until that join lands,
+      # the pod stays Pending — which is the correct answer to "the node is
+      # not there yet".
+      roborockStorage = {
+        hostPath = "/var/lib/roborock";
+        # 984 is unassigned on roque the way 983 is on mjolnir; the server
+        # runs as this uid and the host directory is pre-owned by the
+        # tmpfiles rule below.
+        serverUid = 984;
+        serverGid = 984;
+        size = "5Gi";
+        storageClass = "roborock-data";
+        claimName = "roborock-data";
+        claimNamespace = "roborock";
+        nodeLabel = "roque";
+        # What the vacuum's world calls the server. Consumed by
+        # roborockConfigText below and by nothing else — no chart template
+        # reads it, so it lives here and not in values.yaml, where it would
+        # be a second thing that can drift.
+        stackFqdn = "api-rr.local.struble.app";
+        region = "us";
+      };
+      # The `roborock-config` Secret's keys — what the chart's secret volume
+      # mounts. The sops values that feed them are roborockSopsKeys; see
+      # k8s/apps/home/roborock/SECRETS.md for why the whole config.toml is one
+      # Secret (the app accepts file references only for the Cloudflare
+      # token, so the password hashes and session secret must be inline in
+      # the assembled file).
+      roborockSecretKeys = [
+        "CONFIG_TOML"
+        "CLOUDFLARE_TOKEN"
+      ];
+      roborockSopsKeys = [
+        "admin-password-hash"
+        "session-secret"
+        "protocol-login-email"
+        "protocol-pin-hash"
+        "acme-email"
+        "cloudflare-token"
+      ];
+      roborockSopsVar = k: "ROBOROCK_${lib.toUpper (lib.replaceStrings [ "-" ] [ "_" ] k)}";
+      roborockSecretReads = lib.concatMapStringsSep "\n"
+        (k: ''${roborockSopsVar k}="$(cat ${config.sops.secrets."services/roborock/${k}".path})"'')
+        roborockSopsKeys;
+      roborockSecretSentinelPairs = lib.concatMapStringsSep " "
+        (k: "\"${k}:${"$" + roborockSopsVar k}\"")
+        roborockSopsKeys;
+      # The config skeleton the apply pass assembles. The `''${ROBOROCK_*}`
+      # placeholders are filled by envsubst from sops in the oneshot; a value
+      # containing `$` (a pbkdf2 hash is full of them) is inserted verbatim
+      # by envsubst, which is why this is envsubst and not sed — sed's
+      # replacement text treats `$` and `&` specially.
+      roborockConfigText = ''
+        [network]
+        stack_fqdn = "${roborockStorage.stackFqdn}"
+        bind_host = "0.0.0.0"
+        https_port = 555
+        mqtt_tls_port = 8881
+        # Region default is America/New_York; uncomment and set if the
+        # vacuum's schedules fire at the wrong hour.
+        # timezone = "America/New_York"
+        region = "${roborockStorage.region}"
+
+        [broker]
+        # Embedded: the image ships mosquitto, and the broker is a subprocess
+        # of the server, not a peer workload.
+        mode = "embedded"
+        mosquitto_binary = "mosquitto"
+        enable_topic_bridge = true
+
+        [storage]
+        data_dir = "/data"
+
+        [logging]
+        max_size_mb = 10
+        backup_count = 3
+
+        [tls]
+        mode = "cloudflare_acme"
+        base_domain = "struble.app"
+        email = "''${ROBOROCK_ACME_EMAIL}"
+        cloudflare_token_file = "/run/secrets/cloudflare-token"
+        renew_days_before = 30
+        renew_check_seconds = 43200
+        acme_server = "zerossl"
+
+        [admin]
+        password_hash = "''${ROBOROCK_ADMIN_PASSWORD_HASH}"
+        session_secret = "''${ROBOROCK_SESSION_SECRET}"
+        session_ttl_seconds = 86400
+        protocol_auth_enabled = true
+        new_connections_enabled = true
+        protocol_login_email = "''${ROBOROCK_PROTOCOL_LOGIN_EMAIL}"
+        protocol_login_pin_hash = "''${ROBOROCK_PROTOCOL_PIN_HASH}"
+
+        [turn]
+        # Disabled for v1: the camera feature is deliberately deferred (it
+        # needs its own short hostname, coturn and go2rtc).
+        mode = "disabled"
+      '';
+      roborockValuesText = ''
+        namespace: ${roborockStorage.claimNamespace}
+        server:
+          uid: ${toString roborockStorage.serverUid}
+          gid: ${toString roborockStorage.serverGid}
+        persistence:
+          size: ${roborockStorage.size}
+          claimName: ${roborockStorage.claimName}
+          storageClass: ${roborockStorage.storageClass}
+        secret:
+          keys:
+        ${lib.concatMapStringsSep "\n" (k: "    - ${k}") roborockSecretKeys}
+        ingress:
+          cidrs:
+        ${lib.concatMapStringsSep "\n" (c: "    - ${c}") cfg.roborockIngressCidrs}
+      '';
+      # The skeleton as a file for the oneshot's envsubst to read.
+      roborockConfigSkeleton = pkgs.writeText "roborock-config-skeleton.toml" roborockConfigText;
       # The PV is generated rather than checked against the claim: it is
       # pre-bound by claimRef, so a capacity below the claim's request never
       # binds and never errors.
@@ -169,6 +293,48 @@
                       values:
                         - mjolnir
       '';
+      roborockPvManifest = pkgs.writeText "roborock-local-pv.yaml" ''
+        # Generated from `roborockStorage` in nix/services/k3s.nix, which also
+        # owns the host directory (tmpfiles below) and the claim this volume
+        # binds to. Local, not NFS: the server writes device snapshots and
+        # ACME state continuously, and nothing about the vacuum's data wants a
+        # network filesystem. Not a hostPath in the pod: that would break the
+        # namespace's Pod Security posture.
+        apiVersion: v1
+        kind: PersistentVolume
+        metadata:
+          name: ${roborockStorage.claimName}
+          labels:
+            app.kubernetes.io/part-of: roborock
+        spec:
+          capacity:
+            storage: ${roborockStorage.size}
+          accessModes:
+            - ReadWriteOnce
+          # The device keys and onboarding state live here: a deleted claim
+          # means re-onboarding the vacuum, so the data outlives the claim.
+          persistentVolumeReclaimPolicy: Retain
+          storageClassName: ${roborockStorage.storageClass}
+          # Pre-bound to the roborock claim: while this PV sat Available, any
+          # claim in any namespace asking for this storage class could have
+          # won it, and a node-affinity-only PV on the wrong node never
+          # refuses anything.
+          claimRef:
+            namespace: ${roborockStorage.claimNamespace}
+            name: ${roborockStorage.claimName}
+          local:
+            path: ${roborockStorage.hostPath}
+          nodeAffinity:
+            required:
+              nodeSelectorTerms:
+                - matchExpressions:
+                    # The stable `storage` label, not kubernetes.io/hostname:
+                    # a node rename would otherwise orphan the volume.
+                    - key: storage
+                      operator: In
+                      values:
+                        - ${roborockStorage.nodeLabel}
+      '';
       # A directory under k8s/apps/ is an app chart when it carries a Chart.yaml.
       # `just k8s-render` and the CI preview render apply the same rule, so an
       # app cannot be discovered by one of the three and missed by another.
@@ -204,6 +370,7 @@
         # strataBundleValuesText above for why that link is the whole design.
         ai = strataBundleValuesText + headEndValuesText;
         wiki = wikiValuesText;
+        roborock = roborockValuesText;
       };
 
       chartBuildValues = lib.mapAttrs (
@@ -363,6 +530,22 @@
         '';
       };
 
+      options.services.k3s.roborockIngressCidrs = lib.mkOption {
+        type = lib.types.listOf lib.types.str;
+        default = [ ];
+        description = ''
+          IPv4 CIDRs allowed to reach the roborock server's hostPorts (555
+          HTTPS, 8881 MQTT/TLS) through the NetworkPolicy: the main LAN, plus
+          the vacuum's deadzone VLAN and the HA zone before onboarding. The
+          UniFi firewall policies (k8s/apps/home/roborock/RUNBOOK.md) govern
+          the same boundary from outside the cluster — a client one list
+          blocks the other must too, so grow both together.
+
+          The chart fails the render on an empty list: an empty ingress list
+          is not "no restriction", it is a server no LAN client can reach.
+        '';
+      };
+
       options.services.k3s.aiChart = {
         strataBundle = lib.mkOption {
           type = lib.types.str;
@@ -408,6 +591,10 @@
           "d ${wikiStorage.hostPath} 0755 root root -"
           "d ${wikiStorage.hostPath}/mysql 0750 ${toString wikiStorage.databaseUid} ${toString wikiStorage.databaseGid} -"
           "d ${wikiStorage.hostPath}/bookstack 0770 ${toString wikiStorage.bookstackUid} ${toString wikiStorage.bookstackGid} -"
+          # The roborock PV binds on roque (storage=roque), not here; the rule
+          # is harmless on mjolnir and means the shared module owns the
+          # directory on whichever host the PV eventually binds to.
+          "d ${roborockStorage.hostPath} 0770 ${toString roborockStorage.serverUid} ${toString roborockStorage.serverGid} -"
         ];
 
         # Monitoring secrets (mjolnir-decryptable). Consumed by the rendered
@@ -461,6 +648,30 @@
           "services/wiki/oidc-client-secret" = {
             sopsFile = ./homelab/homelab-wiki-secrets.yaml;
           };
+          # Roborock (local_roborock_server). Same recipient shape as the
+          # wiki's file — the human and mjolnir, NOT roque — because the
+          # oneshot that assembles the config runs on mjolnir; roque only
+          # sees the resulting Secret through etcd. Separate file so the
+          # vacuum's credentials are not decryptable alongside every other
+          # homelab secret, and can be rotated alone.
+          "services/roborock/admin-password-hash" = {
+            sopsFile = ./homelab/homelab-roborock-secrets.yaml;
+          };
+          "services/roborock/session-secret" = {
+            sopsFile = ./homelab/homelab-roborock-secrets.yaml;
+          };
+          "services/roborock/protocol-login-email" = {
+            sopsFile = ./homelab/homelab-roborock-secrets.yaml;
+          };
+          "services/roborock/protocol-pin-hash" = {
+            sopsFile = ./homelab/homelab-roborock-secrets.yaml;
+          };
+          "services/roborock/acme-email" = {
+            sopsFile = ./homelab/homelab-roborock-secrets.yaml;
+          };
+          "services/roborock/cloudflare-token" = {
+            sopsFile = ./homelab/homelab-roborock-secrets.yaml;
+          };
         };
         # Materialise secrets in the activation script (setupSecrets) instead of
         # a systemd oneshot at boot — the aiChart activation script below reads
@@ -511,6 +722,9 @@
             };
             wiki-pvs = {
               source = wikiPvManifest;
+            };
+            roborock-pvs = {
+              source = roborockPvManifest;
             };
           };
         };
@@ -639,6 +853,19 @@
               [ "''${wv#*:}" = "unset" ] && [ "$WIKI_UNSET_SEEN" = "0" ] && { WIKI_DEPLOY=0; WIKI_UNSET_SEEN=1; WIKI_SKIP_REASON="''${WIKI_SKIP_REASON:+''$WIKI_SKIP_REASON; }OIDC client values are still the 'unset' sentinel; create the Pocket ID client, put its id and secret into nix/services/homelab/homelab-wiki-secrets.yaml, and re-activate"; }
             done
 
+            # Roborock secrets, judged the same way as the wiki's: empty is a
+            # mistake, all-'unset' means "not configured yet" (the RUNBOOK's
+            # step 2 has the hash-generation commands), and either state
+            # skips the roborock pass loudly while the unit stays green.
+            ${roborockSecretReads}
+            ROBOROCK_DEPLOY=1
+            ROBOROCK_SKIP_REASON=""
+            ROBOROCK_UNSET_SEEN=0
+            for rv in ${roborockSecretSentinelPairs}; do
+              [ -n "''${rv#*:}" ] || { echo "roborock: error: services/roborock sops secret ''${rv%%:*} is empty; skipping the roborock pass" >&2; ROBOROCK_DEPLOY=0; ROBOROCK_SKIP_REASON="''${ROBOROCK_SKIP_REASON:+''$ROBOROCK_SKIP_REASON; }sops secret ''${rv%%:*} is empty"; }
+              [ "''${rv#*:}" = "unset" ] && [ "$ROBOROCK_UNSET_SEEN" = "0" ] && { ROBOROCK_DEPLOY=0; ROBOROCK_UNSET_SEEN=1; ROBOROCK_SKIP_REASON="''${ROBOROCK_SKIP_REASON:+''$ROBOROCK_SKIP_REASON; }sops values are still the 'unset' sentinel; fill nix/services/homelab/homelab-roborock-secrets.yaml (k8s/apps/roborock/RUNBOOK.md step 2) and re-activate"; }
+            done
+
             # Every resource this script applies carries the managed-by label,
             # and each `kubectl apply --prune` pass is scoped to it, so a prune
             # can never delete anything outside our charts (k3s built-ins,
@@ -658,6 +885,7 @@
             SEL_KUBE_SYSTEM="$MANAGED,mjolnir/prune-group=kube-system"
             SEL_GPU="$MANAGED,mjolnir/prune-group=gpu"
             SEL_WIKI="$MANAGED,mjolnir/prune-group=wiki"
+            SEL_ROBOROCK="$MANAGED,mjolnir/prune-group=roborock"
             # Kinds a prune pass may delete. kubectl's default allowlist has
             # no CRs, so the monitoring.coreos.com kinds must be listed.
             PRUNE_ALLOWLIST=(
@@ -834,6 +1062,7 @@
             # namespace, and the SM must live in gpu/ to select the pod).
             label_all gpu "true" ${monitoringChartRendered.dcgm}/rendered.yaml ${k8sDir}/manifests/dcgm-networkpolicy.yaml ${k8sDir}/manifests/dcgm-servicemonitor.yaml > "$T/gpu-charts.json"
             label_all wiki "true" ${appChartRenders.wiki}/rendered.yaml > "$T/wiki-chart.json"
+            label_all roborock "true" ${appChartRenders.roborock}/rendered.yaml > "$T/roborock-chart.json"
             cat "$T/cluster-kps.json" "$T/cluster-kubelet-crb.json" > "$T/cluster.yaml"
             cat "$T/monitoring-kubelet-sa.json" "$T/monitoring-kps.json" "$T/monitoring-charts.json" > "$T/monitoring-static.json"
             cat "$T/kube-system-kps.json" > "$T/kube-system.yaml"
@@ -847,6 +1076,11 @@
             [ -s "$T/gpu-charts.json" ] || { echo "error: rendered gpu-charts.json is empty" >&2; exit 1; }
             # wiki check differs from its five siblings on purpose: a wiki failure must not fail the generation, so it skips the wiki pass and continues (siblings stay fatal — they are not wiki).
             [ -s "$T/wiki-chart.json" ] || { echo "wiki: error: rendered wiki-chart.json is empty; skipping the wiki pass" >&2; WIKI_DEPLOY=0; WIKI_SKIP_REASON="''${WIKI_SKIP_REASON:+''$WIKI_SKIP_REASON; }rendered wiki-chart.json is empty"; }
+            # Same posture as the wiki: an empty render skips the pass loudly
+            # rather than failing the generation — a server that has never
+            # onboarded a vacuum is not worth the monitoring stack behind it
+            # in the chain.
+            [ -s "$T/roborock-chart.json" ] || { echo "roborock: error: rendered roborock-chart.json is empty; skipping the roborock pass" >&2; ROBOROCK_DEPLOY=0; ROBOROCK_SKIP_REASON="''${ROBOROCK_SKIP_REASON:+''$ROBOROCK_SKIP_REASON; }rendered roborock-chart.json is empty"; }
             set +e
 
             # CIDR containment: is $2 (net/prefix) a subnet of $1? The node's
@@ -877,6 +1111,7 @@
               $KCTL get namespace monitoring >/dev/null 2>&1 || $KCTL create namespace monitoring
               $KCTL get namespace gpu >/dev/null 2>&1 || $KCTL create namespace gpu
               $KCTL get namespace wiki >/dev/null 2>&1 || $KCTL create namespace wiki
+              $KCTL get namespace roborock >/dev/null 2>&1 || $KCTL create namespace roborock
               # The one signal in this stack that tells a wiped wiki from a
               # fresh one: the install record present, the datadir marker absent.
               #
@@ -949,6 +1184,17 @@
               # including with no_new_privs). See the header of
               # k8s/apps/wiki/templates/bookstack-deployment.yaml.
               $KCTL label namespace wiki pod-security.kubernetes.io/enforce=baseline --overwrite
+              # The roborock namespace is restricted, and that is a claim
+              # about the server container: explicit uid (984),
+              # runAsNonRoot, seccomp, no SA token, drop ALL, no privilege
+              # escalation, read-only root filesystem (all server writes go
+              # to /data or /tmp), all of which the chart's deployment
+              # declares. Unlike the wiki's exception this one is unmeasured
+              # against the running image so far — if the first deploy
+              # proves the container needs more, the fix is the measured
+              # wiki-style exception recorded in the chart, not a wider
+              # namespace label.
+              $KCTL label namespace roborock pod-security.kubernetes.io/enforce=restricted --overwrite
               # Migration: older deploys applied three kubernetes-system
               # PrometheusRules (controller-manager/kube-proxy/scheduler) that
               # are now disabled in values. They carry no managed label, so
@@ -1179,6 +1425,41 @@
                         fi
                       fi
                     } \
+                && { if [ "$ROBOROCK_DEPLOY" = "1" ]; then
+                  if ! {
+                    # Assemble config.toml from the skeleton + sops values.
+                    # envsubst's explicit var list keeps any other `$` in the
+                    # skeleton untouched; the values themselves (pbkdf2
+                    # hashes, base64 session secret) are inserted verbatim.
+                    # 0600 files: the config carries the password hashes and
+                    # the token; nothing reaches kubectl's argv.
+                    ( umask 077
+                      export ROBOROCK_ADMIN_PASSWORD_HASH ROBOROCK_SESSION_SECRET \
+                             ROBOROCK_PROTOCOL_LOGIN_EMAIL ROBOROCK_PROTOCOL_PIN_HASH \
+                             ROBOROCK_ACME_EMAIL
+                      printf '%s' "$ROBOROCK_CLOUDFLARE_TOKEN" > "$T/roborock-cloudflare-token"
+                      $ENVSUBST "''${ROBOROCK_ADMIN_PASSWORD_HASH} ''${ROBOROCK_SESSION_SECRET} ''${ROBOROCK_PROTOCOL_LOGIN_EMAIL} ''${ROBOROCK_PROTOCOL_PIN_HASH} ''${ROBOROCK_ACME_EMAIL}" \
+                          < ${roborockConfigSkeleton} > "$T/roborock-config.toml"
+                      [ -s "$T/roborock-config.toml" ] || { echo "error: roborock config assembly produced an empty config.toml" >&2; exit 1; }
+                    ) \
+                    && $KCTL create secret generic roborock-config \
+                        --namespace roborock \
+                        --from-file=config.toml="$T/roborock-config.toml" \
+                        --from-file=cloudflare-token="$T/roborock-cloudflare-token" \
+                        --dry-run=client -o yaml | label_all roborock "true" > "$T/roborock-secret.json" \
+                    && nonempty "$T/roborock-secret.json" "create secret generic" \
+                    && cat "$T/roborock-secret.json" "$T/roborock-chart.json" > "$T/roborock.yaml" \
+                    && apply_pruned "$SEL_ROBOROCK" "roborock" "$T/roborock.yaml"
+                  }; then
+                    echo "roborock: error: roborock apply pass failed (see output above); the server stays at its previous state and the rest of the activation continues" >&2
+                  fi
+                else
+                  if [ -n "$ROBOROCK_SKIP_REASON" ]; then
+                    echo "roborock: $ROBOROCK_SKIP_REASON" >&2
+                  else
+                    echo "roborock: roborock pass skipped (no reason recorded)" >&2
+                  fi
+                fi } \
                 && { if [ "$CRDS_NEW" -eq 1 ]; then
                     $KCTL rollout restart deploy/kps-kube-prometheus-stack-operator --namespace monitoring
                   fi

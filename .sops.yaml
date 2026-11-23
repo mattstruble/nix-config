@@ -33,3 +33,13 @@ creation_rules:
       - age:
           - *MacStruble
           - *mjolnir
+  # Roborock (local_roborock_server). Same recipients as the wiki's file —
+  # the human and mjolnir, NOT roque: the oneshot that assembles the config
+  # runs on mjolnir, and roque holds the IdP, the NAS mount and n8n's
+  # credential store. Separate file so the vacuum's credentials rotate
+  # without touching anything else.
+  - path_regex: nix/services/homelab/homelab-roborock-secrets.yaml$
+    key_groups:
+      - age:
+          - *MacStruble
+          - *mjolnir
