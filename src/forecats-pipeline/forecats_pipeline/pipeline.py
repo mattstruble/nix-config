@@ -204,6 +204,26 @@ def parse_pets(specimens: Sequence[str]) -> tuple[Pet, ...]:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parse_args(argv)
+    output_dir = Path(args.output_dir)
+    try:
+        return _nightly(args, output_dir)
+    except Exception as problem:
+        # A nightly's whole output is one line in a log, and a traceback puts the
+        # exception under a screen of frames; the refusal keeps the type, which
+        # is the part that says what to look at. `Exception` and not
+        # `BaseException`: a Ctrl-C at a terminal is not a failed night, and
+        # neither is the SystemExit argparse raises for a bad flag.
+        return _report(
+            PipelineRefusal(
+                stage="pipeline",
+                reason=f"unhandled {type(problem).__name__}: {problem}",
+            ),
+            output_dir,
+        )
+
+
+def _nightly(args: argparse.Namespace, output_dir: Path) -> int:
+    """The run `main` reports on: the day, the panel, or the reason there is none."""
     location = Location(
         name=args.location,
         latitude=args.latitude,
@@ -211,7 +231,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         timezone=args.timezone,
     )
     day = date.fromisoformat(args.day) if args.day else datetime.now(location.zone).date()
-    output_dir = Path(args.output_dir)
 
     feeds = _calendar_feeds()
     # The font env says where a font is; only the flag says to use it. The

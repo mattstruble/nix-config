@@ -20,7 +20,7 @@ from day_context.schedule_ics import IcsCalendarProvider
 from forecats_pipeline.contracts import PipelineRefusal
 from forecats_pipeline.day_context_stage import PayloadLog, RecordingFetcher
 from forecats_pipeline.contracts import Published
-from forecats_pipeline.pipeline import Skipped, run_nightly
+from forecats_pipeline.pipeline import CALENDAR_FEEDS_ENV, Skipped, main, run_nightly
 from forecats_pipeline.publish_stage import FRESHNESS_NAME, panel_name
 from forecats_pipeline.render_stage import FakeRenderer
 
@@ -115,3 +115,43 @@ def test_a_first_run_creates_the_directory_it_publishes_into(tmp_path):
 
     assert fresh.is_dir()
     assert isinstance(outcome, Published)
+
+
+def test_a_failure_no_stage_claimed_still_leaves_a_refusal_with_its_cause(
+    tmp_path, monkeypatch, capsys
+):
+    """Nobody reads the nightly's output until the wall has been wrong for a
+    week, so the one line it leaves has to hold the reason by itself."""
+    household = tmp_path / "household.yaml"
+    household.write_text(
+        "pets:\n  - name: Milo\n    reference_photo: /refs/milo.jpg\n"
+        "    visual_description: ginger tabby\n",
+        encoding="utf-8",
+    )
+
+    def disk_full(*args, **kwargs):
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setenv(CALENDAR_FEEDS_ENV, f"home={FEED_URL}")
+    monkeypatch.setattr("forecats_pipeline.pipeline.run_nightly", disk_full)
+
+    exit_code = main(
+        [
+            "--day",
+            DAY.isoformat(),
+            "--timezone",
+            "America/New_York",
+            "--latitude",
+            "40.7128",
+            "--longitude",
+            "-74.006",
+            "--output-dir",
+            str(tmp_path / "panels"),
+            "--household-file",
+            str(household),
+        ]
+    )
+
+    printed = capsys.readouterr().out
+    assert exit_code == 1
+    assert "refused at pipeline: unhandled OSError: [Errno 28] No space left on device" in printed
