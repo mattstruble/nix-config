@@ -169,6 +169,186 @@
                       values:
                         - mjolnir
       '';
+      # The forecats namespace, the account the nightly render runs as, and the
+      # three volumes it writes or reads. Same rule as `wikiStorage` above: each
+      # host fact is written once here and read by consumers in three languages —
+      # the PVs generated below, the claims that bind them, the host directories
+      # tmpfiles creates, and the values the chart renders with — and nothing else
+      # in this repo connects them. Both drifts are quiet: a pod running as an id
+      # that cannot write the directory it mounts, and a claim that cannot bind
+      # its pre-bound PV sitting Pending with an event that names no file.
+      forecatsStorage = {
+        namespace = "forecats";
+        # 982 is unassigned on mjolnir; 983 is the wiki's BookStack account.
+        uid = 982;
+        gid = 982;
+        # One entry per volume. The storage class and the claim name are both the
+        # attribute name prefixed with the app, so the PV, the claim that binds it
+        # and the values the chart reads cannot name different objects.
+        volumes = {
+          panels = {
+            hostPath = "/var/lib/forecats/panels";
+            size = "10Gi";
+            # The nightly job writes here and whatever serves forecats.mjolnir reads
+            # it. A claim binds only a PV listing every mode it asks for, so both
+            # modes are listed rather than the one the first consumer wants.
+            accessModes = [ "ReadWriteOnce" "ReadWriteMany" ];
+            # The render pod writes here, so the host directory belongs to the
+            # pod's uid: the policy that keeps these pods non-root also forbids
+            # the chown initContainer that would otherwise set that ownership.
+            writable = true;
+          };
+          weights = {
+            # Ordinary host data, deliberately not a store path: nix garbage
+            # collected the glibc out from under a hand-built sd-cli, and the
+            # weights survived precisely because they are not in the store.
+            hostPath = "/var/lib/llama-models/h3image";
+            # 17.9 GB sits there today. A static PV's capacity is only compared
+            # against the claim's request, so it is headroom, not a reservation.
+            size = "20Gi";
+            accessModes = [ "ReadOnlyMany" ];
+            writable = false;
+          };
+          photos = {
+            hostPath = "/var/lib/forecats/photos";
+            size = "2Gi";
+            accessModes = [ "ReadOnlyMany" ];
+            writable = false;
+          };
+        };
+      };
+      forecatsVolumeNames = builtins.attrNames forecatsStorage.volumes;
+      forecatsVolume = name: forecatsStorage.volumes.${name};
+      forecatsVolumeClaim = name: "forecats-${name}";
+      # The namespace the PVs' claimRef below and the apply pass's -n both read, so
+      # no render can point a volume at a namespace its claim is not in. A value
+      # that could never name one fails evaluation instead: it would leave a PV
+      # Available forever beside a claim whose only event says no persistent volume
+      # found.
+      forecatsNamespace =
+        lib.throwIfNot
+          (
+            builtins.stringLength forecatsStorage.namespace <= 63
+            && builtins.match "[a-z0-9]([-a-z0-9]*[a-z0-9])?" forecatsStorage.namespace != null
+          )
+          ''
+            forecats: "${forecatsStorage.namespace}" is not a Kubernetes namespace name: a lowercase RFC 1123 label of at most 63 characters. The PVs generated in nix/services/k3s.nix are pre-bound by claimRef to it and the apply pass creates it with -n; a value that cannot name a namespace binds nothing, and the claim sits Pending with an event that names no file.''
+          forecatsStorage.namespace;
+      # One list for both files, so a claim can never ask for a mode its pre-bound
+      # PV does not offer. The items carry their own indentation: an interpolated
+      # value lands after the surrounding string's indentation has been stripped.
+      forecatsAccessModes = name: lib.concatMapStringsSep "\n" (m: "    - ${m}") (forecatsVolume name).accessModes;
+      # Generated rather than hand-written and checked: each PV is pre-bound by
+      # claimRef, so a capacity below its claim's request, a class the claim does
+      # not ask for, and a claimRef the claim is not in each bind nothing and
+      # error nowhere.
+      forecatsPvManifest = pkgs.writeText "forecats-local-pvs.yaml" (
+        ''
+          # Generated from `forecatsStorage` in nix/services/k3s.nix, which also owns
+          # the claims that bind these volumes, the host directories they point at,
+          # and the namespace the apply pass creates.
+          #
+          # Cluster-scoped objects only: k3s' manifest loader supplies no namespace,
+          # so a namespaced object in this file would be created in `default` and
+          # never bind the volume pre-bound to ${forecatsNamespace}. The claims are
+          # applied by the forecats pass, whose -n places them.
+        ''
+        + lib.concatMapStrings (name: let
+          v = forecatsVolume name;
+        in ''
+          ---
+          apiVersion: v1
+          kind: PersistentVolume
+          metadata:
+            name: ${forecatsVolumeClaim name}
+            labels:
+              app.kubernetes.io/part-of: forecats
+          spec:
+            capacity:
+              storage: ${v.size}
+            accessModes:
+          ${forecatsAccessModes name}
+            # Retain, not Delete: deleting a claim must not delete the data, and
+            # for the panels the data is the only copy of itself.
+            persistentVolumeReclaimPolicy: Retain
+            storageClassName: ${forecatsVolumeClaim name}
+            # Pre-bound: while one of these sat Available, any claim in any
+            # namespace asking for this storage class could have won it, and on a
+            # single-node cluster the node affinity would never have refused them.
+            claimRef:
+              namespace: ${forecatsNamespace}
+              name: ${forecatsVolumeClaim name}
+            # A local volume rather than a hostPath volume in the pod: the
+            # PodSecurity `restricted` this namespace is labelled with refuses
+            # hostPath outright, and a PVC is what it allows instead.
+            local:
+              path: ${v.hostPath}
+            nodeAffinity:
+              required:
+                nodeSelectorTerms:
+                  - matchExpressions:
+                      # The stable `storage` label, not kubernetes.io/hostname: a
+                      # node rename would otherwise orphan the volume.
+                      - key: storage
+                        operator: In
+                        values:
+                          - mjolnir
+        '')
+        forecatsVolumeNames
+      );
+      # The claims the volumes above are pre-bound to. They go through the
+      # forecats pass rather than the PV file, because that pass supplies the
+      # namespace with -n and the PV file has no namespace to supply.
+      forecatsClaimManifest = pkgs.writeText "forecats-claims.yaml" (
+        ''
+          # Generated from `forecatsStorage` in nix/services/k3s.nix, which also
+          # generates the volumes these claims are pre-bound to.
+          #
+          # No object here names a namespace: the apply pass supplies it with -n,
+          # and the only namespace a forecats manifest writes is a PV's claimRef.
+        ''
+        + lib.concatMapStrings (name: let
+          v = forecatsVolume name;
+        in ''
+          ---
+          apiVersion: v1
+          kind: PersistentVolumeClaim
+          metadata:
+            name: ${forecatsVolumeClaim name}
+            labels:
+              app.kubernetes.io/part-of: forecats
+          spec:
+            accessModes:
+          ${forecatsAccessModes name}
+            storageClassName: ${forecatsVolumeClaim name}
+            resources:
+              requests:
+                storage: ${v.size}
+        '')
+        forecatsVolumeNames
+      );
+      # The host facts the forecats chart renders with; its templates `required`
+      # them, so a bare `helm template` fails instead of inventing a claim name
+      # that binds nothing.
+      forecatsValuesText = ''
+        # The namespace the apply pass creates and applies into. A template that
+        # names a namespace inside a string it emits reads this: the render runs
+        # with no --namespace, so .Release.Namespace would answer "default".
+        namespace: ${forecatsNamespace}
+        render:
+          uid: ${toString forecatsStorage.uid}
+          gid: ${toString forecatsStorage.gid}
+        persistence:
+          volumes:
+        ${lib.concatMapStrings (name: let
+          v = forecatsVolume name;
+        in
+          "    - claimName: ${forecatsVolumeClaim name}\n"
+          + "      storageClass: ${forecatsVolumeClaim name}\n"
+          + "      size: ${v.size}\n"
+          + "      readOnly: ${lib.boolToString (!v.writable)}\n")
+        forecatsVolumeNames}
+      '';
       # A directory under k8s/apps/ is an app chart when it carries a Chart.yaml.
       # `just k8s-render` and the CI preview render apply the same rule, so an
       # app cannot be discovered by one of the three and missed by another.
@@ -204,6 +384,7 @@
         # strataBundleValuesText above for why that link is the whole design.
         ai = strataBundleValuesText + headEndValuesText;
         wiki = wikiValuesText;
+        forecats = forecatsValuesText;
       };
 
       chartBuildValues = lib.mapAttrs (
@@ -408,7 +589,18 @@
           "d ${wikiStorage.hostPath} 0755 root root -"
           "d ${wikiStorage.hostPath}/mysql 0750 ${toString wikiStorage.databaseUid} ${toString wikiStorage.databaseGid} -"
           "d ${wikiStorage.hostPath}/bookstack 0770 ${toString wikiStorage.bookstackUid} ${toString wikiStorage.bookstackGid} -"
-        ];
+          # Each forecats volume points at one of these: a local PV whose host path
+          # is absent leaves its pod in ContainerCreating saying only that the host
+          # directory does not exist. The writable one is owned by the uid the render
+          # pod runs as for the same reason as the wiki's above; the read-only inputs
+          # stay root-owned because nothing in the cluster writes them.
+          "d /var/lib/forecats 0755 root root -"
+        ]
+        ++ map (name: let
+          v = forecatsVolume name;
+          owner = if v.writable then toString forecatsStorage.uid else "root";
+        in "d ${v.hostPath} ${if v.writable then "0770" else "0755"} ${owner} ${owner} -")
+        forecatsVolumeNames;
 
         # Monitoring secrets (mjolnir-decryptable). Consumed by the rendered
         # kps values (telegram) + the grafana admin Secret (grafanaPw) above.
@@ -512,6 +704,9 @@
             wiki-pvs = {
               source = wikiPvManifest;
             };
+            forecats-pvs = {
+              source = forecatsPvManifest;
+            };
           };
         };
 
@@ -524,6 +719,9 @@
           {
             # kps chart (fetched .tgz) — rendered at activation, not build time.
             kpsChart = kpsChart;
+            # Applied only from inside the oneshot's script string below, so
+            # nothing else in the closure would build it (see the note above).
+            forecatsClaimsManifest = forecatsClaimManifest;
           }
           // lib.mapAttrs' (
             name: chart: lib.nameValuePair "${name}ChartRendered" chart
@@ -658,12 +856,16 @@
             SEL_KUBE_SYSTEM="$MANAGED,mjolnir/prune-group=kube-system"
             SEL_GPU="$MANAGED,mjolnir/prune-group=gpu"
             SEL_WIKI="$MANAGED,mjolnir/prune-group=wiki"
+            SEL_FORECATS="$MANAGED,mjolnir/prune-group=forecats"
             # Kinds a prune pass may delete. kubectl's default allowlist has
-            # no CRs, so the monitoring.coreos.com kinds must be listed.
+            # no CRs, so the monitoring.coreos.com kinds must be listed. Nor a
+            # CronJob: a kind missing here is never pruned, so a CronJob deleted
+            # from a chart keeps firing from the cluster with nothing left in the
+            # repo that owns it.
             PRUNE_ALLOWLIST=(
               core/v1/ConfigMap core/v1/Secret core/v1/Service core/v1/PersistentVolumeClaim core/v1/Pod core/v1/Endpoints
               apps/v1/Deployment apps/v1/DaemonSet apps/v1/StatefulSet apps/v1/ReplicaSet
-              batch/v1/Job networking.k8s.io/v1/Ingress networking.k8s.io/v1/NetworkPolicy
+              batch/v1/Job batch/v1/CronJob networking.k8s.io/v1/Ingress networking.k8s.io/v1/NetworkPolicy
               rbac.authorization.k8s.io/v1/ClusterRole rbac.authorization.k8s.io/v1/ClusterRoleBinding
               admissionregistration.k8s.io/v1/ValidatingWebhookConfiguration admissionregistration.k8s.io/v1/MutatingWebhookConfiguration
               monitoring.coreos.com/v1/PrometheusRule monitoring.coreos.com/v1/ServiceMonitor monitoring.coreos.com/v1/Prometheus monitoring.coreos.com/v1/Alertmanager monitoring.coreos.com/v1/PodMonitor
@@ -834,6 +1036,9 @@
             # namespace, and the SM must live in gpu/ to select the pod).
             label_all gpu "true" ${monitoringChartRendered.dcgm}/rendered.yaml ${k8sDir}/manifests/dcgm-networkpolicy.yaml ${k8sDir}/manifests/dcgm-servicemonitor.yaml > "$T/gpu-charts.json"
             label_all wiki "true" ${appChartRenders.wiki}/rendered.yaml > "$T/wiki-chart.json"
+            # The forecats pass carries the claims its own PVs are pre-bound to;
+            # the chart's render joins this file when the chart lands.
+            label_all forecats "true" ${forecatsClaimManifest} > "$T/forecats-claims.json"
             cat "$T/cluster-kps.json" "$T/cluster-kubelet-crb.json" > "$T/cluster.yaml"
             cat "$T/monitoring-kubelet-sa.json" "$T/monitoring-kps.json" "$T/monitoring-charts.json" > "$T/monitoring-static.json"
             cat "$T/kube-system-kps.json" > "$T/kube-system.yaml"
@@ -845,7 +1050,8 @@
             [ -s "$T/kube-system.yaml" ] || { echo "error: rendered kube-system.yaml is empty" >&2; exit 1; }
             [ -s "$T/default-ai.json" ] || { echo "error: rendered default-ai.json is empty" >&2; exit 1; }
             [ -s "$T/gpu-charts.json" ] || { echo "error: rendered gpu-charts.json is empty" >&2; exit 1; }
-            # wiki check differs from its five siblings on purpose: a wiki failure must not fail the generation, so it skips the wiki pass and continues (siblings stay fatal — they are not wiki).
+            [ -s "$T/forecats-claims.json" ] || { echo "error: rendered forecats-claims.json is empty" >&2; exit 1; }
+            # wiki check differs from its six siblings on purpose: a wiki failure must not fail the generation, so it skips the wiki pass and continues (siblings stay fatal — they are not wiki).
             [ -s "$T/wiki-chart.json" ] || { echo "wiki: error: rendered wiki-chart.json is empty; skipping the wiki pass" >&2; WIKI_DEPLOY=0; WIKI_SKIP_REASON="''${WIKI_SKIP_REASON:+''$WIKI_SKIP_REASON; }rendered wiki-chart.json is empty"; }
             set +e
 
@@ -877,6 +1083,7 @@
               $KCTL get namespace monitoring >/dev/null 2>&1 || $KCTL create namespace monitoring
               $KCTL get namespace gpu >/dev/null 2>&1 || $KCTL create namespace gpu
               $KCTL get namespace wiki >/dev/null 2>&1 || $KCTL create namespace wiki
+              $KCTL get namespace ${forecatsNamespace} >/dev/null 2>&1 || $KCTL create namespace ${forecatsNamespace}
               # The one signal in this stack that tells a wiped wiki from a
               # fresh one: the install record present, the datadir marker absent.
               #
@@ -949,6 +1156,11 @@
               # including with no_new_privs). See the header of
               # k8s/apps/wiki/templates/bookstack-deployment.yaml.
               $KCTL label namespace wiki pod-security.kubernetes.io/enforce=baseline --overwrite
+              # forecats is `restricted`, and the volumes above exist so that is
+              # achievable: `restricted` refuses a hostPath volume outright and
+              # allows a PVC. A namespace no policy selects is DEFAULT ALLOW, so
+              # this label is the enforcement rather than the intent.
+              $KCTL label namespace ${forecatsNamespace} pod-security.kubernetes.io/enforce=restricted --overwrite
               # Migration: older deploys applied three kubernetes-system
               # PrometheusRules (controller-manager/kube-proxy/scheduler) that
               # are now disabled in values. They carry no managed label, so
@@ -1058,6 +1270,7 @@
                 && apply_pruned "$SEL_MONITORING" "monitoring" "$T/monitoring.yaml" \
                 && apply_pruned "$SEL_GPU" "gpu" "$T/gpu-charts.json" \
                 && apply_pruned "$SEL_KUBE_SYSTEM" "kube-system" "$T/kube-system.yaml" \
+                && apply_pruned "$SEL_FORECATS" "${forecatsNamespace}" "$T/forecats-claims.json" \
                 && $KCTL label configmap mjolnir-dashboards --namespace monitoring grafana_dashboard=1 --overwrite \
                 && register_metrics_key \
                 && {

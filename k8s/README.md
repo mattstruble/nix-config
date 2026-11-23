@@ -41,7 +41,10 @@ What still has to be written per app, each silent when missing:
 
 - The apply pass in `nix/services/k3s.nix`: it creates the Secret the chart references
   and must never define, applies the rendered manifest, and labels it into the app's
-  namespace.
+  namespace with the app's own `mjolnir/prune-group` value — two passes sharing a
+  selector delete each other's resources. Kinds the pass may have to delete must be
+  in `PRUNE_ALLOWLIST`, or a resource taken out of the chart is never taken out of
+  the cluster.
 - The `sops.secrets."services/<app>/*"` declarations, their `.sops.yaml` path rule,
   and the sops file itself. A secret no one declares is simply absent when the pod
   reads it.
