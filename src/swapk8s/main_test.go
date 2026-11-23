@@ -155,28 +155,44 @@ func TestNormalizeSpecRefusesSpecWithoutCardEnv(t *testing.T) {
 	}
 }
 
-// The busy-card rules: existence claims (not readiness), terminating pods
-// release, spanning pods claim every card in their pool, empty values claim
-// nothing. Every one of these rules exists because its opposite crashloops a
-// pod onto a busy card.
+// The busy-card rules: existence claims (not readiness), only a card-owning
+// component claims at all, terminating and finished pods release, spanning pods
+// claim every card in their pool, empty values claim nothing. Every one of these
+// rules exists because its opposite crashloops a pod onto a busy card, or holds
+// a card for a pod that will never run again.
 func TestCardsFromPods(t *testing.T) {
-	pod := func(deleting bool, gpuVal string) string {
-		dt := `"deletionTimestamp":null`
-		if deleting {
-			dt = `"deletionTimestamp":"2026-10-12T00:00:00Z"`
-		}
-		return fmt.Sprintf(`{"metadata":{"name":"p",%s},"spec":{"containers":[{"env":[{"name":"NVIDIA_VISIBLE_DEVICES","value":%q}]}]},"status":{}}`, dt, gpuVal)
-	}
 	cases := []struct {
 		name string
 		in   string
 		want []string
 	}{
-		{"a running pod claims its card", `{"items":[` + pod(false, "1") + `]}`, []string{"1"}},
-		{"a terminating pod releases its card", `{"items":[` + pod(true, "1") + `]}`, []string{}},
-		{"a spanning pod claims every card in its pool", `{"items":[` + pod(false, "0,1") + `]}`, []string{"0", "1"}},
-		{"an empty value claims nothing", `{"items":[` + pod(false, "") + `]}`, []string{}},
-		{"two pods claim their own cards", `{"items":[` + pod(false, "0") + `,` + pod(false, "1") + `]}`, []string{"0", "1"}},
+		{"a running model pod claims its card", pods(model(sref("1"))), []string{"1"}},
+		{"a terminating model pod releases its card", pods(podSpec{component: componentModel, env: sref("1"), deleting: true}), []string{}},
+		{"a spanning model pod claims every card in its pool", pods(model(sref("0,1"))), []string{"0", "1"}},
+		{"an empty value claims nothing", pods(model(sref(""))), []string{}},
+		{"two pods claim their own cards", pods(model(sref("0")), model(sref("1"))), []string{"0", "1"}},
+		{"a finished model pod releases its card", pods(podSpec{component: componentModel, env: sref("1"), phase: "Failed"}), []string{}},
+
+		// A pod that owns no card is invisible to placement: the head-end pod and
+		// every log pod share the namespace with the models.
+		{"a pod of another component claims nothing", pods(podSpec{component: "head-end", env: sref("0")}), []string{}},
+		{"a pod with no component label claims nothing", pods(podSpec{env: sref("0")}), []string{}},
+
+		// gpu-job: a pod that holds a card and is not a model. It carries only
+		// component=gpu-job, which is the point of the category — component=model
+		// is what puts a pod in the llama-swap roster, the model dashboards and the
+		// ai_model_* metrics.
+		{"a gpu-job pod claims its card without being a model", pods(gpuJob(sref("1"))), []string{"1"}},
+		{"a gpu-job pod claims every card in its pool", pods(gpuJob(sref("0,1"))), []string{"0", "1"}},
+		{"a gpu-job pod that declares only the pool label claims it", pods(podSpec{component: componentGpuJob, pool: "0,1"}), []string{"0", "1"}},
+		{"a gpu-job pod narrowed to one card is not charged for its pool", pods(podSpec{component: componentGpuJob, pool: "0,1", env: sref("1")}), []string{"1"}},
+		{"a terminating gpu-job pod releases its card", pods(podSpec{component: componentGpuJob, env: sref("1"), deleting: true}), []string{}},
+		{"a failed gpu-job pod releases its card", pods(podSpec{component: componentGpuJob, env: sref("1"), phase: "Failed"}), []string{}},
+		{"a succeeded gpu-job pod releases its card", pods(podSpec{component: componentGpuJob, env: sref("1"), phase: "Succeeded"}), []string{}},
+		// Unknown is a node that stopped reporting, not a pod that finished; the
+		// container there may still hold its card.
+		{"a gpu-job pod on a silent node keeps its card", pods(podSpec{component: componentGpuJob, env: sref("1"), phase: "Unknown"}), []string{"1"}},
+		{"a gpu-job and a model claim their own cards", pods(gpuJob(sref("0")), model(sref("1"))), []string{"0", "1"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -191,6 +207,96 @@ func TestCardsFromPods(t *testing.T) {
 				if !got[c] {
 					t.Errorf("card %s not busy in %v", c, got)
 				}
+			}
+		})
+	}
+}
+
+// podSpec builds a pod for the scan tests; every field left zero is a field the
+// API did not send, so a case states only what its scenario is about.
+type podSpec struct {
+	component string  // app.kubernetes.io/component
+	pool      string  // ai.mestruble.dev/gpu-pool label
+	env       *string // NVIDIA_VISIBLE_DEVICES; nil omits the variable entirely
+	phase     string  // status.phase; "" omits the field, which is a pod that has not finished
+	deleting  bool
+}
+
+func model(gpu *string) podSpec  { return podSpec{component: componentModel, env: gpu} }
+func gpuJob(gpu *string) podSpec { return podSpec{component: componentGpuJob, env: gpu} }
+
+func sref(s string) *string { return &s }
+
+// json renders the pod as the API returns it, so the rules are tested against
+// the JSON a cluster sends rather than against a struct the test invented.
+func (s podSpec) json() string {
+	var labels []string
+	if s.component != "" {
+		labels = append(labels, fmt.Sprintf("%q:%q", componentLabel, s.component))
+	}
+	if s.pool != "" {
+		labels = append(labels, fmt.Sprintf("%q:%q", gpuPoolLabel, s.pool))
+	}
+	dt := "null"
+	if s.deleting {
+		dt = `"2026-10-12T00:00:00Z"`
+	}
+	env := ""
+	if s.env != nil {
+		env = fmt.Sprintf(`"env":[{"name":%q,"value":%q}]`, gpuEnv, *s.env)
+	}
+	phase := ""
+	if s.phase != "" {
+		phase = fmt.Sprintf(`"phase":%q`, s.phase)
+	}
+	return fmt.Sprintf(`{"metadata":{"name":"p","labels":{%s},"deletionTimestamp":%s},`+
+		`"spec":{"containers":[{%s}]},"status":{%s}}`, strings.Join(labels, ","), dt, env, phase)
+}
+
+func pods(specs ...podSpec) string {
+	items := make([]string, 0, len(specs))
+	for _, s := range specs {
+		items = append(items, s.json())
+	}
+	return `{"items":[` + strings.Join(items, ",") + `]}`
+}
+
+// A card held by a gpu-job refuses a wake exactly as a card held by a model
+// does: chooseCard reads the busy set and cannot tell which kind of pod put the
+// card in it. Both busy sets below come from cardsFromPods, so the chain from
+// scan to decision is covered without a cluster; wake() wraps the decision in
+// the flock and the card-wait loop, so a refusal here is a wait there.
+func TestChooseCardRefusesCardsHeldByGpuJobs(t *testing.T) {
+	busy := func(spec podSpec) map[string]bool {
+		t.Helper()
+		got, err := cardsFromPods([]byte(pods(spec)))
+		if err != nil {
+			t.Fatalf("cardsFromPods: %v", err)
+		}
+		return got
+	}
+	heldByJob, heldByModel := busy(gpuJob(sref("1"))), busy(model(sref("1")))
+
+	cases := []struct {
+		name  string
+		busy  map[string]bool
+		cards []string
+		pool  string
+		mode  string
+		want  string
+	}{
+		{"a one-card pool held by a gpu-job is refused", heldByJob, []string{"1"}, "1", "any", ""},
+		{"a one-card pool held by a model is refused", heldByModel, []string{"1"}, "1", "any", ""},
+		{"an any-mode wake takes the free card of its pool", heldByJob, []string{"0", "1"}, "0,1", "any", "0"},
+		{"a spanning wake is refused when a gpu-job holds one of its cards", heldByJob, []string{"0", "1"}, "0,1", "all", ""},
+		{"a spanning wake takes its pool when a gpu-job holds another card",
+			busy(gpuJob(sref("2"))), []string{"0", "1"}, "0,1", "all", "0,1"},
+		{"an unheld card is free", busy(gpuJob(sref("2"))), []string{"1"}, "1", "any", "1"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := chooseCard(tc.busy, tc.cards, tc.pool, tc.mode); got != tc.want {
+				t.Errorf("chooseCard = %q, want %q", got, tc.want)
 			}
 		})
 	}

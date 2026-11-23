@@ -40,6 +40,7 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"slices"
 	"sort"
 	"strings"
 	"syscall"
@@ -54,10 +55,19 @@ const (
 	// modelLabel carries the llama-swap model ID, which is what the roster
 	// speaks. Deployment names are derived from it, not the other way round.
 	modelLabel = "ai.mestruble.dev/model"
-	// The label every model pod carries (rendered by ai.modelLabels in the
-	// chart): the busy-card scan selects on it so only model pods count as
-	// holding cards.
-	modelComponentLabel = "app.kubernetes.io/component"
+	// The label that says what a pod in the model namespace is; its value is
+	// what decides whether GPU placement sees the pod at all.
+	componentLabel = "app.kubernetes.io/component"
+	// componentModel is a fleet model (rendered by ai.modelLabels in the chart,
+	// and the value the network policies and the ai-fleet ServiceMonitor select
+	// on). componentGpuJob is a pod that holds a card and is not a model - a
+	// render, a fine-tune run. It must never carry component=model: that label
+	// is what puts a pod in the llama-swap roster, the model dashboards and the
+	// ai_model_* metrics, and a two-minute batch job belongs in none of them.
+	// Without a value of its own such a pod was invisible to placement, which is
+	// how a wake landed a model on a card the render already held.
+	componentModel  = "model"
+	componentGpuJob = "gpu-job"
 	// The GPU pool and mode travel as labels on the spec the chart rendered:
 	// gpu-pool is the list of cards a model may use ("0", "1", "0,1"), gpu-mode
 	// is how to read it - "any" (land on one free card from the pool) or "all"
@@ -76,6 +86,11 @@ const (
 	// coordination that survives a holder's death.
 	cardLockPath = "/tmp/swapk8s-cards.lock"
 )
+
+// cardOwnerComponents is the one list the busy-card scan derives from: the API
+// selector and the classifier both read it, so a further category of card holder
+// is added here and nowhere else.
+var cardOwnerComponents = []string{componentModel, componentGpuJob}
 
 // ---- Kubernetes client -----------------------------------------------------
 
@@ -361,8 +376,9 @@ func (c *client) applyDeployment(ns, name, gpu string, spec []byte, existing *de
 type podList struct {
 	Items []struct {
 		Metadata struct {
-			Name              string `json:"name"`
-			DeletionTimestamp any    `json:"deletionTimestamp"`
+			Name              string            `json:"name"`
+			Labels            map[string]string `json:"labels"`
+			DeletionTimestamp any               `json:"deletionTimestamp"`
 		} `json:"metadata"`
 		Spec struct {
 			Containers []struct {
@@ -441,14 +457,16 @@ func (c *client) readyPod(ns string, sel map[string]string) (string, string, err
 	return "", reason, nil
 }
 
-// busyCards returns the cards held by model pods in the namespace. A card is
-// busy from the moment a pod claiming it exists - not from readiness - because
-// a loading pod already owns its card, and treating it otherwise is how a
-// second wake lands on a busy card and crashloops. Terminating pods are
-// excluded: their card is going back on its own.
+// busyCards returns the cards held by the pods that own one - models and
+// gpu-jobs - in the namespace. A card is busy from the moment a pod claiming it
+// exists - not from readiness - because a loading pod already owns its card, and
+// treating it otherwise is how a second wake lands on a busy card and
+// crashloops. The selector asks the API for the card-owning components only;
+// the rules about which of those pods actually holds what live in
+// cardsFromPods.
 func (c *client) busyCards(ctx context.Context, ns string) (map[string]bool, error) {
 	q := url.Values{}
-	q.Set("labelSelector", modelComponentLabel+"=model")
+	q.Set("labelSelector", componentLabel+" in ("+strings.Join(cardOwnerComponents, ",")+")")
 	raw, err := c.do(http.MethodGet, fmt.Sprintf("/api/v1/namespaces/%s/pods?%s", ns, q.Encode()), "", nil)
 	if err != nil {
 		return nil, err
@@ -457,8 +475,9 @@ func (c *client) busyCards(ctx context.Context, ns string) (map[string]bool, err
 }
 
 // cardsFromPods is the pure half of busyCards so the busy-card rules are
-// testable without a cluster: terminating pods release, spanning pods claim
-// every card in their pool, empty values claim nothing.
+// testable without a cluster: only a card-owning component claims, terminating
+// and finished pods release, spanning pods claim every card in their pool,
+// empty values claim nothing.
 func cardsFromPods(raw []byte) (map[string]bool, error) {
 	pl := &podList{}
 	if err := json.Unmarshal(raw, pl); err != nil {
@@ -469,19 +488,79 @@ func cardsFromPods(raw []byte) (map[string]bool, error) {
 		if p.Metadata.DeletionTimestamp != nil {
 			continue
 		}
+		// A finished pod holds nothing. This is the rule a batch job forces and a
+		// Deployment never raises: a Job pod that Succeeded or Failed keeps
+		// existing until jobHistoryLimit reaps it, while its process - and with it
+		// the VRAM the kernel gave that process - is already gone. Counting it
+		// would keep a card claimed for a job that will never run again. Unknown
+		// is deliberately NOT terminal: that is a node that stopped reporting, and
+		// the container there may still hold its card.
+		switch p.Status.Phase {
+		case "Succeeded", "Failed":
+			continue
+		}
+		// A pod whose component is neither model nor gpu-job (the head-end, a log
+		// pod) is invisible: a pod that cannot hold a card must not block a wake.
+		if !slices.Contains(cardOwnerComponents, p.Metadata.Labels[componentLabel]) {
+			continue
+		}
+		// The env is the card the runtime actually gave the container: for a model
+		// the one card placement narrowed its pool to, for a gpu-job the pool it
+		// declared verbatim, because nothing narrows a job's spec. The pool label
+		// is read only when no container names a card, so a job whose env was
+		// narrowed to one card is never charged for the rest of its pool.
+		var held []string
 		for _, c := range p.Spec.Containers {
 			for _, e := range c.Env {
 				if e.Name == gpuEnv {
-					for _, card := range strings.Split(e.Value, ",") {
-						if card != "" {
-							busy[card] = true
-						}
-					}
+					held = append(held, splitCards(e.Value)...)
 				}
 			}
 		}
+		if len(held) == 0 {
+			held = splitCards(p.Metadata.Labels[gpuPoolLabel])
+		}
+		for _, card := range held {
+			busy[card] = true
+		}
 	}
 	return busy, nil
+}
+
+// splitCards turns a card list ("0", "0,1") into its members; the empty value a
+// pod that declares nothing carries yields none.
+func splitCards(v string) []string {
+	var out []string
+	for _, card := range strings.Split(v, ",") {
+		if card != "" {
+			out = append(out, card)
+		}
+	}
+	return out
+}
+
+// chooseCard is the placement decision, pure so it is testable without a
+// cluster: an any-mode model takes the first free card of its pool, an all-mode
+// (spanning) model takes the pool only when every card in it is free. An empty
+// answer means nothing is free, and wake() waits under the flock rather than
+// failing fast: a busy card is a temporary condition and the request should
+// outlive it. A card held by a gpu-job refuses exactly as one held by a model
+// does - the two categories differ in who created them, not in what they block.
+func chooseCard(busy map[string]bool, cards []string, pool, mode string) string {
+	if mode == "all" {
+		for _, card := range cards {
+			if busy[card] {
+				return ""
+			}
+		}
+		return pool
+	}
+	for _, card := range cards {
+		if !busy[card] {
+			return card
+		}
+	}
+	return ""
 }
 
 // cardLock serialises placement across every shim in the head-end pod. The
@@ -650,8 +729,8 @@ func wake(ctx context.Context, kc *client, o *options) (*deployment, error) {
 	}
 
 	// FRESH PLACEMENT. The spec arrives with the card POOL; the shim narrows it
-	// to a card no existing model pod holds, or waits for one, or fails with a
-	// reason a client can act on. The chart's spec is applied only here, on the
+	// to a card no existing holder - model or gpu-job - claims, or waits for one,
+	// or fails with a reason a client can act on. The chart's spec is applied only here, on the
 	// way up: patching a Deployment while it serves would roll the pod out from
 	// under a router that believes it has a healthy backend, so a chart change
 	// takes effect on the next wake after sleep. That staleness is bounded by
@@ -712,26 +791,9 @@ func wake(ctx context.Context, kc *client, o *options) (*deployment, error) {
 		busy, err := kc.busyCards(ctx, o.namespace)
 		if err != nil {
 			cardUnlock(lock)
-			return nil, fmt.Errorf("scan model pods: %w", err)
+			return nil, fmt.Errorf("scan card holders: %w", err)
 		}
-		if mode == "all" {
-			free := true
-			for _, card := range cards {
-				if busy[card] {
-					free = false
-				}
-			}
-			if free {
-				chosen = pool // a spanning model uses the whole pool, verbatim
-			}
-		} else {
-			for _, card := range cards {
-				if !busy[card] {
-					chosen = card
-					break
-				}
-			}
-		}
+		chosen = chooseCard(busy, cards, pool, mode)
 		if chosen != "" {
 			if err := kc.applyDeployment(o.namespace, name, chosen, spec, cur); err != nil {
 				cardUnlock(lock)
