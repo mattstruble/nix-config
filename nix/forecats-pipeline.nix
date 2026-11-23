@@ -32,17 +32,21 @@
       testPython = pkgs.python3.withPackages (ps: runtimeDeps ps ++ [ ps.pytest ]);
       panelFont = "${pkgs.dejavu_fonts}/share/fonts/truetype/DejaVuSans-Bold.ttf";
 
-      # The diffusion CLI the render stage SSHes out and runs. It is part of this
-      # package so that its runtime is rooted by a store path a host holds: a
-      # hand-built binary on the render host died when nix collected the glibc
-      # its interpreter came from.
+      # The two trees, as the installed layout names them. Both entry points run
+      # one interpreter over both, and the path is written once so the wrappers
+      # cannot disagree about it.
+      pythonPath = "${placeholder "out"}/src/forecats-day-context:${placeholder "out"}/src/forecats-pipeline";
+
+      # The diffusion CLI the render stage runs as a child process. It is part of
+      # this package so that its runtime is rooted by a store path a host holds: a
+      # hand-built binary on the render host died when nix collected the glibc its
+      # interpreter came from.
       #
       # nixpkgs' portable build, not `stable-diffusion-cpp-cuda`: that one has no
-      # substitute and pulls the unfree CUDA toolkit into a package whose own
-      # code never runs the binary, it SSHes. The render host renders with its
-      # own CUDA build named by `--sd-cli-binary`, which now has a store path to
-      # point at instead of a name on a login PATH; the flag keeps its bare-name
-      # default, so a host that already has its own binary on PATH is unaffected.
+      # substitute and pulls the unfree CUDA toolkit into a package that is
+      # installed on hosts that may never render. A pod that renders on a card
+      # names a CUDA build with `--sd-cli-binary`; the default stays the bare name,
+      # so the copy this closure carries is the copy PATH resolves.
       sdCli = pkgs.stable-diffusion-cpp;
     in
     {
@@ -81,7 +85,7 @@
           cp -r forecats-pipeline forecats-day-context "$out/src/"
 
           # Named for the binary the render stage runs, so that the copy this
-          # closure carries is the copy `--sd-cli-binary` can name.
+          # closure carries is the copy the default `--sd-cli-binary` resolves to.
           ln -s ${sdCli}/bin/sd-cli "$out/bin/sd-cli"
 
           cat > "$out/bin/forecats-pipeline" <<'WRAPPER'
@@ -90,7 +94,7 @@
 
           export FORECATS_PANEL_FONT='${panelFont}'
           export PATH="${placeholder "out"}/bin''${PATH:+:$PATH}"
-          export PYTHONPATH='${placeholder "out"}/src/forecats-day-context:${placeholder "out"}/src/forecats-pipeline'
+          export PYTHONPATH='${pythonPath}'
 
           # The pipeline's own default for the household file is a path under a
           # repository root; the file that ships in this closure is the default
@@ -108,6 +112,20 @@
           exec '${runtimePython}/bin/python3' -m forecats_pipeline "$@"
           WRAPPER
           chmod +x "$out/bin/forecats-pipeline"
+
+          # The placement step of RUNBOOK.md, as a command rather than a
+          # `python3 -m` line a person has to assemble: the weights and the
+          # reference photos are host data, and this is what puts them where a
+          # render looks. Same interpreter and same two trees as the nightly.
+          cat > "$out/bin/forecats-stage-inputs" <<'WRAPPER'
+          #!/bin/sh
+          set -eu
+
+          export PYTHONPATH='${pythonPath}'
+
+          exec '${runtimePython}/bin/python3' -m forecats_pipeline.stage_inputs "$@"
+          WRAPPER
+          chmod +x "$out/bin/forecats-stage-inputs"
 
           runHook postInstall
         '';

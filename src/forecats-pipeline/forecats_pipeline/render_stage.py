@@ -1,17 +1,20 @@
 """Stage 3: make the picture.
 
 Two implementations of one `Renderer` contract. `FakeRenderer` writes a
-placeholder PNG and is what the suite runs against — the chain is testable
-with no GPU, no SSH and no weights on disk. `SdCliRenderer` is the real one:
-it SSHes to the box that owns the cards and runs the diffusion CLI there.
+placeholder PNG and is what the suite runs against — the chain is testable with
+no GPU and no weights on disk. `SdCliRenderer` is the real one: it runs the
+diffusion CLI as a child process, in this container, on the card this container
+was placed on.
 
-The real renderer takes GPU1. GPU0 is the owner's live interactive session and
-a nightly job that stole it would be noticed within seconds, so the device is
-pinned here rather than left to whatever `CUDA_VISIBLE_DEVICES` the login shell
-happens to carry.
+Nothing here reaches another host. The stage used to SSH to the box with the
+cards and scp the PNG back, which asked a pod for a hostname and an SSH key in
+order to use the GPU already attached to it, and left that pod holding a card
+nothing inside it touched. The weights, the reference photos and the CLI arrive
+as mounted volumes and a store path on `PATH`; `RUNBOOK.md` names the claims and
+the step that fills them.
 """
 
-import shlex
+import os
 import subprocess
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -31,24 +34,30 @@ __all__ = [
     "SdCliSettings",
 ]
 
-# GPU0 is the owner's session. Nothing in this module may choose it.
-GPU_DEVICE = "1"
-
-# sd-cli on this host needs the opengl driver directory on LD_LIBRARY_PATH. With
-# it absent, CUDA does not fail — it initialises against a stub driver, logs
-# "no GPU devices", and renders on the CPU. Same exit code, same output file, a
-# different sampler schedule and roughly ten times the wall time. Nothing about
-# the result says so, which is why the renderer checks the log rather than
-# trusting the exit status.
-RENDER_LIBRARY_PATH = "/run/opengl-driver/lib"
+# sd-cli needs the real `libcuda.so.1` on `LD_LIBRARY_PATH`. Without it CUDA does
+# not fail: it initialises against the stub driver in a nix CUDA build closure,
+# logs "no GPU devices", and renders on the CPU. Same exit code, same output
+# file, a different sampler schedule, roughly ten times the wall time. On a
+# NixOS host the real driver sits in this directory; a GPU pod has it on the
+# default loader path instead, so the directory is prepended when it exists
+# rather than exported unconditionally. Nothing about the picture says so, which
+# is why the renderer reads the log instead of trusting the exit status.
+GPU_DRIVER_DIRECTORY = "/run/opengl-driver/lib"
 
 # What sd-cli prints when it has quietly given up on the GPU.
 CPU_FALLBACK_MARKS = ("CUDA driver is a stub library", "no GPU devices")
 
-# A 6-step 1024² render on the 3B measures about 143 s; the rest of the budget
-# is SSH setup and model load. A render that exceeds it is hung, not slow.
-# The schedule, in one place. The timeout used to be a separate number sized
-# for a 6-step run, so moving to 20 steps made every render die at 600 s with a
+# The directory the weights volume is mounted at, in the pod and on the host that
+# fills it. One path for both, so the file names below are the files a render
+# opens; `forecats-weights` is the claim that carries them.
+MODEL_DIRECTORY = "/var/lib/llama-models/h3image"
+
+# Where the reference-photo volume is mounted, on the same arrangement from the
+# read-only `forecats-photos` claim.
+PHOTO_DIRECTORY = "/var/lib/forecats/photos"
+
+# The schedule, in one place. The timeout used to be a separate number sized for
+# a 6-step run, so moving to 20 steps made every render die at 600 s with a
 # message that blamed ssh. Anything that has to agree with the schedule is now
 # derived from it.
 RENDER_STEPS = 20
@@ -63,8 +72,6 @@ WEIGHT_LOAD_ALLOWANCE_SECONDS = 420.0
 
 RENDER_TIMEOUT_SECONDS = RENDER_STEPS * SECONDS_PER_STEP + WEIGHT_LOAD_ALLOWANCE_SECONDS
 
-MODEL_DIRECTORY = "/var/lib/llama-models/h3image"
-
 _PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 
 
@@ -72,9 +79,10 @@ _PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 class Rendered:
     """A panel that exists, and what it took to draw it.
 
-    `weights` are paths, not digests: the diffusion model is 10 GB on a box
-    that is about to render with it, and a provenance field must not cost a
-    read of the thing it describes.
+    `weights` and `reference_photos` are paths, not digests: a provenance field
+    must not cost a read of the 18 GB it describes, and the digests of what is on
+    the volume are the placement step's job (`stage_inputs.py`), taken when the
+    bytes arrived.
     """
 
     panel_path: Path
@@ -138,25 +146,49 @@ class FakeRenderer:
 
 @dataclass(frozen=True)
 class SdCliSettings:
-    """Where the weights live on the render host, and what the box is called.
+    """Which weight files a render opens, and which card it opens them on.
 
-    Paths, not a directory listing: the model directory holds 17 GB and the
-    three files that matter are named here on purpose.
+    Paths, not a directory listing: the model directory holds 17 GB and the four
+    files that matter are named here on purpose. They are the defaults rather
+    than a setting because the volume they mount from is fixed by the claim, and
+    a render that looked elsewhere would find an empty directory.
     """
 
-    host: str
     diffusion_model: str = f"{MODEL_DIRECTORY}/minimax_h3_image_pruned-Q3_K_M.gguf"
     vae: str = f"{MODEL_DIRECTORY}/vae_diffusion_pytorch_model.safetensors"
     text_encoder: str = f"{MODEL_DIRECTORY}/p-h3-image_text_encoder_int8_convrot.safetensors"
     tokenizer: str = f"{MODEL_DIRECTORY}/p-h3-image_tokenizer.json"
+    gpu_device: str | None = None
 
     @property
     def weights(self) -> tuple[str, ...]:
         return (self.diffusion_model, self.vae, self.text_encoder)
 
+    @property
+    def files(self) -> tuple[str, ...]:
+        """Every weight-side file the CLI is handed, tokenizer included."""
+        return (*self.weights, self.tokenizer)
+
+    @classmethod
+    def for_directory(cls, directory: str | Path, gpu_device: str | None = None) -> "SdCliSettings":
+        """The same four files, read out of another directory.
+
+        The defaults are the mount point of the weights volume, which is what a
+        pod has; a host that keeps the weights anywhere else names its own.
+        """
+        defaults = cls()
+        root = Path(directory)
+        return cls(
+            diffusion_model=str(root / Path(defaults.diffusion_model).name),
+            vae=str(root / Path(defaults.vae).name),
+            text_encoder=str(root / Path(defaults.text_encoder).name),
+            tokenizer=str(root / Path(defaults.tokenizer).name),
+            gpu_device=gpu_device,
+        )
+
 
 class SdCliRenderer:
-    """The real renderer: the diffusion CLI, on the GPU box, on GPU1."""
+    """The real renderer: the diffusion CLI, run here, on the card held here."""
 
     name = "sd-cli"
 
@@ -170,7 +202,7 @@ class SdCliRenderer:
         timeout_seconds: float = RENDER_TIMEOUT_SECONDS,
     ) -> None:
         if not binary.strip():
-            raise ValueError("binary must be the path to the diffusion CLI on the render host")
+            raise ValueError("binary must be the diffusion CLI to run")
         self._binary = binary
         self._settings = settings
         self._width_px = width_px
@@ -185,35 +217,32 @@ class SdCliRenderer:
         reference_photos: Sequence[Path],
         destination: Path,
     ) -> Rendered | PipelineRefusal:
-        # The CLI writes where it is told, on its own host; the panel is then
-        # copied back so that `destination` means the same thing for both
-        # renderers.
-        remote_path = f"/tmp/forecats-{seed}.png"
-        argv = self._command(caption, seed=seed, reference_photos=reference_photos, remote_path=remote_path)
-        run = self._run(["ssh", "-o", "BatchMode=yes", self._settings.host, shlex.join(argv)])
-        if isinstance(run, PipelineRefusal):
-            return run
-        if any(mark in run for mark in CPU_FALLBACK_MARKS):
+        absent = self._absent_inputs(reference_photos)
+        if absent:
+            return PipelineRefusal(stage="render", reason=self._absent_reason(absent))
+
+        # The CLI writes the panel itself, so the directory has to exist first
+        # and a refusal after this point may leave a partial file behind.
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        argv = self._command(caption, seed=seed, reference_photos=reference_photos, destination=destination)
+        log = self._run(argv)
+        if isinstance(log, PipelineRefusal):
+            return log
+        if any(mark in log for mark in CPU_FALLBACK_MARKS):
             # It exited 0 and wrote a picture. It drew that picture on the CPU,
-            # on a different schedule, in ten times the time.
+            # on a different schedule, at ten times the cost.
             return PipelineRefusal(
                 stage="render",
                 reason=(
-                    f"{self.name}: the render host had no usable GPU and fell back to "
-                    f"the CPU ({next(m for m in CPU_FALLBACK_MARKS if m in run)}); "
-                    f"LD_LIBRARY_PATH={RENDER_LIBRARY_PATH} must be exported on that host"
+                    f"{self.name}: no usable GPU, so the model fell back to the CPU "
+                    f"({next(mark for mark in CPU_FALLBACK_MARKS if mark in log)}); the real "
+                    f"libcuda must be on LD_LIBRARY_PATH ({GPU_DRIVER_DIRECTORY} on a NixOS host)"
                 ),
             )
-
-        fetch = self._run(
-            ["scp", "-o", "BatchMode=yes", f"{self._settings.host}:{remote_path}", str(destination)]
-        )
-        if isinstance(fetch, PipelineRefusal):
-            return fetch
         if not destination.is_file():
             return PipelineRefusal(
                 stage="render",
-                reason=f"{self.name}: {remote_path} came back but is not at {destination}",
+                reason=f"{self.name}: exited 0 without writing {destination}",
             )
 
         return Rendered(
@@ -226,19 +255,35 @@ class SdCliRenderer:
             reference_photos=tuple(reference_photos),
         )
 
+    def _absent_inputs(self, reference_photos: Sequence[Path]) -> tuple[Path, ...]:
+        """The files this render was told to open and cannot find.
+
+        A weight that is absent says a volume mounted as an empty directory. A
+        photo that is absent is the worse half: sd-cli renders an invented
+        animal, exits 0, and the panel shows a cat that does not live here.
+        """
+        expected = [Path(name) for name in self._settings.files]
+        expected.extend(reference_photos)
+        return tuple(path for path in expected if not path.is_file())
+
+    def _absent_reason(self, absent: Sequence[Path]) -> str:
+        named = ", ".join(str(path) for path in absent)
+        return (
+            f"{self.name}: no such file — {named}; weights are read from the "
+            f"{MODEL_DIRECTORY} volume and reference photos from the {PHOTO_DIRECTORY} one, "
+            "so an absent file is a volume that mounted empty (see RUNBOOK.md)"
+        )
+
     def _command(
         self,
         caption: Caption,
         *,
         seed: int,
         reference_photos: Sequence[Path],
-        remote_path: str,
+        destination: Path,
     ) -> list[str]:
         settings = self._settings
         argv = [
-            "env",
-            f"CUDA_VISIBLE_DEVICES={GPU_DEVICE}",
-            f"LD_LIBRARY_PATH={RENDER_LIBRARY_PATH}",
             self._binary,
             "--diffusion-model",
             settings.diffusion_model,
@@ -268,7 +313,7 @@ class SdCliRenderer:
             "-H",
             str(self._height_px),
             "-o",
-            remote_path,
+            str(destination),
         ]
         for photo in reference_photos:
             argv += ["-r", str(photo)]
@@ -276,11 +321,35 @@ class SdCliRenderer:
             argv.append("--increase-ref-index")
         return argv
 
+    def _child_environment(self) -> dict[str, str]:
+        """This process's environment, plus the one thing the CLI cannot default.
+
+        The card is not chosen here. A pod is pinned by `NVIDIA_VISIBLE_DEVICES`,
+        and the nvidia runtime then hides the other cards from inside the
+        container, so a device named here would name one the render cannot see.
+        `--render-gpu` is for a host with no such pin; there GPU0 is the owner's
+        live session and a nightly job that stole it would be noticed in seconds.
+        """
+        environment = dict(os.environ)
+        if self._settings.gpu_device is not None:
+            environment["CUDA_VISIBLE_DEVICES"] = self._settings.gpu_device
+        if Path(GPU_DRIVER_DIRECTORY).is_dir():
+            current = environment.get("LD_LIBRARY_PATH", "")
+            environment["LD_LIBRARY_PATH"] = (
+                GPU_DRIVER_DIRECTORY if not current else f"{GPU_DRIVER_DIRECTORY}{os.pathsep}{current}"
+            )
+        return environment
+
     def _run(self, argv: Sequence[str]) -> str | PipelineRefusal:
         command = list(argv)
         try:
             completed = subprocess.run(
-                command, capture_output=True, text=True, timeout=self._timeout_seconds, check=False
+                command,
+                capture_output=True,
+                text=True,
+                timeout=self._timeout_seconds,
+                env=self._child_environment(),
+                check=False,
             )
         except subprocess.TimeoutExpired:
             return PipelineRefusal(

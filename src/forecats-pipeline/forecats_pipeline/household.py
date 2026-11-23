@@ -7,7 +7,7 @@ chain.
 The file is plain YAML with no schema language: it holds two cats, and a
 validator generator for that is a second file to keep in step. What is checked
 here is only what would otherwise fail later and far away — a pet with no
-appearance, a photo path that will not survive the trip to the render host.
+appearance, a pet with no photo named for it.
 '''
 
 from pathlib import Path

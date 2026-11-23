@@ -18,7 +18,10 @@
 pets:
   - name: Milo
     type: cat
-    reference_photo: /tmp/h3image-ref/milo-01.jpg
+    # The photo volume's mount point — the same path in the pod and on the host
+    # that fills it, because the render opens this file and nothing else.
+    # `stage_inputs photos` refuses to place a photo anywhere else.
+    reference_photo: /var/lib/forecats/photos/milo-01.jpg
     visual_description: >
       medium-haired orange-and-white tabby with darker orange stripes against a
       lighter ginger coat, forming a mackerel pattern. Distinctive white facial
@@ -39,7 +42,7 @@ pets:
     type: cat
     # img_1683, converted from the 4032x3024 HEIC: a whole-body view, which the
     # head-and-shoulders crop it replaced could not carry.
-    reference_photo: /tmp/h3image-ref/mochi-02.jpg
+    reference_photo: /var/lib/forecats/photos/mochi-02.jpg
     visual_description: >
       medium-haired ginger-orange tabby with traditional darker orange stripes
       throughout his coat. Predominantly orange, without Milo's distinctive

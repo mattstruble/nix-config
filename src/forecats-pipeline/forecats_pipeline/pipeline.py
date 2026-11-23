@@ -37,7 +37,13 @@ from forecats_pipeline.household import load_household
 from forecats_pipeline.occasion_research import OccasionResearcher
 from forecats_pipeline.overlay_stage import overlay_forecast
 from forecats_pipeline.publish_stage import FRESHNESS_NAME, existing_panel, publish_panel
-from forecats_pipeline.render_stage import FakeRenderer, Renderer, SdCliRenderer, SdCliSettings
+from forecats_pipeline.render_stage import (
+    MODEL_DIRECTORY,
+    FakeRenderer,
+    Renderer,
+    SdCliRenderer,
+    SdCliSettings,
+)
 
 __all__ = [
     "CALENDAR_FEEDS_ENV",
@@ -71,7 +77,7 @@ RESEARCH_ENDPOINT_ENV = "FORECATS_RESEARCH_ENDPOINT"
 DEFAULT_GATEWAY_ENDPOINT = "http://mjolnir:8000/v1/chat/completions"
 
 # The font the forecast box is drawn in, resolved by nix rather than by a path
-# that happens to exist on the render host.
+# that happens to exist outside the store.
 PANEL_FONT_ENV = "FORECATS_PANEL_FONT"
 
 
@@ -101,7 +107,7 @@ def run_nightly(
     published_at: datetime | None = None,
 ) -> Published | Skipped | PipelineRefusal:
     """Gather the day, draw it, publish it — or stop and say why."""
-    # The renderer scp's into this directory, so it has to exist before anything
+    # The renderer writes into this directory, so it has to exist before anything
     # is drawn; a first run on a fresh host otherwise spends two minutes on a
     # render and then loses it to a missing directory.
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -362,7 +368,10 @@ def _nightly_collaborators(
     renderer: Renderer = (
         FakeRenderer()
         if args.renderer == "fake"
-        else SdCliRenderer(args.sd_cli_binary, SdCliSettings(host=args.render_host))
+        else SdCliRenderer(
+            args.sd_cli_binary,
+            SdCliSettings.for_directory(args.model_directory, gpu_device=args.render_gpu),
+        )
     )
     return {
         # Home Assistant is the named fallback where an instance already runs
@@ -407,7 +416,13 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
         ),
     )
     parser.add_argument("--renderer", choices=("fake", "sd-cli"), default="fake")
-    parser.add_argument("--render-host", default="mjolnir")
+    parser.add_argument(
+        "--render-gpu",
+        help=(
+            "pin the render to this card number; leave it unset to inherit the card this "
+            "process was given, which is what a GPU pod is pinned by"
+        ),
+    )
     parser.add_argument(
         "--weather",
         choices=tuple(condition.value for condition in WeatherCondition),
@@ -422,8 +437,19 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
         help="how far ahead to look for an occasion, so the panel can prepare for it; 0 turns it off",
     )
     parser.add_argument(
+        "--model-directory",
+        default=MODEL_DIRECTORY,
+        help=(
+            "the directory the weight files are read from; the default is where the "
+            "weights volume mounts, which is what a render pod has"
+        ),
+    )
+    parser.add_argument(
         "--sd-cli-binary",
         default="sd-cli",
-        help="path to the diffusion CLI on the render host; required with --renderer sd-cli",
+        help=(
+            "the diffusion CLI to run; the packaged entry point puts its own store-built "
+            "sd-cli first on PATH, so the default is that one"
+        ),
     )
     return parser.parse_args(argv)

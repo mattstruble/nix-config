@@ -128,7 +128,7 @@ class Pet:
                 "will colour in from its own imagination"
             )
         if not self.reference_photo.parts:
-            raise ValueError(f"{self.name}: a pet needs a reference photo on the render host")
+            raise ValueError(f"{self.name}: a pet needs a reference photo the render can open")
 
 
 @dataclass(frozen=True)
