@@ -14,6 +14,7 @@ socket at import time.
 
 from collections.abc import Mapping, Sequence
 from datetime import date, datetime, timezone
+from urllib.parse import urlsplit
 
 from day_context import (
     CalendarProvider,
@@ -38,20 +39,52 @@ __all__ = ["PayloadLog", "RecordingFetcher", "build_day_context"]
 class PayloadLog:
     """The body each source answered with, kept for the provenance sidecar.
 
-    Keyed by URL, because the URL is what names the source and the pipeline
-    asks one question per URL per day. The log is held by the caller, not by
-    the `DayContext`: provenance is a publishing concern and a day is not
-    obliged to be published.
+    Filed under the label the source is configured under, never under the URL it
+    was fetched from: the sidecar is written to the volume the panel server
+    publishes, and a private feed address carries the read token of the calendar
+    in its path or query, so a body logged under its address publishes the
+    calendar beside the picture of a cat.
+
+    Two feeds sharing one label keep two entries, because one body filed under
+    another's name is a record that lies about which feed it came from. The log
+    is held by the caller, not by the `DayContext`: provenance is a publishing
+    concern and a day is not obliged to be published.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, names: Mapping[str, str] | None = None) -> None:
+        """`names` maps each source's URL to the label it is configured under."""
+        self._names = {url: label.strip() for url, label in (names or {}).items()}
         self._bodies: dict[str, object] = {}
+        self._owners: dict[str, str] = {}
 
     def record(self, url: str, body: object) -> None:
-        self._bodies[url] = body
+        self._bodies[self._entry_for(url)] = body
 
     def bodies(self) -> dict[str, object]:
         return dict(self._bodies)
+
+    def _entry_for(self, url: str) -> str:
+        """The entry this URL writes: its name, or the next free slot under it."""
+        name = self._names.get(url) or _host_of(url)
+        entry = name
+        slot = 1
+        holder = self._owners.get(entry)
+        while holder is not None and holder != url:
+            slot += 1
+            entry = f"{name}#{slot}"
+            holder = self._owners.get(entry)
+        self._owners[entry] = url
+        return entry
+
+
+def _host_of(url: str) -> str:
+    """The one part of an address that names a source without being one.
+
+    Only a source configured with no label needs this. A feed's token rides in
+    the path or the query (`/public-calendars/<token>`, `?key=<token>`), so a
+    name taken from either would be the credential itself.
+    """
+    return urlsplit(url).hostname or "unlabelled source"
 
 
 class RecordingFetcher:

@@ -17,7 +17,7 @@ from forecats_pipeline.publish_stage import (
 )
 from forecats_pipeline.render_stage import Rendered
 
-PAYLOADS = {"https://api.open-meteo.com/v1/forecast?x=1": {"daily": {"time": ["2026-03-08"]}}}
+PAYLOADS = {"api.open-meteo.com": {"daily": {"time": ["2026-03-08"]}}}
 
 
 def weather() -> WeatherToday:
@@ -83,6 +83,21 @@ def test_the_sidecar_holds_the_payloads_the_sources_actually_sent(tmp_path: Path
     assert record["weather"]["source"] == "open-meteo"
     assert record["weather"]["fetched_at"] == MORNING.isoformat()
     assert record["occasions"] == [{"title": "Birthday dinner", "all_day": False, "described_as": None}]
+
+
+def test_a_payload_filed_under_its_address_is_not_published(tmp_path: Path):
+    """The sidecar is served to whoever can see the panel, so the write refuses.
+
+    The message counts the offending entries without quoting one: the key it is
+    complaining about is the calendar's read token.
+    """
+    addressed = {"https://cloud.example.invalid/dav/public-calendars/token-abc123?export": "ics"}
+
+    with pytest.raises(ValueError, match="feed label") as refusal:
+        publish_panel(context(), caption(), rendered(tmp_path), addressed, output_dir=tmp_path)
+
+    assert "token-abc123" not in str(refusal.value)
+    assert list(tmp_path.glob("*.provenance.json")) == []
 
 
 def test_a_viewer_can_date_the_panel_that_is_hanging_up(tmp_path: Path):

@@ -144,9 +144,40 @@ def test_a_dead_feed_leaves_the_day_renderable_and_names_the_feed_that_died(new_
 
 def test_the_payload_log_holds_the_body_each_source_answered(new_york: Location):
     """Provenance records what was said, not what was understood from it."""
-    log = PayloadLog()
+    log = PayloadLog({FEED_URL: "day feed"})
     feed = RecordingFetcher(StubFeed(text=DAY_ICS.read_text(encoding="utf-8")), log)
 
     IcsCalendarProvider(feed, FEED_URL).fetch_schedule(new_york, date(2026, 3, 8))
 
-    assert log.bodies()[FEED_URL].startswith("BEGIN:VCALENDAR")
+    assert log.bodies()["day feed"].startswith("BEGIN:VCALENDAR")
+
+
+def test_no_payload_is_filed_under_the_address_it_was_fetched_from():
+    """The log is published beside the panel; the address is the credential.
+
+    A feed's token rides in its path, so a source with no configured label is
+    named by its host — the one part of the address that opens no door.
+    """
+    log = PayloadLog()
+
+    log.record("https://api.open-meteo.com/v1/forecast?latitude=40.7", {"daily": {}})
+    log.record("https://cloud.example.invalid/dav/public-calendars/token-abc123?export", "ics")
+
+    assert sorted(log.bodies()) == ["api.open-meteo.com", "cloud.example.invalid"]
+
+
+def test_two_feeds_sharing_a_label_keep_their_own_bodies():
+    """A second feed under a taken label takes another slot, never the first one's.
+
+    Overwriting there would publish one feed's body as the other's, and say
+    nothing about having done it.
+    """
+    family = "https://cloud.example.invalid/dav/public-calendars/token-abc123/basic.ics"
+    work = "https://cloud.example.invalid/dav/public-calendars/token-def456/basic.ics"
+    log = PayloadLog({family: "home", work: "home"})
+
+    log.record(family, "the family feed")
+    log.record(work, "the work feed")
+    log.record(family, "the family feed, re-read")
+
+    assert log.bodies() == {"home": "the family feed, re-read", "home#2": "the work feed"}

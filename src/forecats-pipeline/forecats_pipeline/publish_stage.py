@@ -61,6 +61,7 @@ def publish_panel(
     published_at: datetime | None = None,
 ) -> Published:
     """Write the panel, its provenance, and the freshness artefact."""
+    _named_not_addressed(payloads)
     rendered_at = published_at or datetime.now(UTC)
     if rendered_at.tzinfo is None or rendered_at.utcoffset() is None:
         raise ValueError("published_at must be timezone-aware; it is what staleness is measured from")
@@ -129,6 +130,23 @@ def read_freshness(output_dir: Path, *, now: datetime) -> Staleness:
     rendered_at = datetime.fromisoformat(record["rendered_at"])
     age_hours = (now - rendered_at).total_seconds() / 3600
     return Staleness(rendered_at=rendered_at, age_hours=age_hours)
+
+
+def _named_not_addressed(payloads: dict[str, object]) -> None:
+    """Refuse to publish a payload filed under the address it was fetched from.
+
+    This directory is served to whoever can see the panel, and a private feed
+    address carries the calendar's read token in its path. The check sits at the
+    write rather than in a job that might not have run, and it counts the
+    offending entries without naming them: the key is the secret.
+    """
+    addressed = [name for name in payloads if "://" in name]
+    if addressed:
+        raise ValueError(
+            f"{len(addressed)} of {len(payloads)} payloads are filed under an address "
+            "instead of a feed label; the addresses are not repeated here because a feed "
+            "address is a credential, and this file is published beside the panel"
+        )
 
 
 def _write_json(path: Path, record: dict[str, object]) -> None:

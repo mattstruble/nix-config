@@ -22,7 +22,7 @@ from day_context import (
     WeatherCondition,
     WeatherDay,
 )
-from day_context.schedule_ics import IcsCalendarProvider
+from forecats_pipeline.calendar_feeds import MultiFeedCalendarProvider
 from forecats_pipeline.contracts import PipelineRefusal
 from forecats_pipeline.day_context_stage import PayloadLog, RecordingFetcher
 from forecats_pipeline.contracts import Published
@@ -62,14 +62,18 @@ POD_REMOVED_ENV = (
     "GIT_SSH_COMMAND",
 )
 
+# The label the one feed of `collaborators()` is configured under, and so the
+# name its payload is published under.
+FEED_LABEL = "day feed"
+
 
 def collaborators() -> dict:
-    log = PayloadLog()
+    log = PayloadLog({FEED_URL: FEED_LABEL})
     feed = RecordingFetcher(StubFeed(text=DAY_ICS.read_text(encoding="utf-8")), log)
     sky = StubWeatherProvider("open-meteo", _rain())
     return {
         "weather_providers": [sky],
-        "calendar_provider": IcsCalendarProvider(feed, FEED_URL),
+        "calendar_provider": MultiFeedCalendarProvider(feed, ((FEED_LABEL, FEED_URL),)),
         "renderer": FakeRenderer(weights=("/var/lib/llama-models/h3image/model.gguf",)),
         "payloads": log,
         "household": two_pets(),
@@ -122,6 +126,52 @@ def run(output_dir: Path, **over):
     return run_nightly(DAY, place(), published_at=MORNING, output_dir=output_dir, **parts)
 
 
+def household_file(tmp_path: Path) -> Path:
+    path = tmp_path / "household.yaml"
+    path.write_text(
+        "pets:\n  - name: Milo\n    reference_photo: /refs/milo.jpg\n"
+        "    visual_description: a ginger tabby\n",
+        encoding="utf-8",
+    )
+    return path
+
+
+def run_entry_point(tmp_path: Path, monkeypatch, capsys, feeds: str) -> None:
+    """One nightly through the entry point, or the line it refused with.
+
+    Nothing here reaches the host: the feeds are `file:` URLs, the sky is
+    `--weather`, and the model endpoint the developer's shell may have set is
+    removed, as it is on a render pod.
+    """
+    monkeypatch.setenv(CALENDAR_FEEDS_ENV, feeds)
+    for name in POD_REMOVED_ENV:
+        monkeypatch.delenv(name, raising=False)
+
+    exit_code = main(
+        nightly_argv(tmp_path / "panels")
+        + ["--household-file", str(household_file(tmp_path)), "--weather", "rain"]
+    )
+    printed = capsys.readouterr().out
+    assert exit_code == 0, printed
+
+
+def sidecar(tmp_path: Path) -> dict:
+    path = tmp_path / "panels" / provenance_name(DAY)
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def one_event_ics(summary: str) -> str:
+    """A calendar holding one all-day event, so two feeds' bodies differ."""
+    return (
+        "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//x//x//EN\r\n"
+        "BEGIN:VEVENT\r\n"
+        f"UID:{summary.replace(' ', '-').lower()}@x\r\n"
+        "DTSTART;VALUE=DATE:20260308\r\n"
+        f"SUMMARY:{summary}\r\n"
+        "END:VEVENT\r\nEND:VCALENDAR\r\n"
+    )
+
+
 def test_one_run_publishes_the_panel_the_sidecar_and_the_freshness_file(tmp_path: Path):
     published = run(tmp_path)
 
@@ -137,6 +187,45 @@ def test_the_sidecar_records_the_feed_that_was_read(tmp_path: Path):
     record = Path(published.provenance_path).read_text(encoding="utf-8")
     assert "BEGIN:VCALENDAR" in record
     assert "open-meteo" in record
+
+
+def test_the_sidecar_names_a_private_feed_by_its_label_not_its_address(
+    tmp_path, monkeypatch, capsys
+):
+    """The sidecar is served to whoever can see the panel, and the address is the calendar.
+
+    A private feed carries its read token in its path, so a payload published
+    under the URL it was fetched from publishes the household's calendar beside
+    the picture of a cat.
+    """
+    feed = tmp_path / "dav" / FEED_TOKEN / "basic.ics"
+    feed.parent.mkdir(parents=True)
+    feed.write_text(DAY_ICS.read_text(encoding="utf-8"), encoding="utf-8")
+
+    run_entry_point(tmp_path, monkeypatch, capsys, f"family={feed.as_uri()}")
+
+    on_disk = (tmp_path / "panels" / provenance_name(DAY)).read_text(encoding="utf-8")
+    assert FEED_TOKEN not in on_disk
+    payloads = json.loads(on_disk)["payloads"]
+    assert list(payloads) == ["family"]
+    assert "BEGIN:VCALENDAR" in payloads["family"]
+
+
+def test_two_feeds_sharing_a_label_are_published_as_two_payloads(tmp_path, monkeypatch, capsys):
+    """Two feeds under one label are two sources; the sidecar holds neither in place of the other."""
+    feeds = []
+    for name, summary in (("vet", "Vet check"), ("groomer", "Grooming")):
+        feed = tmp_path / f"{name}.ics"
+        feed.write_text(one_event_ics(summary), encoding="utf-8")
+        feeds.append(f"home={feed.as_uri()}")
+
+    run_entry_point(tmp_path, monkeypatch, capsys, ",".join(feeds))
+
+    payloads = sidecar(tmp_path)["payloads"]
+    assert sorted(payloads) == ["home", "home#2"]
+    published = json.dumps(payloads)
+    assert "Vet check" in published
+    assert "Grooming" in published
 
 
 def test_the_second_run_for_the_same_date_skips_and_says_why(tmp_path: Path):

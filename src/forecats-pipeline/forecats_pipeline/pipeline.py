@@ -293,7 +293,7 @@ def _nightly(args: argparse.Namespace, output_dir: Path) -> int:
         outcome = run_nightly(
             day,
             location,
-            **_nightly_collaborators(args, feeds, PayloadLog()),
+            **_nightly_collaborators(args, feeds),
             output_dir=output_dir,
             household=household,
             overlay_font=font,
@@ -400,8 +400,11 @@ def _calendar_feeds() -> tuple[tuple[str, str], ...]:
 
 
 def _nightly_collaborators(
-    args: argparse.Namespace, feeds: tuple[tuple[str, str], ...], payloads: PayloadLog
+    args: argparse.Namespace, feeds: tuple[tuple[str, str], ...]
 ) -> dict[str, object]:
+    # The labels are what the provenance sidecar names each payload by: the
+    # addresses they stand for are credentials, and the sidecar is published.
+    payloads = PayloadLog({url: label for label, url in feeds})
     fetcher = CachingFetcher(RecordingFetcher(UrllibFetcher(), payloads))
     renderer: Renderer = (
         FakeRenderer()
