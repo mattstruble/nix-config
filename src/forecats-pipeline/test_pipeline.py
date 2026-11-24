@@ -95,6 +95,28 @@ def place() -> Location:
     return Location("New York", 40.7128, -74.006, "America/New_York")
 
 
+def nightly_argv(output_dir: Path, day: str = DAY.isoformat()) -> list[str]:
+    """The entry point's arguments for a run meant to stop before it renders."""
+    return [
+        "--day",
+        day,
+        "--timezone",
+        "America/New_York",
+        "--latitude",
+        "40.7128",
+        "--longitude",
+        "-74.006",
+        "--output-dir",
+        str(output_dir),
+    ]
+
+
+# A feed address is a credential, so these two constants are what the refusal
+# tests below are really about: nothing carrying the token may be printed.
+PRIVATE_FEED_URL = "https://caldav.example.invalid/e/token-abc123/basic.ics"
+FEED_TOKEN = "token-abc123"  # pragma: allowlist secret
+
+
 def run(output_dir: Path, **over):
     parts = {**collaborators(), **over}
     return run_nightly(DAY, place(), published_at=MORNING, output_dir=output_dir, **parts)
@@ -193,6 +215,49 @@ def test_a_failure_no_stage_claimed_still_leaves_a_refusal_with_its_cause(
     printed = capsys.readouterr().out
     assert exit_code == 1
     assert "refused at pipeline: unhandled OSError: [Errno 28] No space left on device" in printed
+
+
+def test_a_malformed_feed_is_refused_without_quoting_its_url(tmp_path, monkeypatch, capsys):
+    """A bare feed address is what `label=url` rejects, and the address is the secret.
+
+    The nightly leaves one line in a log that outlives the Secret quoting it
+    would publish, so the refusal names the variable and points at the pair.
+    """
+    monkeypatch.setenv(CALENDAR_FEEDS_ENV, PRIVATE_FEED_URL)
+
+    exit_code = main(nightly_argv(tmp_path / "panels"))
+
+    printed = capsys.readouterr().out
+    assert exit_code == 1
+    assert f"refused at config: {CALENDAR_FEEDS_ENV} pair 1 is not one label=url pair" in printed
+    assert FEED_TOKEN not in printed
+    assert "unhandled" not in printed
+
+
+def test_a_malformed_pair_after_a_good_one_is_named_by_its_position(tmp_path, monkeypatch, capsys):
+    """Naming which pair failed is not a licence to name the variable's value."""
+    monkeypatch.setenv(CALENDAR_FEEDS_ENV, f"home={DAY_ICS.as_uri()},{PRIVATE_FEED_URL}")
+
+    exit_code = main(nightly_argv(tmp_path / "panels"))
+
+    printed = capsys.readouterr().out
+    assert exit_code == 1
+    assert "pair 2" in printed
+    assert FEED_TOKEN not in printed
+    assert DAY_ICS.as_uri() not in printed
+
+
+def test_a_day_that_is_not_a_date_names_the_flag_instead_of_the_failure(tmp_path, capsys):
+    """`Invalid isoformat string` is a message about the code; the typo is in a flag."""
+    exit_code = main(nightly_argv(tmp_path / "panels", day="not-a-date"))
+
+    printed = capsys.readouterr().out
+    assert exit_code == 1
+    assert (
+        "refused at usage: --day wants an ISO date such as 2026-03-08, got 'not-a-date'" in printed
+    )
+    assert "isoformat" not in printed
+    assert "unhandled" not in printed
 
 
 def test_the_entry_point_renders_with_no_host_and_no_ssh_credentials(tmp_path: Path):

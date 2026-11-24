@@ -48,7 +48,9 @@ from forecats_pipeline.render_stage import (
 __all__ = [
     "CALENDAR_FEEDS_ENV",
     "HOUSEHOLD_FILE_ENV",
+    "ConfigurationError",
     "Skipped",
+    "UsageError",
     "main",
     "run_nightly",
 ]
@@ -88,6 +90,25 @@ class Skipped:
     for_day: date
     panel_path: str
     reason: str
+
+
+class ConfigurationError(ValueError):
+    """A setting the operator has to change, worded for them.
+
+    The text reaches the operator as written, so it may name a configured
+    variable and nothing else about it: a calendar feed address is a credential,
+    and repeating the value that failed to parse is how a refusal publishes it.
+    Held apart from an unhandled exception so a refusal says whether the fix is
+    in the configuration or in this program.
+    """
+
+    stage = "config"
+
+
+class UsageError(ConfigurationError):
+    """A flag was mistyped; the text names the flag, never the Python behind it."""
+
+    stage = "usage"
 
 
 def run_nightly(
@@ -213,6 +234,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     output_dir = Path(args.output_dir)
     try:
         return _nightly(args, output_dir)
+    except ConfigurationError as problem:
+        # Written to be read as it stands: no type name, and no "unhandled",
+        # which is what marks the line below as ours rather than the operator's.
+        return _report(PipelineRefusal(stage=problem.stage, reason=str(problem)), output_dir)
     except Exception as problem:
         # A nightly's whole output is one line in a log, and a traceback puts the
         # exception under a screen of frames; the refusal keeps the type, which
@@ -236,7 +261,12 @@ def _nightly(args: argparse.Namespace, output_dir: Path) -> int:
         longitude=args.longitude,
         timezone=args.timezone,
     )
-    day = date.fromisoformat(args.day) if args.day else datetime.now(location.zone).date()
+    try:
+        day = date.fromisoformat(args.day) if args.day else datetime.now(location.zone).date()
+    except ValueError:
+        raise UsageError(
+            f"--day wants an ISO date such as 2026-03-08, got {args.day!r}"
+        ) from None
 
     feeds = _calendar_feeds()
     # The font env says where a font is; only the flag says to use it. The
@@ -348,15 +378,23 @@ def _generator(output_dir: Path) -> ActivityGenerator | None:
 
 
 def _calendar_feeds() -> tuple[tuple[str, str], ...]:
-    """`label=url,label=url` from the environment, or empty when it is unset."""
+    """`label=url,label=url` from the environment, or empty when it is unset.
+
+    A malformed pair is reported by its position alone, because the pair is the
+    credential-shaped thing: a bare feed address is exactly what this shape
+    rejects, and it is the one thing the message must not repeat.
+    """
     raw = os.environ.get(CALENDAR_FEEDS_ENV, "")
     feeds = []
-    for pair in raw.split(","):
+    for position, pair in enumerate(raw.split(","), start=1):
         if not pair.strip():
             continue
-        label, _, url = pair.partition("=")
-        if not _ or not url.strip():
-            raise ValueError(f"a calendar feed is label=url, got {pair!r}")
+        label, separator, url = pair.partition("=")
+        if not separator or not url.strip():
+            raise ConfigurationError(
+                f"{CALENDAR_FEEDS_ENV} pair {position} is not one label=url pair; "
+                "what it holds is not repeated here, because a feed url is a credential"
+            )
         feeds.append((label.strip(), url.strip()))
     return tuple(feeds)
 
