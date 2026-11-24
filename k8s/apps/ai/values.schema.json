@@ -16,6 +16,21 @@
           }
         }
       }
+    },
+    "headEnd": {
+      "type": "object",
+      "properties": {
+        "cardWaitSeconds": { "$ref": "#/definitions/wakeTermSeconds" },
+        "podClaimWindowSeconds": { "$ref": "#/definitions/wakeTermSeconds" },
+        "coldStartSeconds": { "$ref": "#/definitions/wakeTermSeconds" }
+      }
+    }
+  },
+  "definitions": {
+    "wakeTermSeconds": {
+      "type": "integer",
+      "exclusiveMinimum": 0,
+      "description": "One term of the router's wake deadline (healthCheckTimeout is the sum of the card wait, this window and the roster's cold-load budget). A zero, a fraction or a string is not a term: the sum would carry 0 for it and the deadline would expire on a model that is still waking, which no render after the fact can tell from a budget that fits."
     }
   }
 }

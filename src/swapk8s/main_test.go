@@ -939,10 +939,13 @@ func wakeSpec(t *testing.T, dir, name, pool string) {
 }
 
 // wakeOptions is the flag set a wake test runs with: budgets short enough that a
-// timeout is a test result and not a wait.
+// timeout is a test result and not a wait. The pod-claim window is the value the
+// chart renders, because none of these wakes is bounded by it - the two budgets
+// above are what the test is measuring.
 func wakeOptions(dir, lock string, cardWait, startupTimeout time.Duration) *options {
 	return &options{namespace: "default", model: wakeModel, specDir: dir, cardLock: lock,
-		poll: 5 * time.Millisecond, cardWait: cardWait, startupTimeout: startupTimeout}
+		poll: 5 * time.Millisecond, cardWait: cardWait, startupTimeout: startupTimeout,
+		podClaimWindow: time.Minute}
 }
 
 // A 429 from API priority-and-fairness, a 500 or 503 during a k3s apiserver

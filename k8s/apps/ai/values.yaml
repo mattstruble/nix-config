@@ -27,7 +27,10 @@
 #   coldStartSeconds: how long the shim waits for the woken pod to be Ready.
 #               Set it per model from a measurement, not from a shared constant:
 #               the fleet spans a 40s load and a 23-minute one, and the shared
-#               value always ends up being the maximum.
+#               value always ends up being the maximum. It has to sit under
+#               headEnd.coldStartSeconds, because the router's wake deadline is
+#               that value plus the two waits and the render refuses a model
+#               whose load reaches the deadline it wakes inside.
 #   ttlSeconds: idle time before a summoned model goes back to sleep; falls back
 #               to headEnd.ttlSeconds.
 #   reclaimCostSeconds: a recorded measurement of what reclaiming this model's
@@ -80,12 +83,23 @@ headEnd:
   healthPath: /health
   # How long a wake waits for a free card before failing with an error the
   # client can act on. Every card busy is a temporary condition (all models
-  # sleep on ttl), so a request should outlive it - but not forever: the wait
-  # plus the load must fit healthCheckTimeout, which the template derives from
-  # this plus the roster's max cold start.
+  # sleep on ttl), so a request should outlive it - but not forever: the wait,
+  # the claim window that follows it and a full cold load are what
+  # healthCheckTimeout is summed from, and it is the deadline the wake has to
+  # finish inside.
   cardWaitSeconds: 300
+  # How long a wake holds the card it just took while the Deployment it scaled
+  # produces a pod. The claim is the pod, so the window cannot be zero; it is
+  # also a term of healthCheckTimeout, so it is written once here and rendered
+  # into the shim's own flag - the shim has no default for it, because a window
+  # the deadline was not summed from is a model put back to sleep mid-wake.
+  podClaimWindowSeconds: 60
   # Defaults a model can override per entry.
   ttlSeconds: 900
+  # The load budget for a model that declares no coldStartSeconds of its own -
+  # and the only slack in healthCheckTimeout, which is this plus the two waits.
+  # The render refuses a roster whose slowest model reaches it, so a measured
+  # cold start has to sit under this number.
   coldStartSeconds: 300
   resources:
     requests:

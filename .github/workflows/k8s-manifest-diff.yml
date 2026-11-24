@@ -236,3 +236,107 @@ jobs:
               exit 1
             fi
           done
+
+  # The router's deadline is a wake and nothing more. In the pinned llama-swap,
+  # doStart sets it once from healthCheckTimeout and only moves it when the health
+  # body reports loading progress - which the shim's not-ready answer never is -
+  # and on expiry the abort runs cmdStop, scaling a model seconds from Ready back
+  # to zero. The chart guards the bound (templates/head-end-configmap.yaml); this
+  # asserts it on the rendered artifact, because a guard cannot see what it
+  # emitted: a deadline whose sum has lost a term is invisible to a check that
+  # recomputes the wake from the same values. What a green run does not claim: it
+  # re-runs no measurement, so a coldStartSeconds that no longer matches the host
+  # renders green.
+  wake-budget-render:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: azure/setup-helm@v4
+        with:
+          version: v4.3.0
+
+      - name: The slowest roster wake fits inside the router's deadline
+        run: |
+          set -euo pipefail
+          # The fleet's own values, discovered by the rule every other consumer
+          # applies (a chart's values are values.yaml plus values/*.yaml), so a
+          # model joins this assertion the moment it joins the fleet. The two
+          # bundle paths are placeholders: they are what lets the head-end
+          # ConfigMap render outside the nix build, and nothing below reads them.
+          F=(-f k8s/apps/ai/values.yaml)
+          for f in k8s/apps/ai/values/*.yaml; do F+=(-f "$f"); done
+          render() {
+            helm template ai k8s/apps/ai --namespace ai \
+              --set global.hostDataRoot=/tmp \
+              --set strataBundle=/nix/store/placeholder-strata \
+              --set headEnd.bundle=/nix/store/placeholder-swap-head-end \
+              "${F[@]}" --show-only templates/head-end-configmap.yaml "$@"
+          }
+          out=$(render)
+          # Non-vacuous: a roster. A render that emitted no on-demand model would
+          # pass every comparison below by comparing nothing.
+          models=$(grep -c 'cmd: >-' <<<"$out" || true)
+          if [ "${models:-0}" -eq 0 ]; then
+            echo "::error::the head-end roster rendered no on-demand model; the wake bound below would pass vacuously"
+            exit 1
+          fi
+          # A wake is three terms and each is a flag on every model's cmd. A term
+          # the render stopped emitting is a term the shim runs on a default nobody
+          # summed into the deadline, and the sum below cannot see it missing.
+          for flag in card-wait pod-claim-window startup-timeout; do
+            n=$(grep -cE -- "--$flag [0-9]+s" <<<"$out" || true)
+            if [ "$n" -ne "$models" ]; then
+              echo "::error::--$flag appears on $n of $models roster entries: every model's cmd must carry the wake the deadline was summed from"
+              exit 1
+            fi
+          done
+          # The two waits come from headEnd and are one value for the whole fleet;
+          # asserted rather than assumed, because the worst case below is the
+          # slowest load only if no model was handed a different wait.
+          term() {
+            grep -oE -- "--$1 [0-9]+s" <<<"$out" | grep -oE '[0-9]+' | sort -u
+          }
+          for flag in card-wait pod-claim-window; do
+            if [ "$(term "$flag" | wc -l | tr -d ' ')" != 1 ]; then
+              echo "::error::--$flag rendered with more than one value; this bound is one card wait and one claim window for the fleet"
+              exit 1
+            fi
+          done
+          card_wait=$(term card-wait)
+          claim=$(term pod-claim-window)
+          slowest_load=$(term startup-timeout | sort -n | tail -1)
+          deadline=$(grep -oE '^[[:space:]]*healthCheckTimeout:[[:space:]]*[0-9]+$' <<<"$out" | grep -oE '[0-9]+$')
+          worst_wake=$((card_wait + claim + slowest_load))
+          if [ "$worst_wake" -ge "$deadline" ]; then
+            echo "::error::the slowest roster wake is ${worst_wake}s (card wait ${card_wait} + claim window ${claim} + load ${slowest_load}) against a router deadline of ${deadline}s: llama-swap aborts at the deadline and cmdStop scales the model back to zero, so the wake fails as a health-check timeout"
+            exit 1
+          fi
+          echo "slowest roster wake ${worst_wake}s < router deadline ${deadline}s (${models} on-demand models)"
+          # And the chart's own guard is live, not a comment: a model whose load
+          # reaches the deadline's cold-load term must refuse to render, which is
+          # what stops the same wake reaching a host through `just k8s-render` or
+          # the nix render, where no CI job runs.
+          cold_load=$((deadline - card_wait - claim))
+          cat > "$RUNNER_TEMP/wake-probe.yaml" <<YAML
+          models:
+            wake-probe-model:
+              enable: true
+              lifecycle: on-demand
+              coldStartSeconds: ${cold_load}
+              image: alpine:3.20@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc
+              gpu: "0"
+              port: 8597
+          YAML
+          if render -f "$RUNNER_TEMP/wake-probe.yaml" >/dev/null 2>&1; then
+            echo "::error::a model that wakes in exactly the router's deadline rendered; the bound is stated in the chart but nothing enforces it"
+            exit 1
+          fi
+          # ...and one second under it renders, which is what makes the refusal
+          # above a verdict about the bound rather than about a probe the chart
+          # could not render for a reason of its own.
+          if ! render -f "$RUNNER_TEMP/wake-probe.yaml" \
+            --set "models.wake-probe-model.coldStartSeconds=$((cold_load - 1))" >/dev/null 2>&1; then
+            echo "::error::the probe model would not render a second under the bound; the refusal above is not about the bound"
+            exit 1
+          fi

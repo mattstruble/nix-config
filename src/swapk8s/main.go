@@ -96,17 +96,12 @@ const (
 )
 
 const (
-	// How long a placement holds the flock waiting for its pod to become visible
-	// in the API. The claim is the pod, so releasing before it exists lets the
-	// next shim place on the same card; holding indefinitely lets a cluster
-	// problem wedge every placement in the fleet. Bounded, and a timeout is a log
-	// line: the pod, if it is coming, still arrives. A model wake bounds it again
-	// by the card-wait budget it was given, measured from the instant its round
-	// got the flock and not from the instant the wake began: taking the flock
-	// blocks, so a round may queue behind another shim's hold for longer than the
-	// whole budget — awaitPodVisible.
-	podClaimWindow = 60 * time.Second
-	podClaimPoll   = 500 * time.Millisecond
+	// How often the pod-visibility window (--pod-claim-window) re-asks the API
+	// whether the pod has appeared. The window itself is deliberately not here:
+	// the chart renders it, because llama-swap's wake deadline is summed from that
+	// same number (k8s/apps/ai/templates/head-end-configmap.yaml), and a second
+	// copy of it in this binary is a term of the deadline no render can see.
+	podClaimPoll = 500 * time.Millisecond
 	// How long a claim's command gets to die after the caller's SIGTERM before it
 	// is killed. The flock must go back either way, and a child that ignores
 	// signals must not hold the fleet's placement with it.
@@ -756,8 +751,8 @@ var _ wakeCluster = (*client)(nil)
 // awaitDeploymentPod holds the flock until the Deployment has produced a pod,
 // bounded as awaitPodVisible describes; budgetDeadline is counted from the
 // instant the round claimed the card, not from the instant the wake began.
-func awaitDeploymentPod(ctx context.Context, kc wakeCluster, ns, name string, budgetDeadline time.Time) podWait {
-	return awaitPodVisible(ctx, podClaimWindow, podClaimPoll, budgetDeadline, func() (bool, error) {
+func awaitDeploymentPod(ctx context.Context, kc wakeCluster, ns, name string, window time.Duration, budgetDeadline time.Time) podWait {
+	return awaitPodVisible(ctx, window, podClaimPoll, budgetDeadline, func() (bool, error) {
 		d, err := kc.getDeployment(ns, name)
 		if err != nil || d == nil {
 			return false, err
@@ -799,8 +794,8 @@ func giveBackCard(kc cardReleaser, ns, name, card string, cause error) error {
 // claim: until the pod exists the card reads as free to the next shim. After the
 // window a claim that produced no pod simply is not a claim - nothing was written
 // to the cluster, so nothing holds the card.
-func (c *client) awaitJobPod(ctx context.Context, ns, card string) (bool, error) {
-	deadline := time.Now().Add(podClaimWindow)
+func (c *client) awaitJobPod(ctx context.Context, ns, card string, window time.Duration) (bool, error) {
+	deadline := time.Now().Add(window)
 	var lastErr error
 	for time.Now().Before(deadline) {
 		pl, err := c.pods(ns, map[string]string{componentLabel: componentGpuJob})
@@ -923,6 +918,8 @@ type options struct {
 	// scale - useful by hand, not enough for the swapper.
 	cmdPid                                       int
 	poll, startupTimeout, stopDeadline, cardWait time.Duration
+	// Set by --pod-claim-window and by nothing else; see its flag for why.
+	podClaimWindow time.Duration
 }
 
 func main() {
@@ -942,6 +939,12 @@ func main() {
 	fs.DurationVar(&o.poll, "poll", time.Second, "cluster poll interval")
 	fs.DurationVar(&o.startupTimeout, "startup-timeout", 10*time.Minute, "wait for a pod to become ready this long; a wake that placed the pod releases its card when it expires")
 	fs.DurationVar(&o.cardWait, "card-wait", 5*time.Minute, "wait for a free GPU this long; it bounds the wait for a card, not the wake that follows one")
+	// The window a placement holds the flock for its own scale to produce a pod.
+	// The claim is the pod, so releasing before it exists lets the next shim place
+	// on the same card; holding indefinitely lets a cluster problem wedge every
+	// placement in the fleet. Bounded, and a timeout is a log line: the pod, if it
+	// is coming, still arrives.
+	fs.DurationVar(&o.podClaimWindow, "pod-claim-window", 0, "hold the placement lock this long for a scale to produce a pod; required, because the router's wake deadline is summed from this value")
 	fs.DurationVar(&o.stopDeadline, "stop-deadline", 5*time.Minute, "hard bound on stop; it must never block the router")
 	fs.IntVar(&o.cmdPid, "pid", 0, "pid of the serve process to stop (llama-swap substitutes ${PID})")
 	fs.StringVar(&o.apiServer, "api-server", "", "kube API base (default: in-cluster)")
@@ -958,6 +961,12 @@ func main() {
 	// roster, which is the reason it exists.
 	if cmd != "reap" && cmd != "claim" && o.model == "" {
 		log.Fatal("--model is required")
+	}
+	// A wake's worst case is the card wait, then this window, then the load, and
+	// healthCheckTimeout is that sum: a shim that runs with a window nobody budgeted
+	// puts a model seconds from Ready back to sleep (awaitPodVisible).
+	if cmd != "reap" && cmd != "stop" && o.podClaimWindow <= 0 {
+		log.Fatal("--pod-claim-window is required: the head-end config sums it into the router's wake deadline, so the chart supplies it and an invented default here is a wake the router aborts")
 	}
 	o.jobCmd = fs.Args()
 
@@ -1108,7 +1117,7 @@ func wake(ctx context.Context, kc wakeCluster, o *options) (*deployment, error) 
 			// busy-card scan would see the card as free. The claim is the pod.
 			// From here the card is this wake's to give back, but only on the one
 			// ending that says the pod is not coming: awaitPodVisible.
-			if w := awaitDeploymentPod(ctx, kc, o.namespace, name, claimedAt.Add(o.cardWait)); w.release != nil {
+			if w := awaitDeploymentPod(ctx, kc, o.namespace, name, o.podClaimWindow, claimedAt.Add(o.cardWait)); w.release != nil {
 				return giveBackCard(kc, o.namespace, name, card, w.release)
 			}
 			return nil
@@ -1450,12 +1459,12 @@ func cmdClaim(ctx context.Context, kc *client, o *options) error {
 			if err := runClaimed(ctx, o, card); err != nil {
 				return err
 			}
-			appeared, err := kc.awaitJobPod(ctx, o.namespace, card)
+			appeared, err := kc.awaitJobPod(ctx, o.namespace, card, o.podClaimWindow)
 			if err != nil {
 				log.Printf("claim %s: cannot confirm a gpu-job pod on gpu %s: %v", o.job, card, err)
 			} else if !appeared {
 				log.Printf("claim %s: no gpu-job pod on gpu %s appeared within %s; the card is free again",
-					o.job, card, podClaimWindow)
+					o.job, card, o.podClaimWindow)
 			}
 			return nil
 		})
