@@ -33,6 +33,13 @@ models:
     lifecycle: on-demand
     ttlSeconds: 1800
     coldStartSeconds: 240
+    # The most expensive card on the host to take, and the load is the small
+    # part: 83s of engine and pack, then a full re-prefill of a 128k coding
+    # session, where strata's prefill falls to ~90 t/s - about 24 minutes end to
+    # end (measured 2026-11-23). It stays under this model's own 1800s idle
+    # budget, which is the line a reclaim cost may not cross: past it, waiting
+    # for the ttl is the cheaper way to free the card.
+    reclaimCostSeconds: 1440
     # No `binary:` here on purpose. The bundle path is injected by the nix render
     # (services.k3s.aiChart.strataBundle -> .Values.strataBundle), so the pod
     # mounts whatever this system's build produced. A literal path here would

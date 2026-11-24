@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "title": "ai chart values",
+  "description": "Constrains only what a template cannot see on its own: helm validates this before any template renders, so a reclaim cost that is not a positive whole number fails the render instead of reaching the scheduler as a string or a zero. Everything else in this chart's values is deliberately unconstrained - the guards that compare two values live in the templates that read both.",
+  "type": "object",
+  "properties": {
+    "models": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "reclaimCostSeconds": {
+            "type": ["integer", "null"],
+            "exclusiveMinimum": 0,
+            "description": "Seconds to put this model's card back the way it was: measured cold start plus a full re-prefill. null or absent means this host never measured it, which is not the same as zero."
+          }
+        }
+      }
+    }
+  }
+}

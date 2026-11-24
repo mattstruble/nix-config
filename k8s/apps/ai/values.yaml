@@ -30,6 +30,17 @@
 #               value always ends up being the maximum.
 #   ttlSeconds: idle time before a summoned model goes back to sleep; falls back
 #               to headEnd.ttlSeconds.
+#   reclaimCostSeconds: what reclaiming this model's card costs whoever loses
+#               it: measured cold start plus the re-prefill of the session the
+#               eviction destroys, because the prompt cache dies with the pod.
+#               The scheduler ranks idle cards by it, and it is a cost, never a
+#               ceiling - no job is refused for outliving it. Declare it only
+#               from a measurement taken on this host: absent is not zero, and
+#               an undeclared model is simply not a reclaim candidate. It may
+#               not exceed the model's own idle budget, because reclaiming past
+#               that costs more than waiting out the ttl. A green render claims
+#               only that the chart emitted what the host wrote down - it re-runs
+#               no measurement, so a stale figure renders green.
 #
 # NOTE on fork binary paths: the store hash is pinned to the current build
 # (qwen4exp @0384f5c, turboq @8f2b243). If the fork is rebuilt, update the

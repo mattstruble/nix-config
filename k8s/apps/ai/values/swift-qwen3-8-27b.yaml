@@ -15,6 +15,10 @@ models:
     # ever gives up on it.
     lifecycle: on-demand
     coldStartSeconds: 240
+    # The re-prefill, not the load, is what this card costs: 60s to serve again
+    # plus ~210s to re-read the session the eviction destroys, at the depth a
+    # coding session actually sits at (measured 2026-11-23).
+    reclaimCostSeconds: 270
     enable: true
     image: ghcr.io/ggml-org/llama.cpp:server-cuda12-b11151@sha256:014f721265464f38ccb247c1338d07d852c4bae7509a4b4734d07a2bbadc765c
     # the CARD POOL, not a pin: placement is the shim's - it lands this model on

@@ -94,6 +94,13 @@ data:
       {{- end }}
     models:
       {{- range $name, $m := $summonable }}
+      {{- $idle := $m.ttlSeconds | default $h.ttlSeconds }}
+      {{- $cost := $m.reclaimCostSeconds }}
+      {{- if ne $cost nil }}
+      {{- if gt (int64 $cost) (int64 $idle) }}
+      {{- fail (printf "model %s: reclaimCostSeconds %d is larger than its own idle budget %d - reclaiming that card then costs more than waiting out the ttl that frees it by itself, so the figure is not a reclaim cost" $name (int64 $cost) (int64 $idle)) }}
+      {{- end }}
+      {{- end }}
       {{ $name }}:
         # Idle time before the model goes back to sleep. Falls back to
         # headEnd.ttlSeconds; 0 would mean llama-swap's GlobalTTL default, which
@@ -101,7 +108,14 @@ data:
         # GPUs. (This line was dropped once, in the list-form to map-form
         # rewrite, and nothing slept for an hour before anyone noticed: the
         # symptom of a missing ttl is a model that never unloads.)
-        ttl: {{ $m.ttlSeconds | default $h.ttlSeconds }}
+        ttl: {{ $idle }}
+        {{- if ne $cost nil }}
+        # What reclaiming this card costs whoever loses it: the measured cold
+        # start plus the re-prefill of the session the eviction destroys. A cost
+        # the scheduler ranks idle cards by, never a ceiling. Emitted only where
+        # this host measured one - an absent cost is not a free reclaim.
+        reclaimCostSeconds: {{ int64 $cost }}
+        {{- end }}
         # A wake is a request that waits, so the shim's readiness budget is
         # that model's own measured cold start - not one global constant that
         # has to be the maximum of every model on the box (that maximum is
