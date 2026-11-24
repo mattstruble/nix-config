@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft-07/schema#",
   "title": "ai chart values",
-  "description": "Constrains only what a template cannot see on its own: helm validates this before any template renders, so a reclaim cost that is not a positive whole number fails the render instead of reaching the scheduler as a string or a zero. Everything else in this chart's values is deliberately unconstrained - the guards that compare two values live in the templates that read both.",
+  "description": "Constrains only what a template cannot see on its own: helm validates this before any template renders, so a reclaim cost that is not a positive whole number fails the render instead of landing in the head-end config as a string or a zero. Everything else in this chart's values is deliberately unconstrained - the guards that compare two values live in the templates that read both.",
   "type": "object",
   "properties": {
     "models": {

@@ -22,8 +22,9 @@ models:
     ttlSeconds: 1800
     coldStartSeconds: 240
     # No reclaimCostSeconds, and not an oversight: nothing has measured what a
-    # restore of this model costs, and a number nobody took would still rank it.
-    # An undeclared model is simply never the card anyone reclaims.
+    # restore of this model costs, and a figure nobody took would be recorded
+    # beside the measured ones as if it were one. An undeclared model is the one
+    # nobody has priced, not a free one.
     memoryRequest: 8Gi
     memoryLimit: 40Gi
     image: ghcr.io/ggml-org/llama.cpp:server-cuda12-b10603@sha256:41ebf873c2e085dcc3186dc4717ce8112bf8011aabd98038b6bb2b1fe66c86b9

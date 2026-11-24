@@ -183,7 +183,13 @@ jobs:
       - name: An unmeasured model emits no cost; an impossible one fails the render
         run: |
           set -euo pipefail
-          cat > "$RUNNER_TEMP/probe.yaml" <<'YAML'
+          # The probe declares its own idle budget rather than inheriting
+          # headEnd.ttlSeconds. The render compares a cost against the model's
+          # own ttl, so an inherited default would put this job's verdict on a
+          # value it does not test: bumping headEnd.ttlSeconds alone would fail
+          # it, and the diagnosis would blame the reclaim guard.
+          PROBE_TTL=1200
+          cat > "$RUNNER_TEMP/probe.yaml" <<YAML
           headEnd:
             bundle: /nix/store/placeholder-swap-head-end
           models:
@@ -191,6 +197,7 @@ jobs:
               enable: true
               lifecycle: on-demand
               coldStartSeconds: 60
+              ttlSeconds: ${PROBE_TTL}
               image: alpine:3.20@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc
               gpu: "0"
               port: 8599
@@ -202,23 +209,30 @@ jobs:
               --show-only templates/head-end-configmap.yaml "$@"
           }
           # The probe really is in the roster: without this the absence below
-          # would pass on a config that rendered no model at all.
-          if ! render | grep -q '^        ttl: 900$'; then
+          # would pass on a config that rendered no model at all. Matched on the
+          # model key, so nothing but the roster's existence can break it.
+          if ! render | grep -q '^      probe-model:$'; then
             echo "::error::the probe model is not in the rendered roster; every assertion below is vacuous"
+            exit 1
+          fi
+          # ...and the idle budget the guard compares a cost against is the one
+          # this job declares, not whatever the chart defaults ttl to today.
+          if ! render | grep -q "^        ttl: ${PROBE_TTL}\$"; then
+            echo "::error::the probe's own ttlSeconds did not reach the roster, so the budget the cost is compared against is not the one this job set"
             exit 1
           fi
           if render | grep -q 'reclaimCostSeconds'; then
             echo "::error::a model that declares no reclaimCostSeconds rendered one anyway; an unmeasured host is not allowed to be handed a number it never took - least of all a zero, which is the cheapest card to reclaim"
             exit 1
           fi
-          if ! render --set models.probe-model.reclaimCostSeconds=110 \
-            | grep -q '^        reclaimCostSeconds: 110$'; then
-            echo "::error::a declared reclaimCostSeconds did not reach the head-end config, so the scheduler would rank this card as unmeasured"
+          if ! render --set "models.probe-model.reclaimCostSeconds=$((PROBE_TTL - 1))" \
+            | grep -q "^        reclaimCostSeconds: $((PROBE_TTL - 1))\$"; then
+            echo "::error::a declared reclaimCostSeconds did not reach the head-end config, so the artifact holds no record of the measurement the host wrote down"
             exit 1
           fi
-          for bad in -1 0 901; do
-            if render --set models.probe-model.reclaimCostSeconds="$bad" >/dev/null 2>&1; then
-              echo "::error::reclaimCostSeconds $bad rendered: a cost of 0 or less is not a measurement, and one above the model's own 900s idle budget is cheaper to wait out than to pay"
+          for bad in -1 0 "$((PROBE_TTL + 1))"; do
+            if render --set "models.probe-model.reclaimCostSeconds=$bad" >/dev/null 2>&1; then
+              echo "::error::reclaimCostSeconds $bad rendered: a cost of 0 or less is not a measurement, and one above the probe's own ${PROBE_TTL}s idle budget is cheaper to wait out than to pay"
               exit 1
             fi
           done

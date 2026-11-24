@@ -110,10 +110,13 @@ data:
         # symptom of a missing ttl is a model that never unloads.)
         ttl: {{ $idle }}
         {{- if ne $cost nil }}
-        # What reclaiming this card costs whoever loses it: the measured cold
-        # start plus the re-prefill of the session the eviction destroys. A cost
-        # the scheduler ranks idle cards by, never a ceiling. Emitted only where
-        # this host measured one - an absent cost is not a free reclaim.
+        # A measurement this host took, recorded ahead of the consumer that does
+        # not exist yet: what reclaiming this card costs whoever loses it - the
+        # measured cold start plus the re-prefill of the session the eviction
+        # destroys. llama-swap v264 has no such field and its decoder ignores
+        # unknown keys, so this line changes nothing about how the router runs;
+        # the reclaim scheduler that would rank by it is unwritten. Emitted only
+        # where this host measured one - an absent cost is not a free reclaim.
         reclaimCostSeconds: {{ int64 $cost }}
         {{- end }}
         # A wake is a request that waits, so the shim's readiness budget is
