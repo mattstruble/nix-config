@@ -100,7 +100,8 @@ const (
 	// in the API. The claim is the pod, so releasing before it exists lets the
 	// next shim place on the same card; holding indefinitely lets a cluster
 	// problem wedge every placement in the fleet. Bounded, and a timeout is a log
-	// line: the pod, if it is coming, still arrives.
+	// line: the pod, if it is coming, still arrives. A model wake bounds it again
+	// by the card-wait budget it was given — awaitPodVisible.
 	podClaimWindow = 60 * time.Second
 	podClaimPoll   = 500 * time.Millisecond
 	// How long a claim's command gets to die after the caller's SIGTERM before it
@@ -674,23 +675,92 @@ func claimCycle(ctx context.Context, lockPath string, scan busyScan, cards []str
 	}
 }
 
-// awaitDeploymentPod holds the flock until the Deployment has produced a pod.
-// Bounded, and a timeout is not an error: a Deployment whose pods never appear
-// is a cluster problem, and waitReady is where the caller learns about it.
-func (c *client) awaitDeploymentPod(ctx context.Context, ns, name string) {
-	deadline := time.Now().Add(podClaimWindow)
-	for time.Now().Before(deadline) {
-		if d, derr := c.getDeployment(ns, name); derr == nil && d != nil {
-			if has, perr := c.podsForDeployment(ns, d.Selector); perr == nil && has {
-				return
-			}
+// podWait is what the lock-hold window after a scale answers: whether the
+// Deployment produced a pod, and when it did not, what the wake owes the fleet.
+// The endings are data rather than control flow so the release decision is
+// testable without a cluster, and wake() has one place that gives a card back.
+type podWait struct {
+	appeared bool
+	// release is why the card this wake scaled up must go back now, already
+	// worded for an operator; nil means the window ended with budget left, the pod
+	// may still arrive, and the card stays claimed.
+	release error
+}
+
+// awaitPodVisible is the window between a scale and a visible pod, with the
+// "has it appeared yet" probe injected so its endings are testable without an
+// API server. It ends at the earliest of: the pod existing, the caller going
+// away, the pod-visibility window, and the wake's remaining card-wait budget.
+//
+// The budget ends it because --card-wait is the most anyone is promised a card,
+// and a window that outlived it falls through to a readiness wait that outlives
+// it too: the Deployment stays at one and its card is gone until a human scales
+// it. The window ends it, with budget left, without releasing: a Deployment
+// whose pods take longer than the window to appear is a cluster problem, the pod
+// may still be coming, and waitReady is where the caller learns about it.
+func awaitPodVisible(ctx context.Context, window, poll time.Duration, budgetDeadline time.Time,
+	probe func() (bool, error)) podWait {
+	windowEnds := time.Now().Add(window)
+	for {
+		if has, err := probe(); err == nil && has {
+			return podWait{appeared: true}
+		}
+		// A caller that went away ends the window before the budget does: the scale
+		// already happened, so the card is held by a Deployment nobody waits for.
+		if cerr := ctx.Err(); cerr != nil {
+			return podWait{release: fmt.Errorf("the wake was cancelled before its pod appeared: %w", cerr)}
+		}
+		if !time.Now().Before(budgetDeadline) {
+			return podWait{release: errors.New("no pod appeared before the card-wait budget ran out")}
+		}
+		if !time.Now().Before(windowEnds) {
+			return podWait{}
 		}
 		select {
 		case <-ctx.Done():
-			return
-		case <-time.After(podClaimPoll):
+		case <-time.After(poll):
 		}
 	}
+}
+
+// awaitDeploymentPod holds the flock until the Deployment has produced a pod,
+// bounded as awaitPodVisible describes. A probe error is the API being
+// unreachable rather than a pod that never appeared, so the window keeps polling.
+func (c *client) awaitDeploymentPod(ctx context.Context, ns, name string, budgetDeadline time.Time) podWait {
+	return awaitPodVisible(ctx, podClaimWindow, podClaimPoll, budgetDeadline, func() (bool, error) {
+		d, err := c.getDeployment(ns, name)
+		if err != nil || d == nil {
+			return false, err
+		}
+		return c.podsForDeployment(ns, d.Selector)
+	})
+}
+
+// cardReleaser is the one Deployment write a release needs. An interface so the
+// release paths are testable without a cluster: what a release has to get right
+// is which Deployment ends at zero replicas, and a fake answers with the replica
+// counts it changed.
+type cardReleaser interface {
+	scale(ns, name string, replicas int) (bool, error)
+}
+
+var _ cardReleaser = (*client)(nil)
+
+// giveBackCard is the release every path that has already made a claim visible
+// shares: scale the Deployment that owns the pod to zero, so the next shim's
+// busy-card scan sees the card free, and return the error the operator reads.
+//
+// The card is named in both outcomes because they differ in the worst way: a
+// released card means one model is down, a failed release means a card is out of
+// the fleet — on a two-card host half its capacity — until someone scales it by
+// hand. So the failure says so, and says what to do.
+func giveBackCard(kc cardReleaser, ns, name, card string, cause error) error {
+	_, rerr := kc.scale(ns, name, 0)
+	if rerr != nil {
+		return fmt.Errorf("gpu %s is still held by %s/%s (%v); releasing it failed: %w — scale %s to 0 by hand",
+			card, ns, name, cause, rerr, name)
+	}
+	return fmt.Errorf("released gpu %s claimed by %s: %w", card, name, cause)
 }
 
 // awaitJobPod holds the flock until a gpu-job pod carrying the card is visible,
@@ -925,6 +995,9 @@ func wake(ctx context.Context, kc *client, o *options) (*deployment, error) {
 			} else {
 				log.Printf("adopted %s: already running", name)
 			}
+			// No release here however long the pod takes: the pod predates this wake,
+			// and a wake that did not place it is not the thing that decides to put it
+			// to sleep — cmdStop and cmdReap are.
 			return cur, waitReady(ctx, kc, o, cur.Selector)
 		}
 	}
@@ -946,7 +1019,9 @@ func wake(ctx context.Context, kc *client, o *options) (*deployment, error) {
 		}
 		// No spec but a Deployment exists (scaled to zero by a previous life):
 		// scale without re-applying. The applied spec still carries the last
-		// resolved card, which stays claimed by this model until it sleeps.
+		// resolved card, which stays claimed by this model until it sleeps — and
+		// this path releases none of it, because it resolved no card and so has no
+		// card to name in the error an operator would have to act on.
 		changed, err := kc.scale(o.namespace, name, 1)
 		if err != nil {
 			return nil, fmt.Errorf("scale up: %w", err)
@@ -982,19 +1057,30 @@ func wake(ctx context.Context, kc *client, o *options) (*deployment, error) {
 	// busy card is a temporary condition and the request should outlive it.
 	// llama-swap holds the request (its queue) while the shim waits here, and
 	// the client sees the loading stream.
-	_, err = claimCycle(ctx, o.cardLock, kc.scanCards(o.namespace), cards, pool, mode, o.cardWait, o.poll,
-		func(chosen string) error {
-			if err := kc.applyDeployment(o.namespace, name, chosen, spec, cur); err != nil {
-				return fmt.Errorf("apply spec (gpu %s): %w", chosen, err)
+	//
+	// The budget has one instant it started from: the pod-visibility window inside
+	// the claim ends with it, so no wake holds a card past the wait its caller was
+	// promised. claimCycle is handed what is left of that same instant, so the two
+	// deadlines cannot drift apart.
+	budgetDeadline := time.Now().Add(o.cardWait)
+	chosen, err := claimCycle(ctx, o.cardLock, kc.scanCards(o.namespace), cards, pool, mode,
+		time.Until(budgetDeadline), o.poll,
+		func(card string) error {
+			if err := kc.applyDeployment(o.namespace, name, card, spec, cur); err != nil {
+				return fmt.Errorf("apply spec (gpu %s): %w", card, err)
 			}
 			if _, err := kc.scale(o.namespace, name, 1); err != nil {
 				return fmt.Errorf("scale up: %w", err)
 			}
-			log.Printf("placed %s on gpu %s (pool %q, mode %s)", name, chosen, pool, mode)
+			log.Printf("placed %s on gpu %s (pool %q, mode %s)", name, card, pool, mode)
 			// Hold the lock until the pod is visible: a scaled Deployment takes
 			// seconds to produce a pod, and until it exists the next shim's
 			// busy-card scan would see the card as free. The claim is the pod.
-			kc.awaitDeploymentPod(ctx, o.namespace, name)
+			// From here the card is this wake's to give back: apply and scale both
+			// succeeded, so the Deployment holds it whatever happens next.
+			if w := kc.awaitDeploymentPod(ctx, o.namespace, name, budgetDeadline); w.release != nil {
+				return giveBackCard(kc, o.namespace, name, card, w.release)
+			}
 			return nil
 		})
 	if err != nil {
@@ -1005,7 +1091,21 @@ func wake(ctx context.Context, kc *client, o *options) (*deployment, error) {
 	if err != nil || cur == nil {
 		return nil, fmt.Errorf("deployment %s did not appear after placement: %v", name, err)
 	}
-	return cur, waitReady(ctx, kc, o, cur.Selector)
+	if err := waitReady(ctx, kc, o, cur.Selector); err != nil {
+		return cur, giveBackCard(kc, o.namespace, name, chosen, releaseReason(ctx, err))
+	}
+	return cur, nil
+}
+
+// releaseReason words why a wake is giving a card back after it already scaled
+// the Deployment up: a pod that will not come up and a caller that took the
+// request back are different incidents for whoever reads the log, and the reason
+// underneath stays wrapped.
+func releaseReason(ctx context.Context, cause error) error {
+	if ctx.Err() != nil {
+		return fmt.Errorf("the wake was cancelled while the pod was coming up: %w", cause)
+	}
+	return fmt.Errorf("the pod never became ready: %w", cause)
 }
 
 func waitReady(ctx context.Context, kc *client, o *options, sel map[string]string) error {

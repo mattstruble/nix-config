@@ -640,3 +640,245 @@ func TestRunClaimedReportsACommandThatNeverStarted(t *testing.T) {
 		t.Fatalf("runClaimed = %v, want a start failure", err)
 	}
 }
+
+// ---- releasing a card a wake claimed ---------------------------------------
+
+// fakeCluster is the state a release changes: the replica count of every
+// Deployment in the namespace, and the error the API answers a write with. A
+// release is only observable through the cluster, so this is the fake that
+// answers "did the card come back" — and a refused write is a different incident
+// from a release, which is why it is a field and not a separate type.
+type fakeCluster struct {
+	replicas map[string]int
+	refuse   error
+}
+
+func (f fakeCluster) scale(ns, name string, replicas int) (bool, error) {
+	if f.refuse != nil {
+		return false, f.refuse
+	}
+	cur, ok := f.replicas[name]
+	if !ok {
+		return false, fmt.Errorf("deployments.apps %q not found in namespace %q", name, ns)
+	}
+	f.replicas[name] = replicas
+	return cur != replicas, nil
+}
+
+// The pod-visibility window is bounded by the wake's card-wait budget and not
+// only by its own window: a wake that fell through to the readiness wait after
+// its budget ran out holds the card for the whole startup timeout, which on a
+// two-card host is half the fleet.
+func TestPodVisibilityWindowEndsWithTheCardWaitBudget(t *testing.T) {
+	cases := []struct {
+		name                      string
+		window, poll, budgetLeft  time.Duration
+		appears                   bool
+		probeErr                  error
+		cancel                    bool
+		wantAppeared, wantRelease bool
+		wantCause                 error
+		maxElapsed                time.Duration
+	}{
+		{
+			name:   "the pod appeared, so the flock can go back",
+			window: 10 * time.Second, poll: 5 * time.Millisecond, budgetLeft: 10 * time.Second,
+			appears: true, wantAppeared: true, maxElapsed: time.Second,
+		},
+		{
+			name:   "the window ended with budget left: waitReady reports the cluster problem",
+			window: 20 * time.Millisecond, poll: 5 * time.Millisecond, budgetLeft: time.Hour,
+		},
+		{
+			name:   "the card-wait budget ended the window: the card goes back",
+			window: 10 * time.Second, poll: 5 * time.Millisecond, budgetLeft: 20 * time.Millisecond,
+			wantRelease: true, maxElapsed: 2 * time.Second,
+		},
+		{
+			name:   "the caller went away after the scale: the card goes back",
+			window: 10 * time.Second, poll: 5 * time.Millisecond, budgetLeft: 10 * time.Second,
+			cancel: true, wantRelease: true, wantCause: context.Canceled, maxElapsed: time.Second,
+		},
+		{
+			// An unreachable API must not be read as a pod that will never appear:
+			// the card of a pod that is coming must not be handed to a second owner.
+			name:   "an unreachable API is not a release",
+			window: 20 * time.Millisecond, poll: 5 * time.Millisecond, budgetLeft: time.Hour,
+			probeErr: errors.New("connection refused"),
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			if tc.cancel {
+				var cancel context.CancelFunc
+				ctx, cancel = context.WithCancel(ctx)
+				cancel()
+			}
+
+			started := time.Now()
+			w := awaitPodVisible(ctx, tc.window, tc.poll, time.Now().Add(tc.budgetLeft),
+				func() (bool, error) { return tc.appears, tc.probeErr })
+			elapsed := time.Since(started)
+
+			if w.appeared != tc.wantAppeared {
+				t.Errorf("appeared = %v, want %v", w.appeared, tc.wantAppeared)
+			}
+			if (w.release != nil) != tc.wantRelease {
+				t.Errorf("release = %v, want a release: %v", w.release, tc.wantRelease)
+			}
+			if tc.wantCause != nil && !errors.Is(w.release, tc.wantCause) {
+				t.Errorf("the release does not say why: %v, want it to wrap %v", w.release, tc.wantCause)
+			}
+			// The window is longer than the budget in the releasing cases, so a
+			// wait past the bound means it ignored the budget and waited anyway.
+			if tc.maxElapsed > 0 && elapsed > tc.maxElapsed {
+				t.Errorf("the window took %s (budget %s, window %s)", elapsed, tc.budgetLeft, tc.window)
+			}
+		})
+	}
+}
+
+// A wake whose pod never becomes ready must give the card back: a Deployment
+// left at one replica with a pod in ImagePullBackOff holds its card until someone
+// notices it and scales it by hand, and nothing in the process ever notices.
+func TestWakeReleasesTheCardOfAPodThatNeverBecomesReady(t *testing.T) {
+	cluster := fakeCluster{replicas: map[string]int{"swift-qwen3-8-27b-g0": 1}}
+
+	err := giveBackCard(cluster, "default", "swift-qwen3-8-27b-g0", "1",
+		errors.New("the pod never became ready: startup timeout after 10m0s: pod swift-qwen3-7d4 container llama-server waiting: ImagePullBackOff"))
+
+	if cluster.replicas["swift-qwen3-8-27b-g0"] != 0 {
+		t.Errorf("gpu 1 is still claimed: the Deployment is at %d replicas",
+			cluster.replicas["swift-qwen3-8-27b-g0"])
+	}
+	// Whoever reads the log has to know which card came back and why it went.
+	for _, want := range []string{"gpu 1", "swift-qwen3-8-27b-g0", "ImagePullBackOff"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the release error does not name %q: %v", want, err)
+		}
+	}
+}
+
+// The two ways a readiness wait ends badly are different incidents: one is a
+// broken image, the other is llama-swap taking the request back. The line the
+// operator reads tells them apart and keeps the reason underneath.
+func TestTheReadinessWaitSaysWhyItGaveTheCardBack(t *testing.T) {
+	stuck := errors.New("startup timeout after 10m0s: pod swift-qwen3-7d4 waiting: ImagePullBackOff")
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	if got := releaseReason(context.Background(), stuck); !strings.Contains(got.Error(), "never became ready") ||
+		!errors.Is(got, stuck) {
+		t.Errorf("a pod that will not come up is worded as something else: %v", got)
+	}
+	if got := releaseReason(ctx, context.Canceled); !strings.Contains(got.Error(), "cancelled") ||
+		!errors.Is(got, context.Canceled) {
+		t.Errorf("a cancelled caller is worded as a broken pod: %v", got)
+	}
+}
+
+// A release the API refused leaves the card held, and the only way back is a
+// human with a kubectl: the error has to say the card is still held and what to
+// do, or the operator reads a release that never happened.
+func TestAReleaseTheAPIRefusedSaysTheCardIsStillHeld(t *testing.T) {
+	cluster := fakeCluster{
+		replicas: map[string]int{"gemma-4-26b-g0": 1},
+		refuse:   errors.New("403 deployments/scale is forbidden"),
+	}
+
+	err := giveBackCard(cluster, "default", "gemma-4-26b-g0", "0",
+		errors.New("the pod never became ready"))
+
+	for _, want := range []string{"gpu 0", "still held", "403", "by hand"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the error does not say %q: %v", want, err)
+		}
+	}
+}
+
+// A caller that goes away after the scale has already put the Deployment at one:
+// the card is claimed by then, and nothing else in the process will ever give it
+// back. The release has to reach the cluster, the flock and the next wake.
+func TestCancellationAfterAScaleReleasesTheCard(t *testing.T) {
+	lock := t.TempDir() + "/cards.lock"
+	cluster := fakeCluster{replicas: map[string]int{"swift-qwen3-8-27b-g0": 0}}
+	ctx, cancel := context.WithCancel(context.Background())
+
+	_, err := claimCycle(ctx, lock, scanOf(), []string{"1"}, "1", "any", time.Minute, time.Millisecond,
+		func(card string) error {
+			if _, err := cluster.scale("default", "swift-qwen3-8-27b-g0", 1); err != nil {
+				t.Error(err)
+			}
+			cancel() // the caller dies between the scale and the pod
+			w := awaitPodVisible(ctx, 30*time.Second, time.Millisecond, time.Now().Add(30*time.Second),
+				func() (bool, error) { return false, nil })
+			if w.release == nil {
+				t.Error("a cancelled caller kept the card")
+				return nil
+			}
+			return giveBackCard(cluster, "default", "swift-qwen3-8-27b-g0", card, w.release)
+		})
+
+	if err == nil {
+		t.Fatal("a wake whose caller went away must not report success")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("the cancellation is not visible in the error: %v", err)
+	}
+	if !strings.Contains(err.Error(), "gpu 1") {
+		t.Errorf("the error does not name the card it released: %v", err)
+	}
+	if cluster.replicas["swift-qwen3-8-27b-g0"] != 0 {
+		t.Errorf("gpu 1 is still claimed: the Deployment is at %d replicas",
+			cluster.replicas["swift-qwen3-8-27b-g0"])
+	}
+	if !flockIsFree(t, lock) {
+		t.Error("the placement lock is still held")
+	}
+
+	again, err := claimJob(t, lock, scanOf(), "1", "any", func(string) error { return nil })
+	if err != nil || again != "1" {
+		t.Errorf("the next wake after the release got %q (%v); want card 1", again, err)
+	}
+}
+
+// The pod-visibility window re-checks the card-wait budget instead of falling
+// through to the readiness wait: a Deployment that has produced no pod when the
+// budget runs out is a card this wake holds for nothing, and the wake fails with
+// the card named.
+func TestClaimReleasesTheCardWhenNoPodAppearedWithinTheBudget(t *testing.T) {
+	lock := t.TempDir() + "/cards.lock"
+	cluster := fakeCluster{replicas: map[string]int{"swift-qwen3-8-27b-g0": 0}}
+
+	_, err := claimCycle(context.Background(), lock, scanOf(), []string{"1"}, "1", "any",
+		time.Minute, time.Millisecond, func(card string) error {
+			if _, err := cluster.scale("default", "swift-qwen3-8-27b-g0", 1); err != nil {
+				t.Error(err)
+			}
+			// The budget ran out while the scale was happening; the window ends on it.
+			w := awaitPodVisible(context.Background(), 30*time.Second, time.Millisecond,
+				time.Now().Add(20*time.Millisecond), func() (bool, error) { return false, nil })
+			if w.release == nil {
+				t.Error("the window fell through to the readiness wait instead of ending with the budget")
+				return nil
+			}
+			return giveBackCard(cluster, "default", "swift-qwen3-8-27b-g0", card, w.release)
+		})
+
+	if err == nil || !strings.Contains(err.Error(), "gpu 1") {
+		t.Fatalf("want a failure naming the released card, got %v", err)
+	}
+	if cluster.replicas["swift-qwen3-8-27b-g0"] != 0 {
+		t.Errorf("gpu 1 is still claimed: the Deployment is at %d replicas",
+			cluster.replicas["swift-qwen3-8-27b-g0"])
+	}
+	if !flockIsFree(t, lock) {
+		t.Error("the placement lock is still held")
+	}
+
+	again, err := claimJob(t, lock, scanOf(), "1", "any", func(string) error { return nil })
+	if err != nil || again != "1" {
+		t.Errorf("the next wake after the release got %q (%v); want card 1", again, err)
+	}
+}
