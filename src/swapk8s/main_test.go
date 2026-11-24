@@ -1,10 +1,17 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 )
 
 // The invariant that keeps `kubectl apply` from killing a serving model: the
@@ -299,5 +306,337 @@ func TestChooseCardRefusesCardsHeldByGpuJobs(t *testing.T) {
 				t.Errorf("chooseCard = %q, want %q", got, tc.want)
 			}
 		})
+	}
+}
+
+// ---- claiming a card for a job ---------------------------------------------
+
+// scanOf is the cluster placement reads: the same cardsFromPods the shim runs
+// against a pod list, so a claim test covers the chain from "a pod holds this
+// card" to "the job is refused it" without an API server.
+func scanOf(specs ...podSpec) busyScan {
+	raw := []byte(pods(specs...))
+	return func(context.Context) (map[string]bool, error) { return cardsFromPods(raw) }
+}
+
+// refusalBudget is a card-wait short enough that a refusal is a test result and
+// not a wait; the cycle is the same one a five-minute wake runs.
+const refusalBudget = 50 * time.Millisecond
+
+func claimJob(t *testing.T, lockPath string, scan busyScan, pool, mode string, onClaim func(string) error) (string, error) {
+	t.Helper()
+	return claimCycle(context.Background(), lockPath, scan, splitCards(pool), pool, mode,
+		refusalBudget, time.Millisecond, onClaim)
+}
+
+// A job asks for a card and is told which one it got. The busy set below is a
+// model holding card 1, so the job lands on 0 of its pool and is never handed
+// the card the model is serving on.
+func TestClaimCycleHandsTheJobAFreeCard(t *testing.T) {
+	claimed := ""
+	card, err := claimJob(t, t.TempDir()+"/cards.lock", scanOf(model(sref("1"))), "0,1", "any",
+		func(c string) error { claimed = c; return nil })
+	if err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+	if card != "0" || claimed != "0" {
+		t.Errorf("claim = %q, the command was told %q; want the free card 0 in both", card, claimed)
+	}
+}
+
+// A card a model serves on is refused, not shared: the refusal is the whole
+// reason a job goes through the shim instead of naming a card in its own
+// manifest, and the command must never see a card the cycle refused.
+func TestClaimCycleRefusesACardAModelHolds(t *testing.T) {
+	claimed := ""
+	_, err := claimJob(t, t.TempDir()+"/cards.lock", scanOf(model(sref("1"))), "1", "any",
+		func(c string) error { claimed = c; return nil })
+	if err == nil || !strings.Contains(err.Error(), `no free card in pool "1"`) {
+		t.Fatalf("want a refusal naming the pool, got %v", err)
+	}
+	if claimed != "" {
+		t.Errorf("the command was handed a refused card: %q", claimed)
+	}
+}
+
+// A card another gpu-job holds is refused exactly the same way: the two
+// categories differ in who created them, not in what they block.
+func TestClaimCycleRefusesACardAnotherJobHolds(t *testing.T) {
+	claimed := ""
+	_, err := claimJob(t, t.TempDir()+"/cards.lock", scanOf(gpuJob(sref("1"))), "1", "any",
+		func(c string) error { claimed = c; return nil })
+	if err == nil {
+		t.Fatal("a card another job holds must be refused")
+	}
+	if claimed != "" {
+		t.Errorf("the command was handed a refused card: %q", claimed)
+	}
+}
+
+// A spanning job is refused unless every card of its pool is free, whoever holds
+// one of them.
+func TestClaimCycleRefusesASpanningJobWhenAModelHoldsOneOfItsCards(t *testing.T) {
+	_, err := claimJob(t, t.TempDir()+"/cards.lock", scanOf(model(sref("1"))), "0,1", "all",
+		func(string) error { t.Error("a spanning claim must not be handed a partial pool"); return nil })
+	if err == nil {
+		t.Fatal("a spanning job must be refused a pool one of whose cards is held")
+	}
+}
+
+// A job that finished releases its card, and the claim is what proves the
+// release means something: the nightly that failed last night must not be the
+// reason tonight's render waits five minutes and gives up.
+func TestClaimCycleClaimsTheCardAFailedJobReleased(t *testing.T) {
+	card, err := claimJob(t, t.TempDir()+"/cards.lock",
+		scanOf(podSpec{component: componentGpuJob, env: sref("1"), phase: "Failed"}), "1", "any",
+		func(string) error { return nil })
+	if err != nil {
+		t.Fatalf("a failed job holds nothing: %v", err)
+	}
+	if card != "1" {
+		t.Errorf("claim = %q, want the card the failed job released", card)
+	}
+}
+
+// A busy card is a temporary condition: the job waits under the flock for the
+// holder to finish rather than failing on the first scan, which is the same
+// bargain a model wake makes.
+func TestClaimCycleWaitsForAHeldCardToRelease(t *testing.T) {
+	rounds := 0
+	scan := func(ctx context.Context) (map[string]bool, error) {
+		rounds++
+		if rounds < 3 {
+			return cardsFromPods([]byte(pods(gpuJob(sref("1")))))
+		}
+		return cardsFromPods([]byte(pods()))
+	}
+	card, err := claimCycle(context.Background(), t.TempDir()+"/cards.lock", scan, []string{"1"}, "1", "any",
+		5*time.Second, time.Millisecond, func(string) error { return nil })
+	if err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+	if rounds < 3 {
+		t.Errorf("the cycle claimed after %d scan(s) of a held card", rounds)
+	}
+	if card != "1" {
+		t.Errorf("claim = %q, want the card once it released", card)
+	}
+}
+
+// The flock is never held past one cycle, on any way out of it. A claim that
+// died holding it would wedge every wake in the fleet, and flock is the
+// mechanism that promises it cannot: the kernel drops it with the process.
+func TestClaimCycleNeverOutlivesTheFlock(t *testing.T) {
+	failingClaim := func(string) error { return errors.New("the command that creates the pod failed") }
+	cases := []struct {
+		name    string
+		scan    busyScan
+		pool    string
+		onClaim func(string) error
+	}{
+		{"after the card was claimed", scanOf(), "1", func(string) error { return nil }},
+		{"after every card was held", scanOf(model(sref("1"))), "1", func(string) error { return nil }},
+		{"after the claim's command failed", scanOf(), "1", failingClaim},
+		{"after the scan failed", func(context.Context) (map[string]bool, error) {
+			return nil, errors.New("api unavailable")
+		}, "1", func(string) error { return nil }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			lock := t.TempDir() + "/cards.lock"
+			// The outcome is not what this test is about: only that every way out of
+			// the cycle leaves the lock alone.
+			_, _ = claimJob(t, lock, tc.scan, tc.pool, "any", tc.onClaim)
+			if !flockIsFree(t, lock) {
+				t.Error("the placement lock is still held; every wake in the fleet now waits on a dead claim")
+			}
+		})
+	}
+}
+
+// The release assertions are only evidence if two opens of one file do conflict,
+// which flock guarantees because its lock belongs to the open file description
+// and not the process. This is the assumption they rest on, so it is asserted.
+func TestAFlockHolderIsVisibleToAnotherOpen(t *testing.T) {
+	lock := t.TempDir() + "/cards.lock"
+	held, err := cardLock(lock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if flockIsFree(t, lock) {
+		cardUnlock(held)
+		t.Fatal("a held lock read as free: every release assertion is vacuous")
+	}
+	cardUnlock(held)
+	if !flockIsFree(t, lock) {
+		t.Error("cardUnlock did not release the lock")
+	}
+}
+
+// A claim whose pod never started holds nothing: the create command failed, so
+// nothing was written to the cluster, and the card must read as free again to
+// the next scan and to the next claim.
+func TestClaimCycleReleasesTheCardWhenThePodNeverStarted(t *testing.T) {
+	lock := t.TempDir() + "/cards.lock"
+	_, err := claimJob(t, lock, scanOf(), "1", "any", func(string) error {
+		return fmt.Errorf("kubectl apply: %w", errors.New("job spec rejected"))
+	})
+	if err == nil {
+		t.Fatal("a claim whose command failed must not report success")
+	}
+	if !flockIsFree(t, lock) {
+		t.Error("the placement lock is still held")
+	}
+	busy, err := cardsFromPods([]byte(pods()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if busy["1"] {
+		t.Error("a pod that never existed is holding the card")
+	}
+	again, err := claimJob(t, lock, scanOf(), "1", "any", func(string) error { return nil })
+	if err != nil || again != "1" {
+		t.Errorf("the next claim after a failed one: %q, %v; want card 1", again, err)
+	}
+}
+
+// flockIsFree reports whether nothing holds the placement lock, taken the way
+// cardLock takes it. A blocking LOCK_EX would hang the suite instead of failing
+// this test, so the assertion takes the non-blocking form.
+func flockIsFree(t *testing.T, path string) bool {
+	t.Helper()
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		return false
+	}
+	syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+	return true
+}
+
+// The card reaches the job's pod as the pin the ai chart already uses, and the
+// pool the caller's own env carries must not survive into it: a pod rendered
+// with "0,1" takes both cards while claiming one.
+func TestPinChildEnvPinsTheChosenCardNotThePool(t *testing.T) {
+	got := pinChildEnv([]string{"PATH=/usr/bin", gpuEnv + "=0,1", jobCardEnv + "=stale"}, "1", "forecats-nightly")
+	if values := envValues(got, gpuEnv); len(values) != 1 || values[0] != "1" {
+		t.Errorf("%s = %v, want exactly the chosen card", gpuEnv, values)
+	}
+	if values := envValues(got, jobCardEnv); len(values) != 1 || values[0] != "forecats-nightly" {
+		t.Errorf("%s = %v, want the job name once", jobCardEnv, values)
+	}
+	if values := envValues(got, "PATH"); len(values) != 1 || values[0] != "/usr/bin" {
+		t.Errorf("the caller's environment did not survive the pin: %v", values)
+	}
+}
+
+func envValues(env []string, key string) []string {
+	var out []string
+	for _, kv := range env {
+		if v, ok := strings.CutPrefix(kv, key+"="); ok {
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
+// A claim is durable when its pod exists, and not before: this is what the cycle
+// holds the flock for. A model on the card says the card is taken, not that the
+// job's pod appeared, so it is not a yes here.
+func TestGpuJobPodCarryingTheCardIsTheClaim(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want bool
+	}{
+		{"a live gpu-job pod on the card", pods(gpuJob(sref("1"))), true},
+		{"a gpu-job pod that declared only the pool label", pods(podSpec{component: componentGpuJob, pool: "0,1"}), true},
+		{"a gpu-job pod on another card", pods(gpuJob(sref("0"))), false},
+		{"a model pod on the card", pods(model(sref("1"))), false},
+		{"a terminating gpu-job pod", pods(podSpec{component: componentGpuJob, env: sref("1"), deleting: true}), false},
+		{"a succeeded gpu-job pod", pods(podSpec{component: componentGpuJob, env: sref("1"), phase: "Succeeded"}), false},
+		{"no pods at all", pods(), false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			pl := &podList{}
+			if err := json.Unmarshal([]byte(tc.in), pl); err != nil {
+				t.Fatal(err)
+			}
+			if got := pl.gpuJobHolds("1"); got != tc.want {
+				t.Errorf("gpuJobHolds(1) = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// A panic inside the claim must not leave the flock held by a process that is
+// still running: flock belongs to the open file, so only the holder's death would
+// give it back, and a live holder wedges every placement in the fleet.
+func TestClaimCycleReleasesTheFlockWhenTheClaimPanics(t *testing.T) {
+	lock := t.TempDir() + "/cards.lock"
+	func() {
+		defer func() {
+			if recover() == nil {
+				t.Error("the panic never reached the caller; the cycle swallowed it")
+			}
+		}()
+		_, _ = claimJob(t, lock, scanOf(), "1", "any", func(string) error {
+			panic("the exec machinery blew up")
+		})
+	}()
+	if !flockIsFree(t, lock) {
+		t.Error("a panic inside the claim left the placement lock held")
+	}
+}
+
+// The pin reaches the command through the real exec path and not just the env
+// builder: that value is what the caller renders into the pod spec, and the pod
+// spec is where the nvidia runtime hook reads it.
+func TestRunClaimedPinsTheCardForTheCommandItRuns(t *testing.T) {
+	cardFile := filepath.Join(t.TempDir(), "card")
+	o := &options{job: "forecats-nightly", jobCmd: []string{
+		"sh", "-c", `printf '%s' "$NVIDIA_VISIBLE_DEVICES" >"$1"`, "sh", cardFile,
+	}}
+
+	if err := runClaimed(context.Background(), o, "1"); err != nil {
+		t.Fatalf("runClaimed: %v", err)
+	}
+
+	got, err := os.ReadFile(cardFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "1" {
+		t.Errorf("the command ran with %s=%q, want the chosen card", gpuEnv, got)
+	}
+}
+
+// A claim's command failing is the job failing, and its exit code is the thing
+// the caller acts on: main hands it back as the process's own, so a nightly that
+// found no card and one whose apply was rejected stay different incidents.
+func TestRunClaimedHandsBackTheCommandsExitCode(t *testing.T) {
+	o := &options{job: "forecats-nightly", jobCmd: []string{"sh", "-c", "exit 3"}}
+
+	err := runClaimed(context.Background(), o, "1")
+
+	var ee *exec.ExitError
+	if !errors.As(err, &ee) || ee.ExitCode() != 3 {
+		t.Fatalf("runClaimed = %v, want the command's exit code 3", err)
+	}
+}
+
+// A command that never started is a refusal, not a hang: Start fails before there
+// is a process for anyone to wait on.
+func TestRunClaimedReportsACommandThatNeverStarted(t *testing.T) {
+	o := &options{job: "forecats-nightly", jobCmd: []string{"/does/not/exist/forecats-render"}}
+
+	err := runClaimed(context.Background(), o, "1")
+
+	if err == nil || !strings.Contains(err.Error(), "start") {
+		t.Fatalf("runClaimed = %v, want a start failure", err)
 	}
 }

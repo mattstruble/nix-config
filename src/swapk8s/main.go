@@ -11,7 +11,8 @@
 // making `nvidia` the cluster-default RuntimeClass and relaxing PSS in the
 // model namespace — trading away two decisions this repo paid for. So the chart
 // keeps the pod spec and swapk8s keeps the lifecycle: create-or-update from a
-// spec the chart rendered, scale, wait for readiness, proxy, reap.
+// spec the chart rendered, scale, wait for readiness, proxy, reap, and hand a
+// card to a job that is not a model at all.
 //
 // The spec arrives as JSON in a ConfigMap, not as a Deployment in the manifest.
 // That indirection is the whole point: if the chart rendered the Deployment
@@ -30,6 +31,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -39,6 +41,7 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"os"
+	"os/exec"
 	"os/signal"
 	"slices"
 	"sort"
@@ -85,6 +88,25 @@ const (
 	// every serve process in the pod sees the same file, and flock is the only
 	// coordination that survives a holder's death.
 	cardLockPath = "/tmp/swapk8s-cards.lock"
+	// jobCardEnv carries the chosen card to the command a claim runs, beside the
+	// pin itself. NVIDIA_VISIBLE_DEVICES is what the pod must end up carrying;
+	// this is for the caller that names the card somewhere the env is not - a Job
+	// template's own label, a log line, a file it renders.
+	jobCardEnv = "SWAPK8S_CARD"
+)
+
+const (
+	// How long a placement holds the flock waiting for its pod to become visible
+	// in the API. The claim is the pod, so releasing before it exists lets the
+	// next shim place on the same card; holding indefinitely lets a cluster
+	// problem wedge every placement in the fleet. Bounded, and a timeout is a log
+	// line: the pod, if it is coming, still arrives.
+	podClaimWindow = 60 * time.Second
+	podClaimPoll   = 500 * time.Millisecond
+	// How long a claim's command gets to die after the caller's SIGTERM before it
+	// is killed. The flock must go back either way, and a child that ignores
+	// signals must not hold the fleet's placement with it.
+	claimKillGrace = 10 * time.Second
 )
 
 // cardOwnerComponents is the one list the busy-card scan derives from: the API
@@ -374,36 +396,41 @@ func (c *client) applyDeployment(ns, name, gpu string, spec []byte, existing *de
 }
 
 type podList struct {
-	Items []struct {
-		Metadata struct {
-			Name              string            `json:"name"`
-			Labels            map[string]string `json:"labels"`
-			DeletionTimestamp any               `json:"deletionTimestamp"`
-		} `json:"metadata"`
-		Spec struct {
-			Containers []struct {
-				Env []struct {
-					Name  string `json:"name"`
-					Value string `json:"value"`
-				} `json:"env"`
-			} `json:"containers"`
-		} `json:"spec"`
-		Status struct {
-			Phase      string `json:"phase"`
-			PodIP      string `json:"podIP"`
-			Conditions []struct {
-				Type   string `json:"type"`
-				Status string `json:"status"`
-			} `json:"conditions"`
-			ContainerStatuses []struct {
-				Name    string `json:"name"`
-				Ready   bool   `json:"ready"`
-				Waiting *struct {
-					Reason string `json:"reason"`
-				} `json:"waiting"`
-			} `json:"containerStatuses"`
-		} `json:"status"`
-	} `json:"items"`
+	Items []podItem `json:"items"`
+}
+
+// podItem is the slice of a pod this binary reasons about: which component it
+// belongs to, which card its containers are pinned to, and whether it is still
+// around to own it.
+type podItem struct {
+	Metadata struct {
+		Name              string            `json:"name"`
+		Labels            map[string]string `json:"labels"`
+		DeletionTimestamp any               `json:"deletionTimestamp"`
+	} `json:"metadata"`
+	Spec struct {
+		Containers []struct {
+			Env []struct {
+				Name  string `json:"name"`
+				Value string `json:"value"`
+			} `json:"env"`
+		} `json:"containers"`
+	} `json:"spec"`
+	Status struct {
+		Phase      string `json:"phase"`
+		PodIP      string `json:"podIP"`
+		Conditions []struct {
+			Type   string `json:"type"`
+			Status string `json:"status"`
+		} `json:"conditions"`
+		ContainerStatuses []struct {
+			Name    string `json:"name"`
+			Ready   bool   `json:"ready"`
+			Waiting *struct {
+				Reason string `json:"reason"`
+			} `json:"waiting"`
+		} `json:"containerStatuses"`
+	} `json:"status"`
 }
 
 func (c *client) pods(ns string, sel map[string]string) (*podList, error) {
@@ -485,46 +512,78 @@ func cardsFromPods(raw []byte) (map[string]bool, error) {
 	}
 	busy := map[string]bool{}
 	for _, p := range pl.Items {
-		if p.Metadata.DeletionTimestamp != nil {
+		if holdsNothing(p) {
 			continue
 		}
-		// A finished pod holds nothing. This is the rule a batch job forces and a
-		// Deployment never raises: a Job pod that Succeeded or Failed keeps
-		// existing until jobHistoryLimit reaps it, while its process - and with it
-		// the VRAM the kernel gave that process - is already gone. Counting it
-		// would keep a card claimed for a job that will never run again. Unknown
-		// is deliberately NOT terminal: that is a node that stopped reporting, and
-		// the container there may still hold its card.
-		switch p.Status.Phase {
-		case "Succeeded", "Failed":
-			continue
-		}
-		// A pod whose component is neither model nor gpu-job (the head-end, a log
-		// pod) is invisible: a pod that cannot hold a card must not block a wake.
-		if !slices.Contains(cardOwnerComponents, p.Metadata.Labels[componentLabel]) {
-			continue
-		}
-		// The env is the card the runtime actually gave the container: for a model
-		// the one card placement narrowed its pool to, for a gpu-job the pool it
-		// declared verbatim, because nothing narrows a job's spec. The pool label
-		// is read only when no container names a card, so a job whose env was
-		// narrowed to one card is never charged for the rest of its pool.
-		var held []string
-		for _, c := range p.Spec.Containers {
-			for _, e := range c.Env {
-				if e.Name == gpuEnv {
-					held = append(held, splitCards(e.Value)...)
-				}
-			}
-		}
-		if len(held) == 0 {
-			held = splitCards(p.Metadata.Labels[gpuPoolLabel])
-		}
-		for _, card := range held {
+		for _, card := range heldCards(p) {
 			busy[card] = true
 		}
 	}
 	return busy, nil
+}
+
+// holdsNothing reports whether a pod is out of the placement accounting.
+//
+// A terminating pod is out because its owner has already decided it is over.
+//
+// A finished pod holds nothing. This is the rule a batch job forces and a
+// Deployment never raises: a Job pod that Succeeded or Failed keeps existing
+// until jobHistoryLimit reaps it, while its process - and with it the VRAM the
+// kernel gave that process - is already gone. Counting it would keep a card
+// claimed for a job that will never run again. Unknown is deliberately NOT
+// terminal: that is a node that stopped reporting, and the container there may
+// still hold its card.
+//
+// A pod whose component is neither model nor gpu-job (the head-end, a log pod)
+// is invisible: a pod that cannot hold a card must not block a wake.
+func holdsNothing(p podItem) bool {
+	if p.Metadata.DeletionTimestamp != nil {
+		return true
+	}
+	switch p.Status.Phase {
+	case "Succeeded", "Failed":
+		return true
+	}
+	return !slices.Contains(cardOwnerComponents, p.Metadata.Labels[componentLabel])
+}
+
+// heldCards returns the cards a pod's process owns.
+//
+// The env is the card the runtime actually gave the container: for a model the
+// one card placement narrowed its pool to, for a gpu-job the pool it declared
+// verbatim, because nothing narrows a job's spec. The pool label is read only
+// when no container names a card, so a job whose env was narrowed to one card is
+// never charged for the rest of its pool.
+func heldCards(p podItem) []string {
+	var held []string
+	for _, c := range p.Spec.Containers {
+		for _, e := range c.Env {
+			if e.Name == gpuEnv {
+				held = append(held, splitCards(e.Value)...)
+			}
+		}
+	}
+	if len(held) == 0 {
+		held = splitCards(p.Metadata.Labels[gpuPoolLabel])
+	}
+	return held
+}
+
+// gpuJobHolds reports whether a live gpu-job pod in the list carries the card.
+// A job's claim becomes durable only once its pod exists - the rule a model's
+// claim follows too - so this is what a claim waits for before letting go of the
+// flock. A model on the card is not a yes here: it says the card is taken, not
+// that the job's pod appeared.
+func (pl *podList) gpuJobHolds(card string) bool {
+	for _, p := range pl.Items {
+		if holdsNothing(p) || p.Metadata.Labels[componentLabel] != componentGpuJob {
+			continue
+		}
+		if slices.Contains(heldCards(p), card) {
+			return true
+		}
+	}
+	return false
 }
 
 // splitCards turns a card list ("0", "0,1") into its members; the empty value a
@@ -537,6 +596,125 @@ func splitCards(v string) []string {
 		}
 	}
 	return out
+}
+
+// busyScan is the view placement needs of the cluster: which cards a live pod
+// already owns. A function so that a model wake and a job claim place against
+// one scan, and so the claim path is testable without an API server.
+type busyScan func(context.Context) (map[string]bool, error)
+
+// scanCards fixes the namespace for the life of one placement; the scan itself
+// is what differs between a cluster and a test.
+func (c *client) scanCards(ns string) busyScan {
+	return func(ctx context.Context) (map[string]bool, error) { return c.busyCards(ctx, ns) }
+}
+
+// errNoFreeCard is one placement round's answer when nothing in the pool was
+// free. It is not a failure to report: it is what claimCycle waits on and retries,
+// and only the spent card-wait budget turns it into the error a caller sees.
+var errNoFreeCard = errors.New("every card in the pool is held")
+
+// claimRound is one holding of the flock: scan, decide, and hand the chosen card
+// to onClaim while the lock is still held.
+//
+// The unlock is deferred rather than repeated at each return. onClaim runs
+// whatever the entry point does to make a claim visible - apply and scale for a
+// model, an exec for a job - and a panic inside it must not leave the flock held
+// by a process that is still running: flock is dropped when the holder dies, so
+// a live holder is every placement in the fleet wedged until something kills it.
+func claimRound(ctx context.Context, lockPath string, scan busyScan, cards []string, pool, mode string,
+	onClaim func(card string) error) (string, error) {
+	lock, err := cardLock(lockPath)
+	if err != nil {
+		return "", fmt.Errorf("card lock: %w", err)
+	}
+	defer cardUnlock(lock)
+
+	busy, err := scan(ctx)
+	if err != nil {
+		return "", fmt.Errorf("scan card holders: %w", err)
+	}
+	chosen := chooseCard(busy, cards, pool, mode)
+	if chosen == "" {
+		return "", errNoFreeCard
+	}
+	if err := onClaim(chosen); err != nil {
+		return "", err
+	}
+	return chosen, nil
+}
+
+// claimCycle is the choose-and-claim cycle every entry point shares: rounds of
+// claimRound until one hands over a card, with the card-wait budget as the only
+// thing that turns "nothing free yet" into a failure. onClaim must make the claim
+// visible to the next shim's scan before it returns - for a model the pod the
+// scale produces, for a job the pod the caller's create command produces - and
+// the flock goes back the moment it has, on the way out of a failure, a panic or
+// a success alike.
+func claimCycle(ctx context.Context, lockPath string, scan busyScan, cards []string, pool, mode string,
+	wait, poll time.Duration, onClaim func(card string) error) (string, error) {
+	deadline := time.Now().Add(wait)
+	for {
+		chosen, err := claimRound(ctx, lockPath, scan, cards, pool, mode, onClaim)
+		if chosen != "" {
+			return chosen, nil
+		}
+		if err != nil && !errors.Is(err, errNoFreeCard) {
+			return "", err
+		}
+		if time.Now().After(deadline) {
+			return "", fmt.Errorf("no free card in pool %q after %s: every card in the pool is held by a model or a job that has not finished; retry when one releases", pool, wait)
+		}
+		log.Printf("all cards in pool %q busy; waiting for one to free (budget %s)", pool, wait)
+		select {
+		case <-ctx.Done():
+			return "", ctx.Err()
+		case <-time.After(poll):
+		}
+	}
+}
+
+// awaitDeploymentPod holds the flock until the Deployment has produced a pod.
+// Bounded, and a timeout is not an error: a Deployment whose pods never appear
+// is a cluster problem, and waitReady is where the caller learns about it.
+func (c *client) awaitDeploymentPod(ctx context.Context, ns, name string) {
+	deadline := time.Now().Add(podClaimWindow)
+	for time.Now().Before(deadline) {
+		if d, derr := c.getDeployment(ns, name); derr == nil && d != nil {
+			if has, perr := c.podsForDeployment(ns, d.Selector); perr == nil && has {
+				return
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(podClaimPoll):
+		}
+	}
+}
+
+// awaitJobPod holds the flock until a gpu-job pod carrying the card is visible,
+// and reports whether it ever was; the error is the last scan failure, which is
+// a different diagnosis from "the pod never appeared". Same rule as a model's
+// claim: until the pod exists the card reads as free to the next shim. After the
+// window a claim that produced no pod simply is not a claim - nothing was written
+// to the cluster, so nothing holds the card.
+func (c *client) awaitJobPod(ctx context.Context, ns, card string) (bool, error) {
+	deadline := time.Now().Add(podClaimWindow)
+	var lastErr error
+	for time.Now().Before(deadline) {
+		pl, err := c.pods(ns, map[string]string{componentLabel: componentGpuJob})
+		if err == nil && pl.gpuJobHolds(card) {
+			return true, nil
+		}
+		lastErr = err
+		select {
+		case <-ctx.Done():
+			return false, lastErr
+		case <-time.After(podClaimPoll):
+		}
+	}
+	return false, lastErr
 }
 
 // chooseCard is the placement decision, pure so it is testable without a
@@ -632,6 +810,12 @@ func (c *client) listManaged(ns string) ([]string, error) {
 type options struct {
 	namespace, model, listen, checkPath, specDir, apiServer, tokenFile, caFile string
 	port                                                                       int
+	// job, gpuPool, gpuMode and jobCmd are the claim's: a job that is not a model
+	// has no spec ConfigMap to read its pool from, so the pool, the mode and the
+	// name it is attributed by arrive as flags, and the command it runs is what
+	// makes the claim outlive the decision.
+	job, gpuPool, gpuMode, cardLock string
+	jobCmd                          []string
 	// cmdPid is llama-swap's ${PID}: the pid of the serve process it is
 	// stopping. cmdStop is responsible for stopping the cmd process itself
 	// (internal/process/process_command.go: sendStopSignal runs CmdStop and
@@ -644,7 +828,7 @@ type options struct {
 func main() {
 	log.SetFlags(log.Ltime)
 	if len(os.Args) < 2 {
-		log.Fatalf("usage: swapk8s serve|start|stop|reap [flags]")
+		log.Fatalf("usage: swapk8s serve|start|stop|claim|reap [flags]")
 	}
 	cmd := os.Args[1]
 	fs := flag.NewFlagSet(cmd, flag.ExitOnError)
@@ -663,12 +847,19 @@ func main() {
 	fs.StringVar(&o.apiServer, "api-server", "", "kube API base (default: in-cluster)")
 	fs.StringVar(&o.tokenFile, "token-file", "", "bearer token file (default: in-cluster)")
 	fs.StringVar(&o.caFile, "ca-file", "", "CA bundle (default: in-cluster)")
+	fs.StringVar(&o.cardLock, "card-lock", cardLockPath, "flock file placement serialises on; it is only the same lock if the path is")
+	fs.StringVar(&o.job, "job", "", "name a card claim is attributed to (claim)")
+	fs.StringVar(&o.gpuPool, "gpu-pool", "", `card pool a job may run on: "0", "1", "0,1" (claim)`)
+	fs.StringVar(&o.gpuMode, "gpu-mode", "any", `"any" free card of the pool, "all" every card of it (claim)`)
 	if err := fs.Parse(os.Args[2:]); err != nil {
 		log.Fatal(err)
 	}
-	if cmd != "reap" && o.model == "" {
+	// A claim has no model: it is the entry point for a job that never enters the
+	// roster, which is the reason it exists.
+	if cmd != "reap" && cmd != "claim" && o.model == "" {
 		log.Fatal("--model is required")
 	}
+	o.jobCmd = fs.Args()
 
 	kc, err := newClient(o.apiServer, o.tokenFile, o.caFile)
 	if err != nil {
@@ -687,13 +878,23 @@ func main() {
 		// stop runs with a deadline derived from its own flag, not the caller's
 		// context: see cmdStop for why blocking here is the worst failure mode.
 		runErr = cmdStop(kc, o)
+	case "claim":
+		runErr = cmdClaim(ctx, kc, o)
 	case "reap":
 		runErr = cmdReap(kc, o)
 	default:
 		log.Fatalf("unknown command %q", cmd)
 	}
 	if runErr != nil {
-		log.Fatal(runErr)
+		log.Print(runErr)
+		// A claim's command failing is the job failing, and its exit code is the
+		// answer the caller acts on: a nightly that found no card and one that was
+		// killed are different incidents, and a Job retries them differently.
+		var ee *exec.ExitError
+		if errors.As(runErr, &ee) && ee.ExitCode() > 0 {
+			os.Exit(ee.ExitCode())
+		}
+		os.Exit(1)
 	}
 }
 
@@ -781,58 +982,23 @@ func wake(ctx context.Context, kc *client, o *options) (*deployment, error) {
 	// busy card is a temporary condition and the request should outlive it.
 	// llama-swap holds the request (its queue) while the shim waits here, and
 	// the client sees the loading stream.
-	deadline := time.Now().Add(o.cardWait)
-	var chosen string
-	for {
-		lock, err := cardLock(cardLockPath)
-		if err != nil {
-			return nil, fmt.Errorf("card lock: %w", err)
-		}
-		busy, err := kc.busyCards(ctx, o.namespace)
-		if err != nil {
-			cardUnlock(lock)
-			return nil, fmt.Errorf("scan card holders: %w", err)
-		}
-		chosen = chooseCard(busy, cards, pool, mode)
-		if chosen != "" {
+	_, err = claimCycle(ctx, o.cardLock, kc.scanCards(o.namespace), cards, pool, mode, o.cardWait, o.poll,
+		func(chosen string) error {
 			if err := kc.applyDeployment(o.namespace, name, chosen, spec, cur); err != nil {
-				cardUnlock(lock)
-				return nil, fmt.Errorf("apply spec (gpu %s): %w", chosen, err)
+				return fmt.Errorf("apply spec (gpu %s): %w", chosen, err)
 			}
 			if _, err := kc.scale(o.namespace, name, 1); err != nil {
-				cardUnlock(lock)
-				return nil, fmt.Errorf("scale up: %w", err)
+				return fmt.Errorf("scale up: %w", err)
 			}
 			log.Printf("placed %s on gpu %s (pool %q, mode %s)", name, chosen, pool, mode)
 			// Hold the lock until the pod is visible: a scaled Deployment takes
 			// seconds to produce a pod, and until it exists the next shim's
 			// busy-card scan would see the card as free. The claim is the pod.
-			for i := 0; i < 120; i++ {
-				if d, derr := kc.getDeployment(o.namespace, name); derr == nil && d != nil {
-					if has, perr := kc.podsForDeployment(o.namespace, d.Selector); perr == nil && has {
-						break
-					}
-				}
-				select {
-				case <-ctx.Done():
-					cardUnlock(lock)
-					return nil, ctx.Err()
-				case <-time.After(500 * time.Millisecond):
-				}
-			}
-			cardUnlock(lock)
-			break
-		}
-		cardUnlock(lock)
-		if time.Now().After(deadline) {
-			return nil, fmt.Errorf("no free card in pool %q (all held) after %s: every card in the pool is serving another model; retry when one sleeps", pool, o.cardWait)
-		}
-		log.Printf("all cards in pool %q busy; waiting for one to free (budget %s)", pool, o.cardWait)
-		select {
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		case <-time.After(o.poll):
-		}
+			kc.awaitDeploymentPod(ctx, o.namespace, name)
+			return nil
+		})
+	if err != nil {
+		return nil, err
 	}
 
 	cur, err = kc.getDeployment(o.namespace, name)
@@ -1073,6 +1239,140 @@ func cmdStop(kc *client, o *options) error {
 		case <-time.After(o.poll):
 		}
 	}
+}
+
+// cmdClaim is how a job that is not a model gets a card: it takes the flock a
+// model wake takes, chooses a card the shared scan says is free, prints it, and
+// hands the pin to the command that creates the pod.
+//
+// The other mechanism on the ticket was a Job the shim creates itself, from a
+// spec ConfigMap, the way a model Deployment is created. Rejected, on three
+// grounds. (1) This binary exists because the pod spec belongs to something
+// else; a Job it creates makes it a batch controller, and parallelism,
+// backoffLimit, podFailurePolicy, history limits and TTL are batch/v1's
+// semantics - a partial reimplementation of them is how a nightly quietly stops
+// running. (2) A Job the shim creates is released by the shim, so the claim's
+// lifetime becomes a controller's lifetime, and the only long-lived process is
+// the head-end: a head-end restart would then orphan or kill a running render,
+// and reap - which scales everything it manages to zero - would have to learn
+// job semantics. Here the claim's lifetime is the caller's process, so it ends
+// when the caller ends, failure included. (3) The spec ConfigMap exists to stop
+// `kubectl apply` fighting the shim over .spec.replicas, and a Job's pod
+// template has no contested field: the indirection would add a second write path
+// and buy nothing. The head-end Role creates one kind of Deployment and nothing
+// else, so a Job needs new RBAC while a claim needs only the pod list the scan
+// already reads.
+//
+// Release is the same two facts a model's release is: the flock is gone when this
+// process exits - completion, failure and a killed caller alike - and the card
+// stays claimed while the job's pod exists because the scan counts the pod, which
+// is also what releases it once the pod finishes or fails. A claim whose pod never
+// appeared holds nothing: nothing was written to the cluster, and the lock is off.
+//
+// The card leaves this process the way it enters a model's pod - as
+// NVIDIA_VISIBLE_DEVICES, in the environment of the command it runs, and on
+// stdout for a caller that renders a manifest. The pod spec is where the pin has
+// to land, because that is where the nvidia runtime hook reads it; nothing this
+// command can do to a container already created would narrow the cards inside it.
+func cmdClaim(ctx context.Context, kc *client, o *options) error {
+	if o.job == "" {
+		return fmt.Errorf("claim: --job is required; it is the name every log line about this card is attributed to")
+	}
+	pool := strings.TrimSpace(o.gpuPool)
+	if pool == "" {
+		return fmt.Errorf("claim: --gpu-pool is required; a job that will not say which cards it may run on is a job that takes the model's card")
+	}
+	if len(o.jobCmd) == 0 {
+		return fmt.Errorf("claim: the command that creates the pod is required (swapk8s claim --job NAME --gpu-pool POOL -- CMD); a card released before its pod exists is a card two owners can hold")
+	}
+	mode := strings.TrimSpace(o.gpuMode)
+	if mode == "" {
+		mode = "any"
+	}
+
+	chosen, err := claimCycle(ctx, o.cardLock, kc.scanCards(o.namespace), splitCards(pool), pool, mode, o.cardWait, o.poll,
+		func(card string) error {
+			// stdout is the machine-readable answer (`card=$(swapk8s claim ...)`);
+			// every diagnostic goes to the log, which is stderr. The command inherits
+			// this process's stdout, so a caller whose command prints reads the card
+			// from the environment instead.
+			fmt.Println(card)
+			if err := runClaimed(ctx, o, card); err != nil {
+				return err
+			}
+			appeared, err := kc.awaitJobPod(ctx, o.namespace, card)
+			if err != nil {
+				log.Printf("claim %s: cannot confirm a gpu-job pod on gpu %s: %v", o.job, card, err)
+			} else if !appeared {
+				log.Printf("claim %s: no gpu-job pod on gpu %s appeared within %s; the card is free again",
+					o.job, card, podClaimWindow)
+			}
+			return nil
+		})
+	if err != nil {
+		return fmt.Errorf("claim %s: %w", o.job, err)
+	}
+	log.Printf("claim %s released gpu %s", o.job, chosen)
+	return nil
+}
+
+// runClaimed runs the caller's command with the card pinned, and returns its
+// failure as an error so main can hand back its exit code.
+//
+// The command is the thing that creates the pod, not the workload: the nvidia
+// runtime hook reads NVIDIA_VISIBLE_DEVICES when the container is created, so
+// pinning a process already inside one changes nothing the runtime can see.
+//
+// The goroutine that waits the command comes after Start succeeds, and every path
+// out of this function reads its channel: a Wait nobody drains is a child nobody
+// reaped.
+func runClaimed(ctx context.Context, o *options, card string) error {
+	cmd := exec.Command(o.jobCmd[0], o.jobCmd[1:]...)
+	cmd.Env = pinChildEnv(os.Environ(), card, o.job)
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("start %s: %w", o.jobCmd[0], err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	select {
+	case err := <-done:
+		if err != nil {
+			return fmt.Errorf("%s on gpu %s: %w", o.jobCmd[0], card, err)
+		}
+		return nil
+	case <-ctx.Done():
+		// The caller is going away, and the command it started must not outlive
+		// the claim it was made under. Bounded: a child that ignores SIGTERM must
+		// not hold the fleet's placement lock forever.
+		_ = cmd.Process.Signal(syscall.SIGTERM)
+		select {
+		case <-done:
+		case <-time.After(claimKillGrace):
+			_ = cmd.Process.Kill()
+			// Wait is what reaps the child and ends the goroutine, and a kill is
+			// not a reap: nothing else in the process reads this channel again.
+			<-done
+		}
+		return ctx.Err()
+	}
+}
+
+// pinChildEnv returns base with the chosen card pinned the way the chart pins a
+// model's pod - NVIDIA_VISIBLE_DEVICES, the variable the nvidia runtime hook
+// reads - plus the job name, for a caller that names the card in a field of its
+// own rather than in the env. An existing value is replaced, not carried: the
+// caller's env holds the POOL it was told to hand out, and a pod rendered from
+// it would take every card in the pool while claiming one.
+func pinChildEnv(base []string, card, job string) []string {
+	out := make([]string, 0, len(base)+2)
+	for _, kv := range base {
+		if strings.HasPrefix(kv, gpuEnv+"=") || strings.HasPrefix(kv, jobCardEnv+"=") {
+			continue
+		}
+		out = append(out, kv)
+	}
+	return append(out, gpuEnv+"="+card, jobCardEnv+"="+job)
 }
 
 // cmdReap runs at head-end startup and scales to zero every Deployment this
