@@ -18,16 +18,19 @@ let
   # `forecats_pipeline.pipeline` refuses without. Renaming one side alone gives
   # a pod that runs with no calendar and says nothing.
   #
+  # So the list holds only keys something reads. `place-latitude`,
+  # `place-longitude` and `place-timezone` sit in the same sops file and are the
+  # pipeline's `--latitude`/`--longitude`/`--timezone` flags, but no chart turns
+  # a Secret key into a flag yet — and every key on this list is a value the
+  # deploy reads before it applies anything, which is how three unread keys got
+  # as far as stopping the namespaces that do not read them. They join this list
+  # together with the chart that consumes them.
+  #
   # Hoisted out of the module below so the check at the foot of this file
   # asserts on the same text the Secret is rendered from, not a second copy.
   forecatsSecret = {
     name = "forecats-secrets";
-    keys = [
-      "calendar-feeds"
-      "place-latitude"
-      "place-longitude"
-      "place-timezone"
-    ];
+    keys = [ "calendar-feeds" ];
   };
   forecatsSopsName = key: "services/forecats/${key}";
   forecatsEnvName = key: "FORECATS_${lib.toUpper (lib.replaceStrings [ "-" ] [ "_" ] key)}";
@@ -383,13 +386,28 @@ in
       # `forecatsSecret.keys` without its declaration in the `sops.secrets`
       # block below fails evaluation instead of applying a Secret whose value is
       # empty: the render refuses and the cluster never sees the gap.
-      forecatsSecretReads = lib.concatMapStringsSep "\n" (
+      #
+      # An empty value is not fatal here, and that is the whole point of the
+      # flag. `exit 1` at this line aborted the oneshot before a single apply
+      # ran, so one household value decided whether cluster, default,
+      # monitoring, gpu, kube-system and wiki deployed. FORECATS_DEPLOY gates
+      # the forecats pass instead; the pass is skipped whole, never applied
+      # half-built (see the note beside the pass).
+      forecatsSecretReads = ''
+        FORECATS_DEPLOY=1
+        # A gap is named where it is found — the apply chain runs much later and
+        # its own skip line carries no reason — and gates the pass below.
+        forecats_skip() {
+          echo "forecats: error: $1; skipping the forecats pass" >&2
+          FORECATS_DEPLOY=0
+        }
+      '' + lib.concatMapStringsSep "\n" (
         key:
         let
           sopsName = forecatsSopsName key;
           env = forecatsEnvName key;
           # `ref` is the shell's own reference to the variable the line below
-          # reads — `$FORECATS_PLACE_TIMEZONE`, say — so each test judges the
+          # reads — `$FORECATS_CALENDAR_FEEDS` — so each test judges the
           # decrypted value and not the literal text of its name. Built by
           # concatenation because neither shorter spelling works: `${env}`
           # interpolates the name and leaves no `$`, and `$${env}` stays the
@@ -398,7 +416,7 @@ in
         in
         ''
           ${env}="$(cat ${config.sops.secrets."${sopsName}".path})"
-          [ -n "${ref}" ] || { echo "error: ${sopsName} sops secret is empty" >&2; exit 1; }
+          [ -n "${ref}" ] || forecats_skip "sops secret ${sopsName} is empty"
           [ "${ref}" = "unset" ] && echo "forecats: ${sopsName} is still the 'unset' placeholder; the render pod will refuse the nightly run until nix/services/homelab/homelab-forecats-secrets.yaml holds the real value" >&2 || true
           export ${env}_B64="$(printf '%s' "${ref}" | $OPENSSL base64 -A)"
         ''
@@ -424,10 +442,10 @@ in
           + "      size: ${v.size}\n"
           + "      readOnly: ${lib.boolToString (!v.writable)}\n")
         forecatsVolumeNames}
-        # The Secret the place and the calendar address arrive in. The chart
-        # reads `name` through `envFrom`, and `keys` to refuse a `secretKeyRef`
-        # naming a key this module does not create — the guard the wiki chart
-        # applies through `wiki.secretKey`.
+        # The Secret the calendar address arrives in. The chart reads `name`
+        # through `envFrom`, and `keys` to refuse a `secretKeyRef` naming a key
+        # this module does not create — the guard the wiki chart applies through
+        # `wiki.secretKey`.
         secret:
           name: ${forecatsSecret.name}
           keys:
@@ -742,16 +760,13 @@ in
           # whole file at once, so the household's coordinates and calendar
           # address get their own rotation and their own diff, and the two
           # things that identify the household are visible as one unit.
+          #
+          # Only the key `forecatsSecret.keys` names is declared: sops-nix
+          # decrypts every declared secret during activation, before the apply
+          # oneshot runs and with no pass left to skip, so a declaration nothing
+          # reads is still a host-wide deploy dependency. The three place values
+          # stay encrypted in the file until a chart reads them.
           "services/forecats/calendar-feeds" = {
-            sopsFile = ./homelab/homelab-forecats-secrets.yaml;
-          };
-          "services/forecats/place-latitude" = {
-            sopsFile = ./homelab/homelab-forecats-secrets.yaml;
-          };
-          "services/forecats/place-longitude" = {
-            sopsFile = ./homelab/homelab-forecats-secrets.yaml;
-          };
-          "services/forecats/place-timezone" = {
             sopsFile = ./homelab/homelab-forecats-secrets.yaml;
           };
         };
@@ -1154,13 +1169,20 @@ in
             # the base64 sops values substituted in. -no-unset makes a
             # placeholder with no exported variable an error rather than an
             # empty Secret value, and -no-empty the same for a value that
-            # decrypted to nothing.
-            $ENVSUBST -no-unset -no-empty < ${forecatsSecretManifest} > "$T/forecats-secret.yaml"
-            [ -s "$T/forecats-secret.yaml" ] || { echo "error: envsubst produced empty forecats-secret.yaml" >&2; exit 1; }
-            # The forecats pass carries the claims its own PVs are pre-bound to
-            # and the Secret the render pod reads; the chart's render joins this
-            # file when the chart lands.
-            label_all forecats "true" ${forecatsClaimManifest} "$T/forecats-secret.yaml" > "$T/forecats.json"
+            # decrypted to nothing. Both stay fatal inside the gate because
+            # neither is reachable from a sops value any more: an empty value
+            # already cleared FORECATS_DEPLOY above, and this section runs under
+            # set -e, where a forecats `exit` would take the six other
+            # namespaces with it.
+            : > "$T/forecats.json"
+            if [ "$FORECATS_DEPLOY" = "1" ]; then
+              $ENVSUBST -no-unset -no-empty < ${forecatsSecretManifest} > "$T/forecats-secret.yaml"
+              [ -s "$T/forecats-secret.yaml" ] || { echo "error: envsubst produced empty forecats-secret.yaml" >&2; exit 1; }
+              # The forecats pass carries the claims its own PVs are pre-bound to
+              # and the Secret the render pod reads; the chart's render joins this
+              # file when the chart lands.
+              label_all forecats "true" ${forecatsClaimManifest} "$T/forecats-secret.yaml" > "$T/forecats.json"
+            fi
             cat "$T/cluster-kps.json" "$T/cluster-kubelet-crb.json" > "$T/cluster.yaml"
             cat "$T/monitoring-kubelet-sa.json" "$T/monitoring-kps.json" "$T/monitoring-charts.json" > "$T/monitoring-static.json"
             cat "$T/kube-system-kps.json" > "$T/kube-system.yaml"
@@ -1172,8 +1194,14 @@ in
             [ -s "$T/kube-system.yaml" ] || { echo "error: rendered kube-system.yaml is empty" >&2; exit 1; }
             [ -s "$T/default-ai.json" ] || { echo "error: rendered default-ai.json is empty" >&2; exit 1; }
             [ -s "$T/gpu-charts.json" ] || { echo "error: rendered gpu-charts.json is empty" >&2; exit 1; }
-            [ -s "$T/forecats.json" ] || { echo "error: rendered forecats.json is empty" >&2; exit 1; }
-            # wiki check differs from its six siblings on purpose: a wiki failure must not fail the generation, so it skips the wiki pass and continues (siblings stay fatal — they are not wiki).
+            # The last two guards skip their own pass instead of failing the
+            # generation: wiki and forecats are optional services, and each owns
+            # an apply pass that can be left out of this run whole. forecats is
+            # only tested when its pass was still wanted, so a gap already
+            # named above is not named twice.
+            if [ ! -s "$T/forecats.json" ] && [ "$FORECATS_DEPLOY" = "1" ]; then
+              forecats_skip "rendered forecats.json is empty"
+            fi
             [ -s "$T/wiki-chart.json" ] || { echo "wiki: error: rendered wiki-chart.json is empty; skipping the wiki pass" >&2; WIKI_DEPLOY=0; WIKI_SKIP_REASON="''${WIKI_SKIP_REASON:+''$WIKI_SKIP_REASON; }rendered wiki-chart.json is empty"; }
             set +e
 
@@ -1392,13 +1420,37 @@ in
                 && apply_pruned "$SEL_MONITORING" "monitoring" "$T/monitoring.yaml" \
                 && apply_pruned "$SEL_GPU" "gpu" "$T/gpu-charts.json" \
                 && apply_pruned "$SEL_KUBE_SYSTEM" "kube-system" "$T/kube-system.yaml" \
-                && apply_pruned "$SEL_FORECATS" "${forecatsNamespace}" "$T/forecats.json" \
+                && {
+                      # The forecats pass is the second pass whose failure does
+                      # not abort the activation, and unlike wiki it sits in the
+                      # middle of this chain: as a bare `apply_pruned` its status
+                      # decided every pass after it — the dashboards label, the
+                      # metrics-key registration, the wiki pass — and the retry
+                      # loop then re-ran the whole script for five minutes before
+                      # the unit went red. A household value that decrypts empty
+                      # is a forecats fact alone: it names a Secret no other
+                      # namespace reads.
+                      #
+                      # Skipped whole, never applied half. core/v1/Secret and
+                      # core/v1/PersistentVolumeClaim are both in
+                      # PRUNE_ALLOWLIST, so a pass carrying the claims without
+                      # the Secret (or the reverse) prunes whatever the cluster
+                      # already holds, with a green unit. Either the document is
+                      # complete or the pass does not run, and the namespace
+                      # keeps its previous state until the next activation.
+                      if [ "$FORECATS_DEPLOY" != "1" ]; then
+                        echo "forecats: the pass is skipped for the reason named above; forecats stays at its previous state and every other namespace still applies" >&2
+                      elif ! apply_pruned "$SEL_FORECATS" "${forecatsNamespace}" "$T/forecats.json"; then
+                        echo "forecats: error: forecats apply pass failed (see output above); forecats stays at its previous state and the rest of the activation continues" >&2
+                      fi
+                    } \
                 && $KCTL label configmap mjolnir-dashboards --namespace monitoring grafana_dashboard=1 --overwrite \
                 && register_metrics_key \
                 && {
-                      # The wiki pass runs last and it is the one apply pass
-                      # whose failure does NOT abort the activation: a broken
-                      # optional service must not cost the monitoring stack that
+                      # The wiki pass runs last and it is the second apply pass
+                      # whose failure does NOT abort the activation (forecats is
+                      # the other, earlier in this chain): a broken optional
+                      # service must not cost the monitoring stack that
                       # sits behind it in the chain. Every wiki failure — the
                       # rotation guard below included — is loud in the journal,
                       # lets the rest of the generation land, and leaves the

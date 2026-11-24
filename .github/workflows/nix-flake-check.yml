@@ -1,0 +1,38 @@
+name: nix-flake-check
+
+# A flake check that no workflow runs is a check that runs when someone
+# remembers to. `checks.forecats-secret-keys` is the only thing comparing the
+# Secret this repo renders against the variable names the pipeline looks up, and
+# nothing downstream of it compared the two at all — so the contract held by
+# habit, on one machine.
+#
+# This job runs the flake's own checks rather than a copy of them: a check added
+# under `checks` is in CI with no edit here, which is why the file names no
+# check.
+on:
+  pull_request:
+    paths:
+      - "nix/**"
+      - "flake.nix"
+      - "flake.lock"
+      - ".github/workflows/nix-flake-check.yml"
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: cachix/install-nix-action@v30
+
+      # Built, not evaluated: the comparison lives in the builder, so a run that
+      # only produced a derivation path would claim the two lists agree without
+      # having read either.
+      - name: Run the flake's checks
+        run: nix flake check
