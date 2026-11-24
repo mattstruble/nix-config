@@ -367,7 +367,10 @@ class SdCliRenderer:
                 stage="render",
                 reason=f"{self.name}: {command[0]} exited {completed.returncode}: {detail}",
             )
-        return completed.stdout
+        # Both streams, because ggml logs to stderr and the CPU-fallback marker is
+        # a ggml line: a log made of stdout alone would be a fallback that read as
+        # a render. The caller reads this only for those markers.
+        return (completed.stdout or "") + (completed.stderr or "")
 
 
 def _placeholder_png(width: int, height: int, tint_by: str) -> bytes:

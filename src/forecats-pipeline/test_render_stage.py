@@ -23,20 +23,24 @@ def png_size(path: Path) -> tuple[int, int]:
 
 
 class FakeProcesses:
-    """Records the processes the renderer started, and answers them."""
+    """Records the processes the renderer started, and answers them.
 
-    def __init__(self, returncode: int = 0, stderr: str = "", output: str = "") -> None:
+    The two streams are named for the `CompletedProcess` fields they fill,
+    because which one a diagnostic arrives on is a fact about sd-cli.
+    """
+
+    def __init__(self, returncode: int = 0, stderr: str = "", stdout: str = "") -> None:
         self.calls: list[list[str]] = []
         self.environments: list[dict[str, str]] = []
         self._returncode = returncode
         self._stderr = stderr
-        self._output = output
+        self._stdout = stdout
 
     def __call__(self, argv, *args, **kwargs) -> subprocess.CompletedProcess:
         command = list(argv)
         self.calls.append(command)
         self.environments.append(kwargs.get("env") or {})
-        return subprocess.CompletedProcess(command, self._returncode, self._output, self._stderr)
+        return subprocess.CompletedProcess(command, self._returncode, self._stdout, self._stderr)
 
     @property
     def started(self) -> list[str]:
@@ -228,16 +232,30 @@ def test_the_renderer_refuses_to_guess_where_the_cli_is(binary: str):
         SdCliRenderer(binary, SdCliSettings())
 
 
-def test_a_cpu_fallback_is_refused_rather_than_rendered(tmp_path: Path, monkeypatch):
+@pytest.mark.parametrize("stream", ["stdout", "stderr"])
+@pytest.mark.parametrize(
+    "child_log",
+    [
+        "ggml_cuda_init: CUDA driver is a stub library\n",
+        "[W] auto-fit: no GPU devices; using the default backend\n",
+    ],
+    ids=["driver-stub", "auto-fit-no-gpu"],
+)
+def test_a_cpu_fallback_is_refused_rather_than_rendered(
+    tmp_path: Path, monkeypatch, child_log: str, stream: str
+):
     """sd-cli exits 0 and writes a picture when CUDA is a stub library.
 
     The only sign is a line in its log, and the picture it drew used a
-    different schedule on the wrong device at ten times the cost.
+    different schedule on the wrong device at ten times the cost. One line per
+    case, and the lines are written here rather than read out of
+    `CPU_FALLBACK_MARKS`: a suite that built its cases from that tuple would
+    drop a case in silence the moment a mark was deleted from it, and a deleted
+    mark is the failure this test exists for. Each line runs on both streams
+    because ggml logs to stderr, and a renderer that read only stdout would have
+    called every one of these renders a success.
     """
-    processes = FakeProcesses(
-        output="ggml_cuda_init: CUDA driver is a stub library\n"
-        "[W] auto-fit: no GPU devices; using the default backend"
-    )
+    processes = FakeProcesses(**{stream: child_log})
     monkeypatch.setattr(render_stage.subprocess, "run", processes)
     (tmp_path / "panel.png").write_bytes(b"\x89PNG\r\n\x1a\n")
 
@@ -246,6 +264,7 @@ def test_a_cpu_fallback_is_refused_rather_than_rendered(tmp_path: Path, monkeypa
     )
 
     assert isinstance(outcome, PipelineRefusal)
+    assert outcome.stage == "render"
     assert "fell back to the CPU" in outcome.reason
     assert render_stage.GPU_DRIVER_DIRECTORY in outcome.reason
 

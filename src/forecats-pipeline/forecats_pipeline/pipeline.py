@@ -486,8 +486,8 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
         "--sd-cli-binary",
         default="sd-cli",
         help=(
-            "the diffusion CLI to run; the packaged entry point puts its own store-built "
-            "sd-cli first on PATH, so the default is that one"
+            "the diffusion CLI to run; the package closure carries none, so the "
+            "render host supplies one — named here, or first on PATH"
         ),
     )
     return parser.parse_args(argv)

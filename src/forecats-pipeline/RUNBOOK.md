@@ -12,7 +12,7 @@ would be a bug rather than a convenience.
 | --- | --- | --- |
 | The four weight files | `/var/lib/llama-models/h3image` | `forecats-stage-inputs weights`, onto the `forecats-weights` volume |
 | One reference photo per pet | `/var/lib/forecats/photos` | `forecats-stage-inputs photos`, onto the `forecats-photos` volume |
-| `sd-cli` | `PATH`, which `--sd-cli-binary` defaults to | `packages.forecats-pipeline`, which carries it as a store path |
+| `sd-cli` | `PATH`, which `--sd-cli-binary` defaults to | the render host, which names a CUDA build with `--sd-cli-binary` or puts one first on `PATH`; `packages.forecats-pipeline` carries none |
 
 A volume's mount point is the path the render reads, in the pod and on the host
 that fills it. The default and the mount are one fact, not two, which is why
@@ -104,9 +104,13 @@ can tell.
   pin, where GPU0 is the owner's live session.
 - `FORECATS_CALENDAR_FEEDS`, and the model endpoint or key if an occasion is to
   be asked about, from the namespace's Secret.
-- `forecats-pipeline` from `packages.forecats-pipeline` as the command, so `PATH`
-  resolves the `sd-cli` this closure carries. That one is nixpkgs' portable build;
-  a pod that renders on a card passes `--sd-cli-binary` a CUDA build of the same
-  source, and a render whose log says `CUDA driver is a stub library` is a render
-  that did not.
+- `forecats-pipeline` from `packages.forecats-pipeline` as the command, and the
+  diffusion CLI itself. The package closure carries no `sd-cli`: the only nixpkgs
+  build that renders on a card does not evaluate on every host the package is
+  built for, and the build that does is the portable one. Name a CUDA build with
+  `--sd-cli-binary` or put one first on `PATH`, and it has to be a store path the
+  host holds: a binary outside the store loses its glibc to the next garbage
+  collection. A render whose log says `CUDA driver is a stub library` found a CPU
+  build anyway, and the renderer refuses that render rather than publishing the
+  picture it drew.
 - Nothing else. No host, no key, no agent.

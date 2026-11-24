@@ -36,18 +36,6 @@
       # one interpreter over both, and the path is written once so the wrappers
       # cannot disagree about it.
       pythonPath = "${placeholder "out"}/src/forecats-day-context:${placeholder "out"}/src/forecats-pipeline";
-
-      # The diffusion CLI the render stage runs as a child process. It is part of
-      # this package so that its runtime is rooted by a store path a host holds: a
-      # hand-built binary on the render host died when nix collected the glibc its
-      # interpreter came from.
-      #
-      # nixpkgs' portable build, not `stable-diffusion-cpp-cuda`: that one has no
-      # substitute and pulls the unfree CUDA toolkit into a package that is
-      # installed on hosts that may never render. A pod that renders on a card
-      # names a CUDA build with `--sd-cli-binary`; the default stays the bare name,
-      # so the copy this closure carries is the copy PATH resolves.
-      sdCli = pkgs.stable-diffusion-cpp;
     in
     {
       packages.pipeline-env = testPython;
@@ -56,10 +44,13 @@
       #   --latitude 40.7128 --longitude -74.006 --output-dir ~/panels
       #
       # One nightly render, on a host with no checkout: every path the run needs
-      # — the two source trees, the panel font, the household file, the diffusion
-      # CLI — is a store path fixed in at build time. The devShell below cannot
-      # say that; its PYTHONPATH is relative to a repository root, which is the
-      # thing that tied the pipeline to the laptop it was developed on.
+      # — the two source trees, the panel font, the household file — is a store
+      # path fixed in at build time. The diffusion CLI is the one input that is
+      # not: the only nixpkgs build of it that renders on a card does not evaluate
+      # on every host this package is built for, so the render host supplies it
+      # and names it. The devShell below cannot say any of that; its PYTHONPATH is
+      # relative to a repository root, which is the thing that tied the pipeline to
+      # the laptop it was developed on.
       packages.forecats-pipeline = pkgs.stdenvNoCC.mkDerivation (finalAttrs: {
         pname = "forecats-pipeline";
         version = "0";
@@ -84,16 +75,16 @@
           # reasons of packaging rather than of code.
           cp -r forecats-pipeline forecats-day-context "$out/src/"
 
-          # Named for the binary the render stage runs, so that the copy this
-          # closure carries is the copy the default `--sd-cli-binary` resolves to.
-          ln -s ${sdCli}/bin/sd-cli "$out/bin/sd-cli"
+          # No diffusion CLI in this closure, and the install check below is what
+          # keeps that a decision rather than an oversight. The render host
+          # supplies the CLI and names it with `--sd-cli-binary`, or puts it first
+          # on PATH.
 
           cat > "$out/bin/forecats-pipeline" <<'WRAPPER'
           #!/bin/sh
           set -eu
 
           export FORECATS_PANEL_FONT='${panelFont}'
-          export PATH="${placeholder "out"}/bin''${PATH:+:$PATH}"
           export PYTHONPATH='${pythonPath}'
 
           # The pipeline's own default for the household file is a path under a
@@ -146,6 +137,68 @@
           chmod -R u+w "$installed"
           cd "$installed/forecats-pipeline"
           PYTHONPATH="$installed/forecats-day-context:$installed/forecats-pipeline" python3 -m pytest -q .
+
+          # The suite above imports the package; it never runs a wrapper, and the
+          # wrappers are where the packaging is: the two PYTHONPATH entries, the
+          # font export, the household default, the module name, the quoting of
+          # every one of them. Each is a store path or an escape that builds green
+          # when it is wrong and fails on the nightly, so one nightly runs here,
+          # through the installed entry point.
+          #
+          # The calendar is the day-context fixture over `file:` because a build
+          # has no network and a feed address is a credential; the sky is
+          # --weather because Open-Meteo is a socket; the renderer is the fake one
+          # because a real render wants a card and 18 GB of weights. What is left
+          # under test is the packaging — the interpreter, both trees, the
+          # household file the wrapper defaults to, and the font, which only
+          # --draw-forecast-plate reads and which a mangled export turns into a
+          # refusal rather than a panel. The day is one the fixture calendar has
+          # events on, so the run gathers a day rather than an empty one.
+          day=2026-03-08
+          panels="$PWD/panels"
+          PYTHONDONTWRITEBYTECODE=1 \
+          FORECATS_CALENDAR_FEEDS="check=file://${placeholder "out"}/src/forecats-day-context/fixtures/day.ics" \
+            "${placeholder "out"}/bin/forecats-pipeline" \
+            --day "$day" \
+            --timezone America/New_York \
+            --latitude 40.7128 \
+            --longitude -74.006 \
+            --output-dir "$panels" \
+            --renderer fake \
+            --weather snow --high 1 --low -3 \
+            --draw-forecast-plate
+          test -s "$panels/panel-$day.png"
+          test -s "$panels/panel-$day.provenance.json"
+
+          # Existence is not the plate. The fake renderer's placeholder is one flat
+          # colour, so a published file carrying more than one is what says the
+          # overlay ran and opened the font it was handed: a panel published with
+          # its plate missing is otherwise a panel that looks published.
+          PANEL="$panels/panel-$day.png" python3 <<'PY'
+          import os
+
+          from PIL import Image
+
+          panel = Image.open(os.environ["PANEL"]).convert("RGB")
+          # A w×h image holds at most w×h colours, so this is the one bound
+          # `getcolors` cannot answer with None.
+          plate = panel.getcolors(maxcolors=panel.width * panel.height)
+          assert len(plate) > 1, f"{os.environ['PANEL']} is a flat field: no forecast plate"
+          PY
+
+          # The other wrapper: same interpreter, same two trees, its own module
+          # name to get wrong.
+          PYTHONDONTWRITEBYTECODE=1 "${placeholder "out"}/bin/forecats-stage-inputs" --help >/dev/null
+
+          # The closure carries no diffusion CLI, and this is the line that keeps
+          # that a decision. `stable-diffusion-cpp-cuda`, the build that renders on
+          # a card, does not evaluate on aarch64-darwin and pulls the unfree CUDA
+          # toolkit into a package installed on hosts that never render; the build
+          # that does evaluate everywhere is the portable one, and a render that
+          # fell back to the driver stub exits 0 — measured on the render host at
+          # 1627 s against 14.86 s on the card. Any store-built CLI named here
+          # would make a silently-CPU nightly green.
+          test ! -e "${placeholder "out"}/bin/sd-cli"
 
           runHook postInstallCheck
         '';
