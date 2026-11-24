@@ -23,6 +23,16 @@ creation_rules:
           - *MacStruble
           - *roque
           - *mjolnir
+  # The forecats panel's place (coordinates, timezone) and its private calendar
+  # address: the two facts that identify the household. Same recipients as the
+  # other home files, because the render pod runs on mjolnir next to the
+  # monitoring stack and nothing about it is scoped away from roque.
+  - path_regex: nix/services/homelab/homelab-forecats-secrets.yaml$
+    key_groups:
+      - age:
+          - *MacStruble
+          - *roque
+          - *mjolnir
   # Wiki (BookStack) keys. Deliberately NOT *roque: the wiki database password
   # and OIDC client secret must not be decryptable by the host that runs the
   # IdP, the NAS mount and n8n's credential store. This is the one secret scope

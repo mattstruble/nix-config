@@ -1,4 +1,52 @@
 { inputs, ... }:
+let
+  lib = inputs.nixpkgs.lib;
+
+  # The two facts about the household the panel cannot be drawn without, and
+  # the only two that identify it: where its place is, and the address of the
+  # private calendar it reads. They live in sops and nowhere else — not in a
+  # values file, not in a ConfigMap, not in a rendered manifest. A Google
+  # Calendar secret address authenticates by possession alone, so the URL *is*
+  # the credential, and a ConfigMap would hand it to anyone who can read the
+  # namespace.
+  #
+  # One list, three consumers: the sops secret names, the keys of the Secret
+  # the render pod reads through `envFrom`, and the `secret.keys` the chart
+  # checks every `secretKeyRef` against. The Secret key is the sops name upper-
+  # cased with underscores, so the key in the Secret is the variable the
+  # pipeline reads: `calendar-feeds` is `FORECATS_CALENDAR_FEEDS`, the name
+  # `forecats_pipeline.pipeline` refuses without. Renaming one side alone gives
+  # a pod that runs with no calendar and says nothing.
+  #
+  # Hoisted out of the module below so the check at the foot of this file
+  # asserts on the same text the Secret is rendered from, not a second copy.
+  forecatsSecret = {
+    name = "forecats-secrets";
+    keys = [
+      "calendar-feeds"
+      "place-latitude"
+      "place-longitude"
+      "place-timezone"
+    ];
+  };
+  forecatsSopsName = key: "services/forecats/${key}";
+  forecatsEnvName = key: "FORECATS_${lib.toUpper (lib.replaceStrings [ "-" ] [ "_" ] key)}";
+  # Every value is a placeholder. The activation script substitutes the
+  # decrypted sops values, base64-encoded, into this document at deploy time,
+  # so the store holds the shape of the Secret and none of its contents.
+  forecatsSecretText = ''
+    # Generated from `forecatsSecret` in nix/services/k3s.nix, which also owns
+    # the sops secret names these placeholders are filled from.
+    #
+    # No namespace: the apply pass supplies it with -n.
+    apiVersion: v1
+    kind: Secret
+    metadata:
+      name: ${forecatsSecret.name}
+    type: Opaque
+    data:
+  '' + lib.concatMapStrings (key: "  ${forecatsEnvName key}: \"$" + "{${forecatsEnvName key}_B64}\"\n") forecatsSecret.keys;
+in
 {
   flake.modules.nixos.k3s =
     {
@@ -327,6 +375,34 @@
         '')
         forecatsVolumeNames
       );
+      # The Secret the render pod reads. Built from the text above, so the
+      # check at the foot of this file asserts on the bytes that reach the
+      # cluster.
+      forecatsSecretManifest = pkgs.writeText "forecats-secret.yaml" forecatsSecretText;
+      # Each read names `config.sops.secrets.<name>` directly, so a key added to
+      # `forecatsSecret.keys` without its declaration in the `sops.secrets`
+      # block below fails evaluation instead of applying a Secret whose value is
+      # empty: the render refuses and the cluster never sees the gap.
+      forecatsSecretReads = lib.concatMapStringsSep "\n" (
+        key:
+        let
+          sopsName = forecatsSopsName key;
+          env = forecatsEnvName key;
+          # `ref` is the shell's own reference to the variable the line below
+          # reads — `$FORECATS_PLACE_TIMEZONE`, say — so each test judges the
+          # decrypted value and not the literal text of its name. Built by
+          # concatenation because neither shorter spelling works: `${env}`
+          # interpolates the name and leaves no `$`, and `$${env}` stays the
+          # literal `$` `{env}`, which the shell reads as its PID and a brace.
+          ref = "$" + env;
+        in
+        ''
+          ${env}="$(cat ${config.sops.secrets."${sopsName}".path})"
+          [ -n "${ref}" ] || { echo "error: ${sopsName} sops secret is empty" >&2; exit 1; }
+          [ "${ref}" = "unset" ] && echo "forecats: ${sopsName} is still the 'unset' placeholder; the render pod will refuse the nightly run until nix/services/homelab/homelab-forecats-secrets.yaml holds the real value" >&2 || true
+          export ${env}_B64="$(printf '%s' "${ref}" | $OPENSSL base64 -A)"
+        ''
+      ) forecatsSecret.keys;
       # The host facts the forecats chart renders with; its templates `required`
       # them, so a bare `helm template` fails instead of inventing a claim name
       # that binds nothing.
@@ -348,6 +424,14 @@
           + "      size: ${v.size}\n"
           + "      readOnly: ${lib.boolToString (!v.writable)}\n")
         forecatsVolumeNames}
+        # The Secret the place and the calendar address arrive in. The chart
+        # reads `name` through `envFrom`, and `keys` to refuse a `secretKeyRef`
+        # naming a key this module does not create — the guard the wiki chart
+        # applies through `wiki.secretKey`.
+        secret:
+          name: ${forecatsSecret.name}
+          keys:
+        ${lib.concatMapStringsSep "\n" (key: "    - ${forecatsEnvName key}") forecatsSecret.keys}
       '';
       # A directory under k8s/apps/ is an app chart when it carries a Chart.yaml.
       # `just k8s-render` and the CI preview render apply the same rule, so an
@@ -653,6 +737,23 @@
           "services/wiki/oidc-client-secret" = {
             sopsFile = ./homelab/homelab-wiki-secrets.yaml;
           };
+          # The forecats place and its private calendar address. A fourth file
+          # rather than more keys in homelab-secrets.yaml: sops re-encrypts a
+          # whole file at once, so the household's coordinates and calendar
+          # address get their own rotation and their own diff, and the two
+          # things that identify the household are visible as one unit.
+          "services/forecats/calendar-feeds" = {
+            sopsFile = ./homelab/homelab-forecats-secrets.yaml;
+          };
+          "services/forecats/place-latitude" = {
+            sopsFile = ./homelab/homelab-forecats-secrets.yaml;
+          };
+          "services/forecats/place-longitude" = {
+            sopsFile = ./homelab/homelab-forecats-secrets.yaml;
+          };
+          "services/forecats/place-timezone" = {
+            sopsFile = ./homelab/homelab-forecats-secrets.yaml;
+          };
         };
         # Materialise secrets in the activation script (setupSecrets) instead of
         # a systemd oneshot at boot — the aiChart activation script below reads
@@ -722,6 +823,9 @@
             # Applied only from inside the oneshot's script string below, so
             # nothing else in the closure would build it (see the note above).
             forecatsClaimsManifest = forecatsClaimManifest;
+            # Placeholder document only — the values are substituted at
+            # activation, so no secret material reaches the store.
+            forecatsSecretManifest = forecatsSecretManifest;
           }
           // lib.mapAttrs' (
             name: chart: lib.nameValuePair "${name}ChartRendered" chart
@@ -815,6 +919,16 @@
             # key_alias "metrics"; same rationale as the pod API key above).
             METRICS_KEY="$(cat ${config.sops.secrets."services/ai/litellm/metrics-key".path})"
             [ -n "$METRICS_KEY" ] || { echo "error: services/ai/litellm/metrics-key sops secret is empty" >&2; exit 1; }
+
+            # The household's place and private calendar address. Encoded to
+            # base64 here and substituted into the Secret document below, so
+            # the values reach neither kubectl's argv (visible in ps for the
+            # whole activation) nor a rendered manifest in the store. The
+            # 'unset' placeholder is an allowed state — the scope ships before
+            # the owner fills it in — so it warns and carries on: the render
+            # pod refuses the nightly run with its own config error and the
+            # last published panel stays where it is.
+            ${forecatsSecretReads}
 
             # Wiki secrets. The Pocket ID OIDC client is created by hand, so a
             # fresh scope ships the two client values as the literal string
@@ -1036,9 +1150,17 @@
             # namespace, and the SM must live in gpu/ to select the pod).
             label_all gpu "true" ${monitoringChartRendered.dcgm}/rendered.yaml ${k8sDir}/manifests/dcgm-networkpolicy.yaml ${k8sDir}/manifests/dcgm-servicemonitor.yaml > "$T/gpu-charts.json"
             label_all wiki "true" ${appChartRenders.wiki}/rendered.yaml > "$T/wiki-chart.json"
-            # The forecats pass carries the claims its own PVs are pre-bound to;
-            # the chart's render joins this file when the chart lands.
-            label_all forecats "true" ${forecatsClaimManifest} > "$T/forecats-claims.json"
+            # The forecats Secret: the placeholder document built by nix, with
+            # the base64 sops values substituted in. -no-unset makes a
+            # placeholder with no exported variable an error rather than an
+            # empty Secret value, and -no-empty the same for a value that
+            # decrypted to nothing.
+            $ENVSUBST -no-unset -no-empty < ${forecatsSecretManifest} > "$T/forecats-secret.yaml"
+            [ -s "$T/forecats-secret.yaml" ] || { echo "error: envsubst produced empty forecats-secret.yaml" >&2; exit 1; }
+            # The forecats pass carries the claims its own PVs are pre-bound to
+            # and the Secret the render pod reads; the chart's render joins this
+            # file when the chart lands.
+            label_all forecats "true" ${forecatsClaimManifest} "$T/forecats-secret.yaml" > "$T/forecats.json"
             cat "$T/cluster-kps.json" "$T/cluster-kubelet-crb.json" > "$T/cluster.yaml"
             cat "$T/monitoring-kubelet-sa.json" "$T/monitoring-kps.json" "$T/monitoring-charts.json" > "$T/monitoring-static.json"
             cat "$T/kube-system-kps.json" > "$T/kube-system.yaml"
@@ -1050,7 +1172,7 @@
             [ -s "$T/kube-system.yaml" ] || { echo "error: rendered kube-system.yaml is empty" >&2; exit 1; }
             [ -s "$T/default-ai.json" ] || { echo "error: rendered default-ai.json is empty" >&2; exit 1; }
             [ -s "$T/gpu-charts.json" ] || { echo "error: rendered gpu-charts.json is empty" >&2; exit 1; }
-            [ -s "$T/forecats-claims.json" ] || { echo "error: rendered forecats-claims.json is empty" >&2; exit 1; }
+            [ -s "$T/forecats.json" ] || { echo "error: rendered forecats.json is empty" >&2; exit 1; }
             # wiki check differs from its six siblings on purpose: a wiki failure must not fail the generation, so it skips the wiki pass and continues (siblings stay fatal — they are not wiki).
             [ -s "$T/wiki-chart.json" ] || { echo "wiki: error: rendered wiki-chart.json is empty; skipping the wiki pass" >&2; WIKI_DEPLOY=0; WIKI_SKIP_REASON="''${WIKI_SKIP_REASON:+''$WIKI_SKIP_REASON; }rendered wiki-chart.json is empty"; }
             set +e
@@ -1270,7 +1392,7 @@
                 && apply_pruned "$SEL_MONITORING" "monitoring" "$T/monitoring.yaml" \
                 && apply_pruned "$SEL_GPU" "gpu" "$T/gpu-charts.json" \
                 && apply_pruned "$SEL_KUBE_SYSTEM" "kube-system" "$T/kube-system.yaml" \
-                && apply_pruned "$SEL_FORECATS" "${forecatsNamespace}" "$T/forecats-claims.json" \
+                && apply_pruned "$SEL_FORECATS" "${forecatsNamespace}" "$T/forecats.json" \
                 && $KCTL label configmap mjolnir-dashboards --namespace monitoring grafana_dashboard=1 --overwrite \
                 && register_metrics_key \
                 && {
@@ -1424,5 +1546,66 @@
         # and authenticate with the LLAMA_API_KEY env var (from the
         # litellm-keys Secret).
       };
+    };
+
+  # `envFrom` copies the Secret's keys verbatim into the render pod's
+  # environment and the pipeline looks `FORECATS_CALENDAR_FEEDS` up by name, so
+  # the key in the Secret is the whole contract between the two — and nothing
+  # downstream compares them: a Secret carrying a different key starts a pod
+  # that has no calendar and says nothing until the run refuses.
+  #
+  # Both documents this reads are generated from `forecatsSecret.keys`, so it
+  # holds no list of its own. What it pins is the two things generation cannot
+  # assert: that the generated key is the name the pipeline reads, and that the
+  # substitution the activation script performs — same envsubst, same flags —
+  # fills every placeholder of the document it is given. A placeholder named for
+  # a different variable than the key beside it therefore fails the build here
+  # rather than applying a Secret whose value is the text of its own placeholder.
+  perSystem =
+    { pkgs, ... }:
+    {
+      checks.forecats-secret-keys = pkgs.runCommand "forecats-secret-keys-check" {
+        secretManifest = builtins.toFile "forecats-secret.yaml" forecatsSecretText;
+        chartValues = builtins.toFile "forecats-chart-values.yaml" inputs.self.nixosConfigurations.mjolnir.config.services.k3s.appChartValues.forecats;
+      } ''
+        set -eu
+        YQ="${pkgs.yq}/bin/yq"
+        JQ="${pkgs.jq}/bin/jq"
+        ENVSUBST="${pkgs.envsubst}/bin/envsubst"
+
+        secretKeys="$($YQ -c '.data // {} | keys | sort' "$secretManifest")"
+        chartKeys="$($YQ -c '.secret.keys | sort' "$chartValues")"
+        [ "$secretKeys" = "$chartKeys" ] || { \
+          echo "error: the forecats Secret and the keys the chart is told to read disagree" >&2; \
+          echo "  Secret  ($secretManifest): $secretKeys" >&2; \
+          echo "  chart   ($chartValues): $chartKeys" >&2; \
+          echo "both are generated from forecatsSecret.keys in nix/services/k3s.nix; a key added to one interpolation and not the other is the bug." >&2; \
+          exit 1; }
+
+        # The name the pipeline reads. `envFrom` gives the pod no way to rename
+        # a key, so this is the whole contract between the Secret and
+        # forecats_pipeline.pipeline.
+        echo "$chartKeys" | $JQ -e 'index("FORECATS_CALENDAR_FEEDS") != null' >/dev/null || { \
+          echo "error: the forecats Secret does not carry FORECATS_CALENDAR_FEEDS, the variable forecats_pipeline.pipeline refuses a nightly run without" >&2; \
+          exit 1; }
+
+        secretName="$($YQ -r '.metadata.name' "$secretManifest")"
+        chartSecretName="$($YQ -r '.secret.name' "$chartValues")"
+        [ "$secretName" = "$chartSecretName" ] || { \
+          echo "error: the forecats Secret is created as '$secretName' and the chart reads '$chartSecretName'" >&2; \
+          exit 1; }
+
+        # The activation script's substitution, run here. -no-unset refuses a
+        # placeholder with no variable behind it, so every placeholder must be
+        # named for the key it sits beside; the comparison after it catches a
+        # value that moved when nothing should have moved.
+        for key in $(echo "$secretKeys" | $JQ -r '.[]'); do
+          export "''${key}_B64=substituted"
+        done
+        $ENVSUBST -no-unset -no-empty < "$secretManifest" > "$out"
+        $YQ -e '(.data | to_entries | map(select(.value != "substituted")) | length) == 0' "$out" >/dev/null || { \
+          echo "error: substituting the forecats Secret moved a value that is not its own <key>_B64 placeholder" >&2; \
+          exit 1; }
+      '';
     };
 }
