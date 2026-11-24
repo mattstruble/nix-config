@@ -71,6 +71,16 @@ def photos(root: Path, *names: str) -> list[Path]:
     return placed
 
 
+@pytest.fixture(autouse=True)
+def one_card_pinned(monkeypatch):
+    """Every render in this suite runs as a pod that holds one card.
+
+    A render with no pin refuses, so the pin is stated once here; the tests
+    about the pin itself set their own or take it away.
+    """
+    monkeypatch.setenv(render_stage.DEVICE_PIN_ENV, "1")
+
+
 def test_the_fake_renderer_draws_a_panel_of_the_size_it_claims(tmp_path: Path):
     rendered = FakeRenderer().render(
         CAPTION, seed=1, reference_photos=[], destination=tmp_path / "panel.png"
@@ -281,6 +291,59 @@ def test_a_zero_exit_that_wrote_no_picture_is_a_refusal(tmp_path: Path, monkeypa
     assert "without writing" in outcome.reason
 
 
+@pytest.mark.parametrize("pin", [None, "", "   "], ids=["unset", "empty", "blank"])
+def test_no_card_pinned_refuses_before_the_model_is_loaded(tmp_path: Path, monkeypatch, pin):
+    """With no pin the child inherits the host's whole device set.
+
+    That is the collision the pin exists to prevent — a nightly job allocating
+    onto the card the owner is coding against — and it arrives by defaulting,
+    not by anyone choosing. Refusing is the only check that can see it: the
+    render would succeed and the panel would look the same.
+    """
+    processes = FakeProcesses()
+    monkeypatch.setattr(render_stage.subprocess, "run", processes)
+    monkeypatch.delenv(render_stage.DEVICE_PIN_ENV, raising=False)
+    monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
+    if pin is not None:
+        monkeypatch.setenv(render_stage.DEVICE_PIN_ENV, pin)
+
+    outcome = SdCliRenderer(CLI, weights(tmp_path / "weights")).render(
+        CAPTION, seed=1, reference_photos=[], destination=tmp_path / "panel.png"
+    )
+
+    assert isinstance(outcome, PipelineRefusal)
+    assert outcome.stage == "render"
+    assert "no card pinned" in outcome.reason
+    assert "NVIDIA_VISIBLE_DEVICES" in outcome.reason
+    assert "--render-gpu" in outcome.reason
+    assert processes.started == []
+    assert not (tmp_path / "panel.png").exists()
+
+
+@pytest.mark.parametrize("pin", ["1", "0", "2,3", "GPU-4f7a9c"])
+def test_the_pinned_card_reaches_the_cli_unchanged(tmp_path: Path, monkeypatch, pin: str):
+    """A pin of one card must not arrive at the CLI as a pin of two.
+
+    The value the pod was placed with is the whole answer: the renderer neither
+    widens it nor rewrites it into `CUDA_VISIBLE_DEVICES` of its own, because
+    inside a pinned container the runtime has already hidden the other cards.
+    A pin naming GPU0 is the pod's decision or the operator's; what the refusal
+    above refuses is a card nobody named.
+    """
+    processes = FakeProcesses()
+    monkeypatch.setattr(render_stage.subprocess, "run", processes)
+    monkeypatch.setenv(render_stage.DEVICE_PIN_ENV, pin)
+    monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
+
+    SdCliRenderer(CLI, weights(tmp_path / "weights")).render(
+        CAPTION, seed=1, reference_photos=[], destination=tmp_path / "panel.png"
+    )
+
+    environment = processes.environments[0]
+    assert environment[render_stage.DEVICE_PIN_ENV] == pin
+    assert "CUDA_VISIBLE_DEVICES" not in environment
+
+
 def test_the_cli_inherits_the_card_this_process_was_given(tmp_path: Path, monkeypatch):
     """A pod is pinned by `NVIDIA_VISIBLE_DEVICES`; a card named here is a lie.
 
@@ -306,8 +369,14 @@ def test_the_cli_inherits_the_card_this_process_was_given(tmp_path: Path, monkey
 
 
 def test_a_card_is_named_only_when_the_caller_asks_for_one(tmp_path: Path, monkeypatch):
+    """`--render-gpu` alone is a pin: it is how a host with no pod names a card.
+
+    The card then travels as `CUDA_VISIBLE_DEVICES`, the one the CLI reads, and
+    the pod's variable stays out of the environment because there is no pod.
+    """
     processes = FakeProcesses()
     monkeypatch.setattr(render_stage.subprocess, "run", processes)
+    monkeypatch.delenv(render_stage.DEVICE_PIN_ENV, raising=False)
     monkeypatch.delenv("LD_LIBRARY_PATH", raising=False)
     monkeypatch.setattr(render_stage, "GPU_DRIVER_DIRECTORY", str(tmp_path / "no-such-driver"))
     settings = replace(weights(tmp_path / "weights"), gpu_device="1")

@@ -47,6 +47,13 @@ GPU_DRIVER_DIRECTORY = "/run/opengl-driver/lib"
 # What sd-cli prints when it has quietly given up on the GPU.
 CPU_FALLBACK_MARKS = ("CUDA driver is a stub library", "no GPU devices")
 
+# The card a render may use is named from outside this module: a pod carries the
+# one it was placed on in this variable, and `--render-gpu` is for a host with no
+# such pin. With neither, the child inherits every card on the host — GPU0, the
+# owner's live session, included — which is the collision the pin exists to
+# prevent, so an absent pin refuses and nothing here may choose a card of its own.
+DEVICE_PIN_ENV = "NVIDIA_VISIBLE_DEVICES"
+
 # The directory the weights volume is mounted at, in the pod and on the host that
 # fills it. One path for both, so the file names below are the files a render
 # opens; `forecats-weights` is the claim that carries them.
@@ -217,6 +224,9 @@ class SdCliRenderer:
         reference_photos: Sequence[Path],
         destination: Path,
     ) -> Rendered | PipelineRefusal:
+        if self._pinned_device() is None:
+            return PipelineRefusal(stage="render", reason=self._unpinned_reason())
+
         absent = self._absent_inputs(reference_photos)
         if absent:
             return PipelineRefusal(stage="render", reason=self._absent_reason(absent))
@@ -253,6 +263,26 @@ class SdCliRenderer:
             height_px=self._height_px,
             weights=self._settings.weights,
             reference_photos=tuple(reference_photos),
+        )
+
+    def _pinned_device(self) -> str | None:
+        """The card this render was told it holds, or `None` when nothing says.
+
+        `--render-gpu` is a caller naming a card on a host with no pod pin; the
+        pod's own pin is the environment's, and it is read as it stands — a pin
+        of one card must not arrive at the CLI as a pin of two.
+        """
+        explicit = _named_device(self._settings.gpu_device)
+        if explicit is not None:
+            return explicit
+        return _named_device(os.environ.get(DEVICE_PIN_ENV))
+
+    def _unpinned_reason(self) -> str:
+        return (
+            f"{self.name}: no card pinned — {DEVICE_PIN_ENV} is unset and no card was named "
+            f"with --render-gpu, so the render would inherit every card on the host and may "
+            f"take the one the owner is working on; run it in a pod pinned by "
+            f"{DEVICE_PIN_ENV}, or pass --render-gpu (SdCliSettings.gpu_device)"
         )
 
     def _absent_inputs(self, reference_photos: Sequence[Path]) -> tuple[Path, ...]:
@@ -331,8 +361,9 @@ class SdCliRenderer:
         live session and a nightly job that stole it would be noticed in seconds.
         """
         environment = dict(os.environ)
-        if self._settings.gpu_device is not None:
-            environment["CUDA_VISIBLE_DEVICES"] = self._settings.gpu_device
+        explicit = _named_device(self._settings.gpu_device)
+        if explicit is not None:
+            environment["CUDA_VISIBLE_DEVICES"] = explicit
         if Path(GPU_DRIVER_DIRECTORY).is_dir():
             current = environment.get("LD_LIBRARY_PATH", "")
             environment["LD_LIBRARY_PATH"] = (
@@ -371,6 +402,15 @@ class SdCliRenderer:
         # a ggml line: a log made of stdout alone would be a fallback that read as
         # a render. The caller reads this only for those markers.
         return (completed.stdout or "") + (completed.stderr or "")
+
+
+def _named_device(value: str | None) -> str | None:
+    """`value` when it names a card, `None` when it is absent or blank.
+
+    A `--render-gpu ''` from a shell is an unset one, and exporting it as
+    `CUDA_VISIBLE_DEVICES` would hide every card rather than name none.
+    """
+    return value if value is not None and value.strip() else None
 
 
 def _placeholder_png(width: int, height: int, tint_by: str) -> bytes:
