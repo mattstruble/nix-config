@@ -323,10 +323,13 @@ func scanOf(specs ...podSpec) busyScan {
 // not a wait; the cycle is the same one a five-minute wake runs.
 const refusalBudget = 50 * time.Millisecond
 
+// claimJob is the cycle a job claim runs, with the claim moment hidden: which
+// card a round lands on does not depend on when it got the flock, and only a
+// wake bounds anything after the claim by it.
 func claimJob(t *testing.T, lockPath string, scan busyScan, pool, mode string, onClaim func(string) error) (string, error) {
 	t.Helper()
 	return claimCycle(context.Background(), lockPath, scan, splitCards(pool), pool, mode,
-		refusalBudget, time.Millisecond, onClaim)
+		refusalBudget, time.Millisecond, func(card string, _ time.Time) error { return onClaim(card) })
 }
 
 // A job asks for a card and is told which one it got. The busy set below is a
@@ -411,7 +414,7 @@ func TestClaimCycleWaitsForAHeldCardToRelease(t *testing.T) {
 		return cardsFromPods([]byte(pods()))
 	}
 	card, err := claimCycle(context.Background(), t.TempDir()+"/cards.lock", scan, []string{"1"}, "1", "any",
-		5*time.Second, time.Millisecond, func(string) error { return nil })
+		5*time.Second, time.Millisecond, func(string, time.Time) error { return nil })
 	if err != nil {
 		t.Fatalf("claim: %v", err)
 	}
@@ -665,10 +668,10 @@ func (f fakeCluster) scale(ns, name string, replicas int) (bool, error) {
 	return cur != replicas, nil
 }
 
-// The pod-visibility window is bounded by the wake's card-wait budget and not
-// only by its own window: a wake that fell through to the readiness wait after
-// its budget ran out holds the card for the whole startup timeout, which on a
-// two-card host is half the fleet.
+// The pod-visibility window is bounded by the card-wait budget counted from the
+// claim and not only by its own window: a wake that fell through to the readiness
+// wait after its budget ran out holds the card for the whole startup timeout,
+// which on a two-card host is half the fleet.
 func TestPodVisibilityWindowEndsWithTheCardWaitBudget(t *testing.T) {
 	cases := []struct {
 		name                      string
@@ -677,7 +680,6 @@ func TestPodVisibilityWindowEndsWithTheCardWaitBudget(t *testing.T) {
 		probeErr                  error
 		cancel                    bool
 		wantAppeared, wantRelease bool
-		wantCause                 error
 		maxElapsed                time.Duration
 	}{
 		{
@@ -695,9 +697,12 @@ func TestPodVisibilityWindowEndsWithTheCardWaitBudget(t *testing.T) {
 			wantRelease: true, maxElapsed: 2 * time.Second,
 		},
 		{
-			name:   "the caller went away after the scale: the card goes back",
+			// A cancelled context is this process dying, not this model being
+			// stopped: the Deployment keeps what it reached and the next wake
+			// adopts it.
+			name:   "the caller went away after the scale: the card stays claimed",
 			window: 10 * time.Second, poll: 5 * time.Millisecond, budgetLeft: 10 * time.Second,
-			cancel: true, wantRelease: true, wantCause: context.Canceled, maxElapsed: time.Second,
+			cancel: true, maxElapsed: time.Second,
 		},
 		{
 			// An unreachable API must not be read as a pod that will never appear:
@@ -727,9 +732,6 @@ func TestPodVisibilityWindowEndsWithTheCardWaitBudget(t *testing.T) {
 			if (w.release != nil) != tc.wantRelease {
 				t.Errorf("release = %v, want a release: %v", w.release, tc.wantRelease)
 			}
-			if tc.wantCause != nil && !errors.Is(w.release, tc.wantCause) {
-				t.Errorf("the release does not say why: %v, want it to wrap %v", w.release, tc.wantCause)
-			}
 			// The window is longer than the budget in the releasing cases, so a
 			// wait past the bound means it ignored the budget and waited anyway.
 			if tc.maxElapsed > 0 && elapsed > tc.maxElapsed {
@@ -745,8 +747,8 @@ func TestPodVisibilityWindowEndsWithTheCardWaitBudget(t *testing.T) {
 func TestWakeReleasesTheCardOfAPodThatNeverBecomesReady(t *testing.T) {
 	cluster := fakeCluster{replicas: map[string]int{"swift-qwen3-8-27b-g0": 1}}
 
-	err := giveBackCard(cluster, "default", "swift-qwen3-8-27b-g0", "1",
-		errors.New("the pod never became ready: startup timeout after 10m0s: pod swift-qwen3-7d4 container llama-server waiting: ImagePullBackOff"))
+	cause := fmt.Errorf("%w after 10m0s: pod swift-qwen3-7d4 container llama-server waiting: ImagePullBackOff", errStartupTimeout)
+	err := giveBackCard(cluster, "default", "swift-qwen3-8-27b-g0", "1", cause)
 
 	if cluster.replicas["swift-qwen3-8-27b-g0"] != 0 {
 		t.Errorf("gpu 1 is still claimed: the Deployment is at %d replicas",
@@ -760,21 +762,49 @@ func TestWakeReleasesTheCardOfAPodThatNeverBecomesReady(t *testing.T) {
 	}
 }
 
-// The two ways a readiness wait ends badly are different incidents: one is a
-// broken image, the other is llama-swap taking the request back. The line the
-// operator reads tells them apart and keeps the reason underneath.
-func TestTheReadinessWaitSaysWhyItGaveTheCardBack(t *testing.T) {
-	stuck := errors.New("startup timeout after 10m0s: pod swift-qwen3-7d4 waiting: ImagePullBackOff")
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
+// The line an operator reads when a readiness wait ends in a timeout says what
+// the last poll actually saw, because the two readings are different incidents
+// debugged by different people: "pod x waiting: ImagePullBackOff" is the pod, and
+// "cannot read pods: 503" is a cluster that stopped answering, which the pod knows
+// nothing about.
+func TestTheReadinessTimeoutSaysWhatTheLastPollSaw(t *testing.T) {
+	o := &options{namespace: "default", poll: time.Millisecond, startupTimeout: 20 * time.Millisecond}
+	sel := map[string]string{modelLabel: "swift-qwen3-8-27b"}
 
-	if got := releaseReason(context.Background(), stuck); !strings.Contains(got.Error(), "never became ready") ||
-		!errors.Is(got, stuck) {
-		t.Errorf("a pod that will not come up is worded as something else: %v", got)
+	cases := []struct {
+		name    string
+		answers []readyAnswer
+		wants   []string
+		not     string
+	}{
+		{
+			name:    "a pod the API has described as stuck",
+			answers: []readyAnswer{{reason: "pod swift-qwen3-7d4 container llama-server waiting: ImagePullBackOff"}},
+			wants:   []string{"startup timeout", "ImagePullBackOff"},
+			not:     "cannot read pods",
+		},
+		{
+			name:    "an API that never answered the last poll",
+			answers: []readyAnswer{{err: errors.New("503 Service Unavailable: apiserver is restarting")}},
+			wants:   []string{"startup timeout", "cannot read pods", "503"},
+			not:     "ImagePullBackOff",
+		},
 	}
-	if got := releaseReason(ctx, context.Canceled); !strings.Contains(got.Error(), "cancelled") ||
-		!errors.Is(got, context.Canceled) {
-		t.Errorf("a cancelled caller is worded as a broken pod: %v", got)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := waitReady(context.Background(), &fakeWake{answers: tc.answers}, o, sel)
+			if !errors.Is(err, errStartupTimeout) {
+				t.Fatalf("waitReady = %v, want a startup timeout", err)
+			}
+			for _, want := range tc.wants {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("the timeout does not say %q: %v", want, err)
+				}
+			}
+			if strings.Contains(err.Error(), tc.not) {
+				t.Errorf("the timeout claims %q as well: %v", tc.not, err)
+			}
+		})
 	}
 }
 
@@ -788,7 +818,7 @@ func TestAReleaseTheAPIRefusedSaysTheCardIsStillHeld(t *testing.T) {
 	}
 
 	err := giveBackCard(cluster, "default", "gemma-4-26b-g0", "0",
-		errors.New("the pod never became ready"))
+		fmt.Errorf("%w after 10m0s: pod gemma-4-26b-9x2f waiting: CreateContainerConfigError", errStartupTimeout))
 
 	for _, want := range []string{"gpu 0", "still held", "403", "by hand"} {
 		if !strings.Contains(err.Error(), want) {
@@ -797,49 +827,294 @@ func TestAReleaseTheAPIRefusedSaysTheCardIsStillHeld(t *testing.T) {
 	}
 }
 
-// A caller that goes away after the scale has already put the Deployment at one:
-// the card is claimed by then, and nothing else in the process will ever give it
-// back. The release has to reach the cluster, the flock and the next wake.
-func TestCancellationAfterAScaleReleasesTheCard(t *testing.T) {
-	lock := t.TempDir() + "/cards.lock"
-	cluster := fakeCluster{replicas: map[string]int{"swift-qwen3-8-27b-g0": 0}}
-	ctx, cancel := context.WithCancel(context.Background())
+// ---- what a wake does to the cluster ----------------------------------------
 
-	_, err := claimCycle(ctx, lock, scanOf(), []string{"1"}, "1", "any", time.Minute, time.Millisecond,
-		func(card string) error {
-			if _, err := cluster.scale("default", "swift-qwen3-8-27b-g0", 1); err != nil {
-				t.Error(err)
-			}
-			cancel() // the caller dies between the scale and the pod
-			w := awaitPodVisible(ctx, 30*time.Second, time.Millisecond, time.Now().Add(30*time.Second),
-				func() (bool, error) { return false, nil })
-			if w.release == nil {
-				t.Error("a cancelled caller kept the card")
-				return nil
-			}
-			return giveBackCard(cluster, "default", "swift-qwen3-8-27b-g0", card, w.release)
-		})
+// wakeModel is the model every wake test names: the 27B coder, whose startup is
+// long enough that a readiness wait is thousands of polls.
+const wakeModel = "swift-qwen3-8-27b"
+
+// readyAnswer is one readiness poll: the IP of a Ready pod, the reason there is
+// no such pod yet, or the fault the API answered with.
+type readyAnswer struct {
+	ip     string
+	reason string
+	err    error
+}
+
+// fakeWake is the cluster a wake talks to, and the only place a wake's decision
+// is observable: the replica count the Deployment ends at. The readiness answers
+// are a queue because the rule at issue is what a wake does with a fault in the
+// middle of a wait of thousands of polls; the last answer repeats once the queue
+// runs out, so a scenario states only the polls it cares about, and one entry is
+// an API that never recovers.
+//
+// Every test reads this state after the wake it started has returned.
+type fakeWake struct {
+	// replicas is the state a release changes. A Deployment absent from the map
+	// does not exist yet, which is where a fresh placement starts.
+	replicas map[string]int
+	// podAppearsAtProbe is the visibility probe at which the Deployment's pod
+	// becomes visible. A scaled Deployment takes seconds to produce one, so a
+	// window that ends on its first probe has not looked yet. Zero, the zero value,
+	// means the pod never appears.
+	podAppearsAtProbe int
+	// answers is what readyPod replies, one entry per poll.
+	answers []readyAnswer
+
+	// probes and visits count the polls the wake made: whether a second visibility
+	// probe happened at all is what says whether its window ran.
+	probes int
+	visits int
+}
+
+func (f *fakeWake) getDeployment(ns, name string) (*deployment, error) {
+	r, ok := f.replicas[name]
+	if !ok {
+		return nil, nil
+	}
+	return &deployment{Name: name, Replicas: r, Selector: map[string]string{modelLabel: name}}, nil
+}
+
+func (f *fakeWake) podsForDeployment(ns string, sel map[string]string) (bool, error) {
+	f.probes++
+	return f.podAppearsAtProbe > 0 && f.probes >= f.podAppearsAtProbe, nil
+}
+
+func (f *fakeWake) readyPod(ns string, sel map[string]string) (string, string, error) {
+	if len(f.answers) == 0 {
+		return "", "no pods", nil
+	}
+	i := min(f.visits, len(f.answers)-1)
+	f.visits++
+	return f.answers[i].ip, f.answers[i].reason, f.answers[i].err
+}
+
+// applyDeployment creates the Deployment at one replica, which is what the create
+// body normalizeSpec emits carries; an update leaves the count alone, because that
+// is the write the ConfigMap indirection exists to keep from the chart.
+func (f *fakeWake) applyDeployment(ns, name, gpu string, spec []byte, existing *deployment) error {
+	if f.replicas == nil {
+		f.replicas = map[string]int{}
+	}
+	if existing == nil {
+		f.replicas[name] = 1
+	}
+	return nil
+}
+
+func (f *fakeWake) scale(ns, name string, replicas int) (bool, error) {
+	cur, ok := f.replicas[name]
+	if !ok {
+		return false, fmt.Errorf("deployments.apps %q not found in namespace %q", name, ns)
+	}
+	f.replicas[name] = replicas
+	return cur != replicas, nil
+}
+
+// scanCards sees an empty namespace: the card the wake's pool names is free, so
+// these tests say nothing about placement and everything about what follows it.
+func (f *fakeWake) scanCards(ns string) busyScan {
+	return func(context.Context) (map[string]bool, error) { return map[string]bool{}, nil }
+}
+
+// replicasOf is the assertion every wake test makes: which replica count the
+// Deployment ended at.
+func (f *fakeWake) replicasOf(name string) int { return f.replicas[name] }
+
+// visibilityProbes counts the polls the pod-visibility window made: a second one
+// is a window that waited, and one is a window that gave up.
+func (f *fakeWake) visibilityProbes() int { return f.probes }
+
+// wakeSpec writes the chart-rendered spec a fresh placement reads: the POOL in the
+// labels and in NVIDIA_VISIBLE_DEVICES, which is what the shim narrows to a card.
+func wakeSpec(t *testing.T, dir, name, pool string) {
+	t.Helper()
+	spec := fmt.Sprintf(`{"apiVersion":"apps/v1","kind":"Deployment",`+
+		`"metadata":{"name":%q,"labels":{%q:%q,%q:"any"}},`+
+		`"spec":{"template":{"spec":{"containers":[{"name":"llama-server",`+
+		`"env":[{"name":%q,"value":%q}]}]}}}}`, name, gpuPoolLabel, pool, gpuModeLabel, gpuEnv, pool)
+	if err := os.WriteFile(filepath.Join(dir, name+".json"), []byte(spec), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// wakeOptions is the flag set a wake test runs with: budgets short enough that a
+// timeout is a test result and not a wait.
+func wakeOptions(dir, lock string, cardWait, startupTimeout time.Duration) *options {
+	return &options{namespace: "default", model: wakeModel, specDir: dir, cardLock: lock,
+		poll: 5 * time.Millisecond, cardWait: cardWait, startupTimeout: startupTimeout}
+}
+
+// A 429 from API priority-and-fairness, a 500 or 503 during a k3s apiserver
+// restart, a connection reset, this client's own 30s timeout: a readiness wait
+// polls once a second for the whole startup timeout, so one blip in thousands of
+// calls is routine. A failed poll is the API, not the pod, and the pod behind it
+// is nearly ready — ending the wait on the blip would scale that pod to zero and
+// log the pod as the culprit.
+func TestWakeTreatsAFailedPollAsNotReadyYet(t *testing.T) {
+	dir := t.TempDir()
+	wakeSpec(t, dir, wakeModel, "1")
+	kc := &fakeWake{podAppearsAtProbe: 1, answers: []readyAnswer{
+		{err: errors.New("429 Too Many Requests: global rate limit exceeded")},
+		{err: errors.New("read tcp 10.43.0.1:443: connection reset by peer")},
+		{ip: "10.42.0.17"},
+	}}
+
+	if _, err := wake(context.Background(), kc, wakeOptions(dir, dir+"/cards.lock", time.Minute, time.Minute)); err != nil {
+		t.Fatalf("wake: %v", err)
+	}
+	if got := kc.replicasOf(wakeModel); got != 1 {
+		t.Errorf("gpu 1 is gone: the Deployment is at %d replicas after two failed polls", got)
+	}
+}
+
+// The other end of the same rule: a fault is never a reason to take a card away,
+// but a startup timeout spent entirely without an answer still ends the wait.
+// Somebody has to notice an API that stopped answering, and the line says the wait
+// last saw a fault rather than a pod in a bad state, because that is all it saw.
+func TestWakeReleasesTheCardOnATimeoutItCouldNotSeePast(t *testing.T) {
+	dir := t.TempDir()
+	wakeSpec(t, dir, wakeModel, "1")
+	kc := &fakeWake{podAppearsAtProbe: 1, answers: []readyAnswer{
+		{err: errors.New("503 Service Unavailable: etcdserver: request timed out")},
+	}}
+
+	_, err := wake(context.Background(), kc, wakeOptions(dir, dir+"/cards.lock", time.Minute, 30*time.Millisecond))
+
+	if !errors.Is(err, errStartupTimeout) {
+		t.Fatalf("wake = %v, want a startup timeout", err)
+	}
+	if got := kc.replicasOf(wakeModel); got != 0 {
+		t.Errorf("gpu 1 is still claimed: the Deployment is at %d replicas", got)
+	}
+	for _, want := range []string{"gpu 1", "cannot read pods"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the release does not say %q: %v", want, err)
+		}
+	}
+}
+
+// A pod the API has described as not-ready for its whole startup timeout is not
+// coming, and a Deployment left at one replica holds that card until a human
+// scales it by hand: this is the one ending a wake gives the card back for.
+func TestWakeReleasesTheCardWhenTheStartupTimeoutExpires(t *testing.T) {
+	dir := t.TempDir()
+	wakeSpec(t, dir, wakeModel, "1")
+	kc := &fakeWake{podAppearsAtProbe: 1, answers: []readyAnswer{
+		{reason: "pod swift-qwen3-7d4 container llama-server waiting: ImagePullBackOff"},
+	}}
+
+	_, err := wake(context.Background(), kc, wakeOptions(dir, dir+"/cards.lock", time.Minute, 30*time.Millisecond))
 
 	if err == nil {
-		t.Fatal("a wake whose caller went away must not report success")
+		t.Fatal("a pod that never became ready is not a successful wake")
 	}
-	if !errors.Is(err, context.Canceled) {
-		t.Errorf("the cancellation is not visible in the error: %v", err)
+	if got := kc.replicasOf(wakeModel); got != 0 {
+		t.Errorf("gpu 1 is still claimed: the Deployment is at %d replicas", got)
 	}
-	if !strings.Contains(err.Error(), "gpu 1") {
-		t.Errorf("the error does not name the card it released: %v", err)
+	for _, want := range []string{"gpu 1", wakeModel, "ImagePullBackOff"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the release does not name %q: %v", want, err)
+		}
 	}
-	if cluster.replicas["swift-qwen3-8-27b-g0"] != 0 {
-		t.Errorf("gpu 1 is still claimed: the Deployment is at %d replicas",
-			cluster.replicas["swift-qwen3-8-27b-g0"])
-	}
-	if !flockIsFree(t, lock) {
-		t.Error("the placement lock is still held")
+}
+
+// A wake that adopted a pod it did not place leaves the Deployment alone however
+// the pod is doing: the pod predates the wake, and putting a model to sleep is
+// cmdStop's and cmdReap's job. Evicting an adopted pod turns a slow load into an
+// eviction, killing the pod that was loading.
+func TestAWakeThatAdoptedAPodLeavesTheDeploymentAtOne(t *testing.T) {
+	dir := t.TempDir()
+	kc := &fakeWake{
+		replicas:          map[string]int{wakeModel: 1},
+		podAppearsAtProbe: 1,
+		answers:           []readyAnswer{{reason: "pod swift-qwen3-7d4 phase=Pending"}},
 	}
 
-	again, err := claimJob(t, lock, scanOf(), "1", "any", func(string) error { return nil })
-	if err != nil || again != "1" {
-		t.Errorf("the next wake after the release got %q (%v); want card 1", again, err)
+	if _, err := wake(context.Background(), kc, wakeOptions(dir, dir+"/cards.lock", time.Minute, 30*time.Millisecond)); err == nil {
+		t.Error("a model that never became ready is not a successful wake")
+	}
+	if got := kc.replicasOf(wakeModel); got != 1 {
+		t.Errorf("the adopted pod was evicted: the Deployment is at %d replicas, want 1", got)
+	}
+}
+
+// SIGTERM means llama-swap is going away, not that this model should be: cmdServe
+// says so, and cmdStop is what stops a model. A wake cancelled mid-flight
+// therefore leaves the Deployment at whatever it reached. Scaling on the way out
+// is how a head-end container restart kills a model mid-wake, racily, in exactly
+// the case the adoption path exists to survive.
+func TestACancelledWakeLeavesTheDeploymentAtOne(t *testing.T) {
+	cases := []struct {
+		name              string
+		podAppearsAtProbe int
+		answers           []readyAnswer
+	}{
+		{"cancelled while waiting for the pod to appear", 0, nil},
+		{"cancelled while waiting for readiness", 1, []readyAnswer{{reason: "pod swift-qwen3-7d4 phase=Pending"}}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			wakeSpec(t, dir, wakeModel, "1")
+			kc := &fakeWake{podAppearsAtProbe: tc.podAppearsAtProbe, answers: tc.answers}
+			ctx, cancel := context.WithCancel(context.Background())
+			go func() {
+				time.Sleep(50 * time.Millisecond)
+				cancel()
+			}()
+
+			_, err := wake(ctx, kc, wakeOptions(dir, dir+"/cards.lock", time.Minute, time.Minute))
+
+			if !errors.Is(err, context.Canceled) {
+				t.Errorf("wake = %v, want the cancellation reported", err)
+			}
+			if got := kc.replicasOf(wakeModel); got != 1 {
+				t.Errorf("gpu 1 was released on the way out: the Deployment is at %d replicas", got)
+			}
+		})
+	}
+}
+
+// A round that queued behind another shim's hold on the flock starts its
+// visibility window when it got the card, not when the wake began. A scaled
+// Deployment takes seconds to produce a pod, so a window's first answer is normally
+// "not yet" and the pod turns up on a later poll; anchored at the wake, a round
+// that got the flock after the card-wait budget had been spent ends on that first
+// answer and hands the card back blaming a pod it never looked at twice. Not a
+// race: two shims on one host do this whenever one holds the flock for its own
+// visibility window.
+func TestAWakeThatQueuedForTheCardStillGetsItsWindow(t *testing.T) {
+	dir := t.TempDir()
+	wakeSpec(t, dir, wakeModel, "1")
+	lock := dir + "/cards.lock"
+	anotherShim, err := cardLock(lock)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The pod is there for the window's second probe, one podClaimPoll after the
+	// first. Only a window that started at the claim has that much budget left: the
+	// flock goes back to this wake a whole card-wait after its budget was spent.
+	kc := &fakeWake{podAppearsAtProbe: 2, answers: []readyAnswer{{ip: "10.42.0.17"}}}
+	done := make(chan error, 1)
+	go func() {
+		_, err := wake(context.Background(), kc, wakeOptions(dir, lock, time.Second, 50*time.Millisecond))
+		done <- err
+	}()
+
+	// The other shim lets go only after the wake's whole card-wait budget is spent.
+	time.Sleep(1100 * time.Millisecond)
+	cardUnlock(anotherShim)
+
+	if err := <-done; err != nil {
+		t.Errorf("wake: %v", err)
+	}
+	if got := kc.visibilityProbes(); got < 2 {
+		t.Errorf("the window probed %d time(s) and gave up: it was anchored at the wake, not at the claim", got)
+	}
+	if got := kc.replicasOf(wakeModel); got != 1 {
+		t.Errorf("gpu 1 was handed back unseen: the Deployment is at %d replicas, want 1", got)
 	}
 }
 
@@ -852,11 +1127,12 @@ func TestClaimReleasesTheCardWhenNoPodAppearedWithinTheBudget(t *testing.T) {
 	cluster := fakeCluster{replicas: map[string]int{"swift-qwen3-8-27b-g0": 0}}
 
 	_, err := claimCycle(context.Background(), lock, scanOf(), []string{"1"}, "1", "any",
-		time.Minute, time.Millisecond, func(card string) error {
+		time.Minute, time.Millisecond, func(card string, _ time.Time) error {
 			if _, err := cluster.scale("default", "swift-qwen3-8-27b-g0", 1); err != nil {
 				t.Error(err)
 			}
-			// The budget ran out while the scale was happening; the window ends on it.
+			// The wake's card-wait is shorter than the pod-visibility window, so the
+			// budget — counted from the claim — ends the window before the window does.
 			w := awaitPodVisible(context.Background(), 30*time.Second, time.Millisecond,
 				time.Now().Add(20*time.Millisecond), func() (bool, error) { return false, nil })
 			if w.release == nil {

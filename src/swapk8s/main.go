@@ -101,7 +101,10 @@ const (
 	// next shim place on the same card; holding indefinitely lets a cluster
 	// problem wedge every placement in the fleet. Bounded, and a timeout is a log
 	// line: the pod, if it is coming, still arrives. A model wake bounds it again
-	// by the card-wait budget it was given — awaitPodVisible.
+	// by the card-wait budget it was given, measured from the instant its round
+	// got the flock and not from the instant the wake began: taking the flock
+	// blocks, so a round may queue behind another shim's hold for longer than the
+	// whole budget — awaitPodVisible.
 	podClaimWindow = 60 * time.Second
 	podClaimPoll   = 500 * time.Millisecond
 	// How long a claim's command gets to die after the caller's SIGTERM before it
@@ -618,18 +621,24 @@ var errNoFreeCard = errors.New("every card in the pool is held")
 // claimRound is one holding of the flock: scan, decide, and hand the chosen card
 // to onClaim while the lock is still held.
 //
+// onClaim is handed the instant this round got the flock. Getting it is an
+// unbounded blocking wait, so a round that queued behind another shim's hold can
+// start after the caller's card-wait budget expired; anything onClaim bounds from
+// the claim onward measures from here, or it starts out already spent.
+//
 // The unlock is deferred rather than repeated at each return. onClaim runs
 // whatever the entry point does to make a claim visible - apply and scale for a
 // model, an exec for a job - and a panic inside it must not leave the flock held
 // by a process that is still running: flock is dropped when the holder dies, so
 // a live holder is every placement in the fleet wedged until something kills it.
 func claimRound(ctx context.Context, lockPath string, scan busyScan, cards []string, pool, mode string,
-	onClaim func(card string) error) (string, error) {
+	onClaim func(card string, claimedAt time.Time) error) (string, error) {
 	lock, err := cardLock(lockPath)
 	if err != nil {
 		return "", fmt.Errorf("card lock: %w", err)
 	}
 	defer cardUnlock(lock)
+	claimedAt := time.Now()
 
 	busy, err := scan(ctx)
 	if err != nil {
@@ -639,7 +648,7 @@ func claimRound(ctx context.Context, lockPath string, scan busyScan, cards []str
 	if chosen == "" {
 		return "", errNoFreeCard
 	}
-	if err := onClaim(chosen); err != nil {
+	if err := onClaim(chosen, claimedAt); err != nil {
 		return "", err
 	}
 	return chosen, nil
@@ -647,13 +656,16 @@ func claimRound(ctx context.Context, lockPath string, scan busyScan, cards []str
 
 // claimCycle is the choose-and-claim cycle every entry point shares: rounds of
 // claimRound until one hands over a card, with the card-wait budget as the only
-// thing that turns "nothing free yet" into a failure. onClaim must make the claim
-// visible to the next shim's scan before it returns - for a model the pod the
-// scale produces, for a job the pod the caller's create command produces - and
-// the flock goes back the moment it has, on the way out of a failure, a panic or
-// a success alike.
+// thing that turns "nothing free yet" into a failure. That budget bounds the wait
+// for a card and nothing after it: a round that got the flock finishes its claim,
+// from the instant it got it.
+//
+// onClaim must make the claim visible to the next shim's scan before it returns -
+// for a model the pod the scale produces, for a job the pod the caller's create
+// command produces - and the flock goes back the moment it has, on the way out of
+// a failure, a panic or a success alike.
 func claimCycle(ctx context.Context, lockPath string, scan busyScan, cards []string, pool, mode string,
-	wait, poll time.Duration, onClaim func(card string) error) (string, error) {
+	wait, poll time.Duration, onClaim func(card string, claimedAt time.Time) error) (string, error) {
 	deadline := time.Now().Add(wait)
 	for {
 		chosen, err := claimRound(ctx, lockPath, scan, cards, pool, mode, onClaim)
@@ -682,33 +694,35 @@ func claimCycle(ctx context.Context, lockPath string, scan busyScan, cards []str
 type podWait struct {
 	appeared bool
 	// release is why the card this wake scaled up must go back now, already
-	// worded for an operator; nil means the window ended with budget left, the pod
-	// may still arrive, and the card stays claimed.
+	// worded for an operator; nil means the card stays claimed — the pod may still
+	// arrive, or this process is going away and the next wake adopts whatever the
+	// Deployment reached.
 	release error
 }
 
 // awaitPodVisible is the window between a scale and a visible pod, with the
 // "has it appeared yet" probe injected so its endings are testable without an
 // API server. It ends at the earliest of: the pod existing, the caller going
-// away, the pod-visibility window, and the wake's remaining card-wait budget.
+// away, the pod-visibility window, and the card-wait budget counted from the
+// instant the round claimed the card.
 //
-// The budget ends it because --card-wait is the most anyone is promised a card,
-// and a window that outlived it falls through to a readiness wait that outlives
-// it too: the Deployment stays at one and its card is gone until a human scales
-// it. The window ends it, with budget left, without releasing: a Deployment
-// whose pods take longer than the window to appear is a cluster problem, the pod
-// may still be coming, and waitReady is where the caller learns about it.
+// The budget is the only ending that releases: --card-wait is the most anyone is
+// promised a card, and a Deployment that has produced no pod by the end of it is
+// a card held for nothing. The window ending without release is not a verdict — a
+// Deployment whose pods take longer than the window to appear is a cluster
+// problem, the pod may still be coming, and waitReady is where the caller learns
+// about it.
+//
+// Nor is the caller going away: a cancelled context here is this process dying,
+// and SIGTERM means llama-swap is going away, not that this model should be
+// (cmdServe). A Deployment at one replica is what the next wake adopts; scaling it
+// on the way out is how a head-end restart puts a healthy model to sleep mid-wake.
 func awaitPodVisible(ctx context.Context, window, poll time.Duration, budgetDeadline time.Time,
 	probe func() (bool, error)) podWait {
 	windowEnds := time.Now().Add(window)
 	for {
 		if has, err := probe(); err == nil && has {
 			return podWait{appeared: true}
-		}
-		// A caller that went away ends the window before the budget does: the scale
-		// already happened, so the card is held by a Deployment nobody waits for.
-		if cerr := ctx.Err(); cerr != nil {
-			return podWait{release: fmt.Errorf("the wake was cancelled before its pod appeared: %w", cerr)}
 		}
 		if !time.Now().Before(budgetDeadline) {
 			return podWait{release: errors.New("no pod appeared before the card-wait budget ran out")}
@@ -718,21 +732,37 @@ func awaitPodVisible(ctx context.Context, window, poll time.Duration, budgetDead
 		}
 		select {
 		case <-ctx.Done():
+			return podWait{}
 		case <-time.After(poll):
 		}
 	}
 }
 
+// wakeCluster is everything a wake asks the cluster for. An interface so that the
+// endings of a wake — which of them scale the Deployment down and which leave it
+// at one — are testable without an API server: that rule lives in wake's own
+// control flow, where a test of the extracted helpers cannot reach it.
+type wakeCluster interface {
+	getDeployment(ns, name string) (*deployment, error)
+	podsForDeployment(ns string, sel map[string]string) (bool, error)
+	readyPod(ns string, sel map[string]string) (ip, reason string, err error)
+	applyDeployment(ns, name, gpu string, spec []byte, existing *deployment) error
+	scale(ns, name string, replicas int) (bool, error)
+	scanCards(ns string) busyScan
+}
+
+var _ wakeCluster = (*client)(nil)
+
 // awaitDeploymentPod holds the flock until the Deployment has produced a pod,
-// bounded as awaitPodVisible describes. A probe error is the API being
-// unreachable rather than a pod that never appeared, so the window keeps polling.
-func (c *client) awaitDeploymentPod(ctx context.Context, ns, name string, budgetDeadline time.Time) podWait {
+// bounded as awaitPodVisible describes; budgetDeadline is counted from the
+// instant the round claimed the card, not from the instant the wake began.
+func awaitDeploymentPod(ctx context.Context, kc wakeCluster, ns, name string, budgetDeadline time.Time) podWait {
 	return awaitPodVisible(ctx, podClaimWindow, podClaimPoll, budgetDeadline, func() (bool, error) {
-		d, err := c.getDeployment(ns, name)
+		d, err := kc.getDeployment(ns, name)
 		if err != nil || d == nil {
 			return false, err
 		}
-		return c.podsForDeployment(ns, d.Selector)
+		return kc.podsForDeployment(ns, d.Selector)
 	})
 }
 
@@ -910,8 +940,8 @@ func main() {
 	fs.StringVar(&o.checkPath, "health-path", "/health", "backend path that answers once the model serves")
 	fs.StringVar(&o.specDir, "spec-dir", "/etc/swapk8s/specs", "directory of <model>.json pod specs from the chart")
 	fs.DurationVar(&o.poll, "poll", time.Second, "cluster poll interval")
-	fs.DurationVar(&o.startupTimeout, "startup-timeout", 10*time.Minute, "give up waiting for readiness after this")
-	fs.DurationVar(&o.cardWait, "card-wait", 5*time.Minute, "give up waiting for a free GPU after this")
+	fs.DurationVar(&o.startupTimeout, "startup-timeout", 10*time.Minute, "wait for a pod to become ready this long; a wake that placed the pod releases its card when it expires")
+	fs.DurationVar(&o.cardWait, "card-wait", 5*time.Minute, "wait for a free GPU this long; it bounds the wait for a card, not the wake that follows one")
 	fs.DurationVar(&o.stopDeadline, "stop-deadline", 5*time.Minute, "hard bound on stop; it must never block the router")
 	fs.IntVar(&o.cmdPid, "pid", 0, "pid of the serve process to stop (llama-swap substitutes ${PID})")
 	fs.StringVar(&o.apiServer, "api-server", "", "kube API base (default: in-cluster)")
@@ -970,7 +1000,7 @@ func main() {
 
 // wake brings the model up: apply the chart's spec if we have one, create the
 // Deployment if it does not exist, scale to one, wait for a Ready pod.
-func wake(ctx context.Context, kc *client, o *options) (*deployment, error) {
+func wake(ctx context.Context, kc wakeCluster, o *options) (*deployment, error) {
 	name := o.model
 	cur, err := kc.getDeployment(o.namespace, name)
 	if err != nil {
@@ -1058,14 +1088,14 @@ func wake(ctx context.Context, kc *client, o *options) (*deployment, error) {
 	// llama-swap holds the request (its queue) while the shim waits here, and
 	// the client sees the loading stream.
 	//
-	// The budget has one instant it started from: the pod-visibility window inside
-	// the claim ends with it, so no wake holds a card past the wait its caller was
-	// promised. claimCycle is handed what is left of that same instant, so the two
-	// deadlines cannot drift apart.
-	budgetDeadline := time.Now().Add(o.cardWait)
-	chosen, err := claimCycle(ctx, o.cardLock, kc.scanCards(o.namespace), cards, pool, mode,
-		time.Until(budgetDeadline), o.poll,
-		func(card string) error {
+	// --card-wait bounds the wait for a card and nothing after it. The window that
+	// waits for the scale to produce a pod starts from the instant this round got
+	// the flock, because getting the flock blocks: anchored at the wake instead, a
+	// round that queued behind another shim's hold would find its budget already
+	// spent, probe once - no pod exists milliseconds after its own scale - and hand
+	// the card back blaming the pod.
+	chosen, err := claimCycle(ctx, o.cardLock, kc.scanCards(o.namespace), cards, pool, mode, o.cardWait, o.poll,
+		func(card string, claimedAt time.Time) error {
 			if err := kc.applyDeployment(o.namespace, name, card, spec, cur); err != nil {
 				return fmt.Errorf("apply spec (gpu %s): %w", card, err)
 			}
@@ -1076,9 +1106,9 @@ func wake(ctx context.Context, kc *client, o *options) (*deployment, error) {
 			// Hold the lock until the pod is visible: a scaled Deployment takes
 			// seconds to produce a pod, and until it exists the next shim's
 			// busy-card scan would see the card as free. The claim is the pod.
-			// From here the card is this wake's to give back: apply and scale both
-			// succeeded, so the Deployment holds it whatever happens next.
-			if w := kc.awaitDeploymentPod(ctx, o.namespace, name, budgetDeadline); w.release != nil {
+			// From here the card is this wake's to give back, but only on the one
+			// ending that says the pod is not coming: awaitPodVisible.
+			if w := awaitDeploymentPod(ctx, kc, o.namespace, name, claimedAt.Add(o.cardWait)); w.release != nil {
 				return giveBackCard(kc, o.namespace, name, card, w.release)
 			}
 			return nil
@@ -1092,31 +1122,49 @@ func wake(ctx context.Context, kc *client, o *options) (*deployment, error) {
 		return nil, fmt.Errorf("deployment %s did not appear after placement: %v", name, err)
 	}
 	if err := waitReady(ctx, kc, o, cur.Selector); err != nil {
-		return cur, giveBackCard(kc, o.namespace, name, chosen, releaseReason(ctx, err))
+		// A startup timeout is the one ending that releases: the pod had the whole
+		// timeout and the API still does not call it Ready, so it is not coming, and
+		// a Deployment left at one replica holds its card until a human scales it.
+		// Every other ending - this process going away, an API that never answered
+		// the last poll - says nothing about the pod and leaves the Deployment at one
+		// for the next wake to adopt.
+		if errors.Is(err, errStartupTimeout) {
+			return cur, giveBackCard(kc, o.namespace, name, chosen, err)
+		}
+		return cur, err
 	}
 	return cur, nil
 }
 
-// releaseReason words why a wake is giving a card back after it already scaled
-// the Deployment up: a pod that will not come up and a caller that took the
-// request back are different incidents for whoever reads the log, and the reason
-// underneath stays wrapped.
-func releaseReason(ctx context.Context, cause error) error {
-	if ctx.Err() != nil {
-		return fmt.Errorf("the wake was cancelled while the pod was coming up: %w", cause)
-	}
-	return fmt.Errorf("the pod never became ready: %w", cause)
-}
+// errStartupTimeout marks the one readiness failure a wake releases its card
+// for: the pod had the whole --startup-timeout and is still not Ready. Every
+// other way waitReady stops is the caller or the API, not the pod, and wake()
+// releases on none of them.
+var errStartupTimeout = errors.New("startup timeout")
 
-func waitReady(ctx context.Context, kc *client, o *options, sel map[string]string) error {
+// waitReady polls until a pod of the Deployment is Ready, the startup timeout
+// ends the wait, or the caller goes away.
+//
+// A failed poll is the API, not the pod: a 429 from API priority-and-fairness, a
+// 500 or 503 during a k3s apiserver restart, a connection reset, this client's
+// own 30s timeout. A readiness wait polls once a second for the whole startup
+// timeout - thousands of calls for a 27B model - so one blip is routine, and
+// ending the wait on one would scale a nearly-ready pod to zero and log the pod
+// as the culprit. The rule awaitPodVisible already follows, applied here.
+//
+// So the only error is the timeout, and it carries what the last poll saw: a pod
+// state, or the fault that was still failing when the deadline passed. Only the
+// first is about the pod at all, and whoever reads the line is debugging
+// different things.
+func waitReady(ctx context.Context, kc wakeCluster, o *options, sel map[string]string) error {
 	deadline := time.Now().Add(o.startupTimeout)
 	last := ""
 	for {
 		ip, reason, err := kc.readyPod(o.namespace, sel)
-		if err != nil {
-			return err
-		}
-		if ip != "" {
+		switch {
+		case err != nil:
+			reason = fmt.Sprintf("cannot read pods: %v", err)
+		case ip != "":
 			return nil
 		}
 		if reason != last {
@@ -1124,7 +1172,7 @@ func waitReady(ctx context.Context, kc *client, o *options, sel map[string]strin
 			last = reason
 		}
 		if time.Now().After(deadline) {
-			return fmt.Errorf("startup timeout after %s: %s", o.startupTimeout, reason)
+			return fmt.Errorf("%w after %s: %s", errStartupTimeout, o.startupTimeout, last)
 		}
 		select {
 		case <-ctx.Done():
@@ -1206,7 +1254,9 @@ func cmdServe(ctx context.Context, kc *client, o *options) error {
 		case <-ctx.Done():
 			// SIGTERM means llama-swap is going away, not that this model should
 			// be. Scaling to zero here would take the model down with the
-			// head-end; reaping is cmdReap's job, on purpose.
+			// head-end; reaping is cmdReap's job, on purpose. It is the rule for
+			// every cancellation in this binary, wake included: a process that is
+			// only dying never releases a card, whatever the Deployment reached.
 			log.Printf("signal: exiting without touching the Deployment")
 			srv.Close()
 			return nil
@@ -1391,7 +1441,7 @@ func cmdClaim(ctx context.Context, kc *client, o *options) error {
 	}
 
 	chosen, err := claimCycle(ctx, o.cardLock, kc.scanCards(o.namespace), splitCards(pool), pool, mode, o.cardWait, o.poll,
-		func(card string) error {
+		func(card string, _ time.Time) error {
 			// stdout is the machine-readable answer (`card=$(swapk8s claim ...)`);
 			// every diagnostic goes to the log, which is stderr. The command inherits
 			// this process's stdout, so a caller whose command prints reads the card
