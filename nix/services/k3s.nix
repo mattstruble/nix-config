@@ -524,6 +524,14 @@ in
           sdCliBinary: "${cfg.forecats.sdCliBinary}"
         gpu:
           pool: "${cfg.forecats.gpuPool}"
+        # The release whose Prometheus CR selects the rules this chart ships.
+        # kube-state-metrics is scraped by the ServiceMonitor that release
+        # installs, and the same release's Prometheus loads only the rules
+        # labelled with it — so this is the wiring that turns a rule file into an
+        # alert, and the chart `required`s it rather than hardcoding a release
+        # name that lives here.
+        prometheus:
+          ruleReleaseLabel: "${kpsRelease}"
         # The three binaries a claim is made of, as store paths the store volume
         # mounts read-only: the shim that chooses the card, the API client that
         # creates the pod carrying it, and the substitution that puts the chosen
@@ -663,6 +671,16 @@ in
         url = "https://github.com/prometheus-community/helm-charts/releases/download/kube-prometheus-stack-91.7.0/kube-prometheus-stack-91.7.0.tgz";
         sha256 = "989701d6d289a8303b2357e9fcd40522f82932e36ae0d960ed9f9271e167a5bb"; # pragma: allowlist secret
       };
+
+      # The helm release name kube-prometheus-stack is installed as. It is not
+      # only a name: the Prometheus CR the chart renders defaults to
+      # `spec.ruleSelector: matchLabels: release: <this>`, which decides which
+      # PrometheusRules in the cluster are read at all. The app charts that ship
+      # their own rules are handed it as `prometheus.ruleReleaseLabel` (see
+      # forecatsValuesText) and `required` there, because a rule the operator does
+      # not select is a rule that can never fire while looking like coverage.
+      kpsRelease = "kps";
+
       lokiChart = pkgs.fetchurl {
         url = "https://github.com/grafana-community/helm-charts/releases/download/loki-18.13.5/loki-18.13.5.tgz";
         sha256 = "b26289fadb0eab4335e14fc725df92dfa2cc1d8e94e06a76861cf58a7a1d051a"; # pragma: allowlist secret
@@ -1339,7 +1357,7 @@ in
             [ -s "$T/kps-values.yaml" ] || { echo "error: envsubst produced empty kps-values.yaml" >&2; exit 1; }
             # Render the kps templates (CRs + workloads) WITHOUT --include-crds;
             # the CRDs are extracted from the chart and applied separately below.
-            $HELM template kps "$KPS_CHART" -f "$T/kps-values.yaml" \
+            $HELM template ${kpsRelease} "$KPS_CHART" -f "$T/kps-values.yaml" \
                 --namespace monitoring > "$T/kps-rendered.yaml"
             [ -s "$T/kps-rendered.yaml" ] || { echo "error: helm template produced empty kps-rendered.yaml" >&2; exit 1; }
             $TAR -xzf "$KPS_CHART" -C "$T"

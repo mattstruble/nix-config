@@ -1,16 +1,17 @@
 # Values for the forecats chart (nightly render + the panel's viewer).
 #
-# `namespace`, everything under `render:` except the flags below, `gpu.pool`,
-# `claim.podClaimWindowSeconds`, everything under `persistence:`, `secret.*` and
-# `report.address` are deliberately absent: nix supplies them at render
-# (`forecatsStorage`, `forecatsSecret`, `services.k3s.forecats.*` and the ai
-# chart's `headEnd.podClaimWindowSeconds` in nix/services/k3s.nix), because the
-# namespace the apply pass creates, the uid the writable volume is owned by, the
-# claim names the pre-bound PVs are matched by, the Secret's key list, the card
-# pool the shim may place onto and the claim window the router's wake deadline is
-# summed from are the same facts read by other software. `just k8s-render` and the
-# CI preview pass the same file; a bare `helm template` fails the `required`
-# guards rather than rendering defaults.
+# `namespace`, `prometheus.ruleReleaseLabel`, everything under `render:` except
+# the flags below, `gpu.pool`, `claim.podClaimWindowSeconds`, everything under
+# `persistence:`, `secret.*` and `report.address` are deliberately absent: nix
+# supplies them at render (`forecatsStorage`, `forecatsSecret`,
+# `services.k3s.forecats.*` and the ai chart's `headEnd.podClaimWindowSeconds` in
+# nix/services/k3s.nix), because the namespace the apply pass creates, the release
+# whose Prometheus CR loads the alert rules, the uid the writable volume is owned
+# by, the claim names the pre-bound PVs are matched by, the Secret's key list, the
+# card pool the shim may place onto and the claim window the router's wake
+# deadline is summed from are the same facts read by other software.
+# `just k8s-render` and the CI preview pass the same file; a bare `helm template`
+# fails the `required` guards rather than rendering defaults.
 #
 # No template emits `metadata.namespace`; the apply's `-n forecats` fixes it. The
 # only namespace written into a forecats manifest is a PV's `claimRef`, and that
@@ -23,6 +24,21 @@
 # font would be a render that depended on one happening to exist.
 
 nightly:
+  # The CronJob's name. It is not decoration: kube_cronjob_status_last_successful_time
+  # carries the CronJob's own name and kube_job_status_failed carries the name of
+  # each Job the controller makes from it, so the two alerts in
+  # templates/nightly-alerts.yaml select on this string and on nothing else. A
+  # rename done here moves the CronJob and both selectors with it; a rename done
+  # in one file only silences the alert.
+  name: forecats-nightly
+  # Kept above zero on purpose, and templates/nightly-alerts.yaml refuses a
+  # render that lowers either one: kube_job_status_failed is a series over Job
+  # objects, so a Job that is garbage-collected takes the evidence with it and an
+  # alert that resolves on missing evidence reads as a recovery. These two limits
+  # and `ttlSecondsAfterFinished` below are the whole bound on how long a failed
+  # run stays visible.
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
   # Shorter than a day on purpose. A night can fail for reasons that clear
   # themselves — every card busy, a feed down, a photo not yet staged — and the
   # panel is named by date, so the first run that gets a card publishes the day
@@ -71,6 +87,13 @@ nightly:
     # driver, not on a normal run, so it is generous by design.
     activeDeadlineSeconds: 1800
     ttlSecondsAfterFinished: 86400
+    # The prefix Kubernetes puts the Job's own suffix behind. It is a value and
+    # not a literal because the failure alert selects Jobs on it: a render that
+    # failed is visible to Prometheus only through the name this prefix starts,
+    # and a prefix edited in one of the two places it appears makes half of the
+    # nightly unalertable — the claimer's Job or the render's, depending on which
+    # file was edited.
+    jobGenerateName: forecats-render-
     # The panel is drawn at the e-ink display's aspect; the pipeline owns the
     # size, the plate and the seed, so nothing here restates them.
     resources:

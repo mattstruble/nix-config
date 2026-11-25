@@ -36,6 +36,30 @@ the apply pass's -n read.
 {{- end -}}
 
 {{- /*
+The two names the nightly's own metrics carry, or a refusal.
+
+kube-state-metrics emits no Kubernetes labels for these objects — this cluster
+runs it with no `--metric-labels-allowlist`, so `kube_job_labels` and
+`kube_cronjob_labels` do not exist — which leaves the object's name as the only
+thing its series carries besides the namespace. templates/nightly-alerts.yaml
+therefore selects on these two strings, and every other template that names the
+same object reads them from here: the CronJob's `metadata.name`, the `--job` flag
+the claimer passes, and the `generateName` of the Job a claim creates.
+
+Kubernetes appends to both names — `-<unix schedule time>` behind a CronJob's
+Job and five characters behind a `generateName` — so a selector over them is a
+prefix match, and the alerts template asserts its own regex against names of both
+shapes rather than trusting it to have been written correctly.
+*/ -}}
+{{- define "forecats.nightlyName" -}}
+{{- required "nightly.name: the CronJob's name, which kube_cronjob_status_last_successful_time carries as cronjob_name and which the Jobs that carry kube_job_status_failed are named from" .Values.nightly.name -}}
+{{- end -}}
+
+{{- define "forecats.renderJobGenerateName" -}}
+{{- required "nightly.render.jobGenerateName: the generateName prefix of the Job a claim creates; kube_job_status_failed carries that Job's own name, so the failure alert selects on this prefix" .Values.nightly.render.jobGenerateName -}}
+{{- end -}}
+
+{{- /*
 One volume from the list nix generates from `forecatsStorage.volumes`, by the
 attribute name it was declared under. A chart that named a claim here could name
 one that binds nothing; a chart that reads the list cannot, and moving a volume

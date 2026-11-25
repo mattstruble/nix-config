@@ -40,7 +40,7 @@ data:
     apiVersion: batch/v1
     kind: Job
     metadata:
-      generateName: forecats-render-
+      generateName: {{ include "forecats.renderJobGenerateName" . }}
       labels:
         {{- include "forecats.renderLabels" . | nindent 8 }}
     spec:

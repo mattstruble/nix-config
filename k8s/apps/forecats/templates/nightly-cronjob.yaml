@@ -26,6 +26,7 @@ Closing either needs the shim to take a shared lock path and a namespace list,
 not a chart that works around them.
 */ -}}
 {{- $ns := include "forecats.namespace" . -}}
+{{- $nightlyName := include "forecats.nightlyName" . -}}
 {{- $panels := (fromYaml (include "forecats.volumeFor" (dict "ctx" $ "name" "panels"))) -}}
 {{- $window := required "claim.podClaimWindowSeconds: nix renders this from headEnd.podClaimWindowSeconds in the ai chart, because the router's wake deadline is summed from the same number" .Values.claim.podClaimWindowSeconds -}}
 {{- $cardWait := int .Values.nightly.claimer.cardWaitSeconds -}}
@@ -33,7 +34,7 @@ not a chart that works around them.
 apiVersion: batch/v1
 kind: CronJob
 metadata:
-  name: forecats-nightly
+  name: {{ $nightlyName }}
   labels:
     {{- include "forecats.labels" . | nindent 4 }}
     app.kubernetes.io/component: nightly
@@ -45,8 +46,10 @@ spec:
   # A node that was down through a scheduled time should not start a render for
   # a minute nobody meant; the next slot is twenty minutes away.
   startingDeadlineSeconds: 300
-  successfulJobsHistoryLimit: 3
-  failedJobsHistoryLimit: 3
+  # Read from values, and asserted by templates/nightly-alerts.yaml: a limit of 0
+  # deletes the Job whose failure the alert is about, and the alert resolves.
+  successfulJobsHistoryLimit: {{ required "nightly.successfulJobsHistoryLimit" .Values.nightly.successfulJobsHistoryLimit }}
+  failedJobsHistoryLimit: {{ required "nightly.failedJobsHistoryLimit" .Values.nightly.failedJobsHistoryLimit }}
   jobTemplate:
     spec:
       # A claim that failed to get a card is retried by the next schedule line,
@@ -117,7 +120,7 @@ spec:
                   CARD_PATTERN='$SWAPK8S_CARD'
                   export CARD_PATTERN
                   {{ $tools.swapHeadEnd }}/bin/swapk8s claim \
-                    --job forecats-nightly \
+                    --job '{{ $nightlyName }}' \
                     --namespace '{{ $ns }}' \
                     --gpu-pool '{{ required "gpu.pool: the card numbers a nightly may claim, from services.k3s.forecats.gpuPool" .Values.gpu.pool }}' \
                     --gpu-mode any \

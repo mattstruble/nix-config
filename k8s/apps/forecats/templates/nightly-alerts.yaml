@@ -1,0 +1,194 @@
+{{- /*
+Two alerts, because two things stop the panel and only one of them is a failed
+run. A run that failed is a Job with a status; a run that never happened is the
+absence of one, and absence is what a CronJob produces when it is suspended, when
+its namespace is paused, or when it has been renamed out from under a selector.
+Those three produce no failure and no series, and silence reads as a panel.
+
+Both series are kube-state-metrics' own, so nothing here scrapes anything. Two
+things outside this chart decide whether they exist at all, and CI here cannot
+see either: the pinned kube-prometheus-stack 91.7.0 renders its kube-state-metrics
+8.6.0 with `cronjobs` and `jobs` in `--resources` and with its own ServiceMonitor,
+which this cluster's Prometheus selects because `serviceMonitorSelector` is `{}`.
+What is asserted below rather than assumed is the rest: the rule carries the label
+this cluster's Prometheus loads rules by, and its selectors match the names the
+chart's own objects are really given.
+*/ -}}
+{{- $ns := include "forecats.namespace" . -}}
+{{- $cronjob := include "forecats.nightlyName" . -}}
+{{- $renderPrefix := include "forecats.renderJobGenerateName" . -}}
+{{- /*
+The Prometheus CR this cluster runs selects rules with spec.ruleSelector:
+matchLabels: release: <the release kube-prometheus-stack is installed as>, so a
+PrometheusRule without that label is never read by anyone and reports nothing —
+the worst kind of rule, because the file exists. nix renders the value from the
+same name the activation script renders the chart with, and a bare
+`helm template` fails here rather than emitting a rule that reads as coverage.
+*/ -}}
+{{- $ruleRelease := required "prometheus.ruleReleaseLabel: the helm release whose Prometheus CR selects rules (spec.ruleSelector); nix supplies it from the release name the activation script renders kube-prometheus-stack with, because a rule the operator does not select can never fire" .Values.prometheus.ruleReleaseLabel -}}
+{{- $staleAfterHours := int (required "notice.staleAfterHours: the same threshold the viewer prints beside the panel, so the page and the alert call a panel stale on the same day" .Values.notice.staleAfterHours) -}}
+{{- $successfulHistory := int (required "nightly.successfulJobsHistoryLimit" .Values.nightly.successfulJobsHistoryLimit) -}}
+{{- $failedHistory := int (required "nightly.failedJobsHistoryLimit" .Values.nightly.failedJobsHistoryLimit) -}}
+{{- /*
+The panel's own record, and the only address it has: the viewer answers
+/freshness.json and the ingress is the way to it. tlsSecret is empty for this
+host today, which is the whole reason the scheme below is http.
+*/ -}}
+{{- $freshnessUrl := printf "http://%s/freshness.json" (required "ingress.host" .Values.ingress.host) -}}
+{{- /*
+The series the staleness annotation asks for the day from, spelled out here
+rather than built from $labels at alert time: an annotation sees the labels of
+the series the alert fired on and not the labels the rule adds, and the
+expression below aggregates every label away so that `or vector(0)` can match
+it. Built from the same two values the expression selects on, so the two
+cannot disagree.
+*/ -}}
+{{- $lastSuccessQuery := printf "kube_cronjob_status_last_successful_time{namespace=\\\"%s\\\",cronjob_name=\\\"%s\\\"}" $ns $cronjob -}}
+{{- /*
+Prometheus anchors every `=~`, so the alternation carries its own `.*`, and each
+prefix is quoted because a name is a name and not a pattern.
+*/ -}}
+{{- $failedJobs := printf "(?:%s|%s).*" (regexQuoteMeta (printf "%s-" $cronjob)) (regexQuoteMeta $renderPrefix) -}}
+{{- /*
+The two selectors are built from the values the CronJob and the render Job's
+ConfigMap are built from, and then tested against the names Kubernetes actually
+generates: `-<unix schedule time>` behind a CronJob's Job, five characters behind
+a `generateName`. A selector hand-edited away from those two names, or loose
+enough to select a Job this chart does not create, fails the render here instead
+of selecting nothing at 03:20.
+*/ -}}
+{{- $claimJob := printf "%s-1764000000" $cronjob -}}
+{{- $renderJob := printf "%sx7k2q" $renderPrefix -}}
+{{- if not (regexMatch $failedJobs $claimJob) -}}
+{{- fail (printf "the failure selector %q does not match %q, which is the name the CronJob controller gives the Jobs it makes from %q. kube_job_status_failed carries that name and nothing else, so the alert would select nothing." $failedJobs $claimJob $cronjob) -}}
+{{- end -}}
+{{- if not (regexMatch $failedJobs $renderJob) -}}
+{{- fail (printf "the failure selector %q does not match %q, which is the name Kubernetes gives the Job a claim creates from nightly.render.jobGenerateName. A render that dies on a card is the failure a viewer notices, and the claimer that made it exits 0, so a selector that misses it watches half the nightly." $failedJobs $renderJob) -}}
+{{- end -}}
+{{- /* The separator is part of the match: Kubernetes appends behind the whole
+name, so a name that shares only a prefix of one of the two is not a Job this
+chart creates, and a selector that matches it was built from a prefix that lost
+the hyphen at its end. */ -}}
+{{- if or (regexMatch $failedJobs (printf "%sX-1764000000" $cronjob)) (regexMatch $failedJobs (printf "%sX-abc12" (trimSuffix "-" $renderPrefix))) -}}
+{{- fail (printf "the failure selector %q matches a name built from only part of one of the two prefixes it is made from. A Job is named <name>-<suffix>, so a selector that also matches <name>X-<suffix> was written against a prefix with its hyphen missing and would page for objects that are not the nightly's." $failedJobs) -}}
+{{- end -}}
+{{- if regexMatch $failedJobs $cronjob -}}
+{{- fail (printf "the failure selector %q matches the CronJob's own name. kube_job_status_failed is a Job metric and a Job is always named <cronjob>-<schedule time>, so a selector that matches the bare CronJob name is one written against the wrong object." $failedJobs) -}}
+{{- end -}}
+{{- if regexMatch $failedJobs "wiki-oidc-egress-1764000000" -}}
+{{- fail (printf "the failure selector %q matches a Job this chart does not create. It would page for another namespace's probe and the alert would name the wrong thing." $failedJobs) -}}
+{{- end -}}
+{{- if or (lt $successfulHistory 1) (lt $failedHistory 1) -}}
+{{- fail "nightly.successfulJobsHistoryLimit and nightly.failedJobsHistoryLimit must each keep at least one Job. kube_job_status_failed is a series over Job objects, so garbage-collecting the Job takes the evidence with it and the failure alert resolves on the deletion of its own proof, which reads as a recovery." -}}
+{{- end -}}
+{{- if lt $staleAfterHours 24 -}}
+{{- fail "notice.staleAfterHours below 24 pages once a day: the panel is drawn once a day, so its age passes any smaller threshold before the next nightly is due. The viewer and this alert read the same number, so lowering it for one lowers it for the other." -}}
+{{- end -}}
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ $cronjob }}
+  labels:
+    {{- include "forecats.labels" . | nindent 4 }}
+    app.kubernetes.io/component: nightly
+    release: {{ $ruleRelease | quote }}
+spec:
+  groups:
+    - name: forecats
+      rules:
+        - alert: ForecatsNightlyRunFailed
+          # Both Jobs a nightly is made of: the claimer the CronJob creates, and
+          # the render Job the claim creates from templates/render-job-configmap.yaml.
+          # A claim that gets a card and a render that then dies on it is the
+          # failure a viewer would notice, and it leaves the claimer having
+          # succeeded — so selecting only the CronJob's own Jobs would watch half
+          # the nightly and report itself as watching all of it.
+          expr: |
+            kube_job_status_failed{namespace="{{ $ns }}",job_name=~"{{ $failedJobs }}"} == 1
+          labels:
+            # Not `critical`: the nightly is retried by the next schedule line and
+            # the day's panel is published by the first run that gets a card, so a
+            # failure is a thing that happened, not yet a thing that is missing.
+            severity: warning
+          annotations:
+            summary: "a forecats nightly run failed"
+            description: >-
+              The Job {{`{{ $labels.job_name }}`}} in namespace
+              {{`{{ $labels.namespace }}`}} reported a failure,
+              {{`{{ if $labels.reason }}with kube-state-metrics' reason {{ $labels.reason | printf "%q" }}.{{ else }}with no reason on the Job's failure condition.{{ end }}`}}
+              {{`{{ with query (printf "kube_job_status_start_time{namespace=\"%s\",job_name=\"%s\"}" $labels.namespace $labels.job_name) }}The run started {{ (index . 0).Value | humanizeTimestamp }}.{{ end }}`}}
+              The next scheduled run is the retry, and the panel is named by date,
+              so a later run that gets a card publishes the day and this failure
+              stops being the reason the wall is empty. What the panel would have
+              been drawn from is the freshness artefact at {{ $freshnessUrl }}; the
+              day it would have been drawn for is the day ForecatsPanelNotDrawn
+              names, and that is the alert for a panel that is actually missing.
+
+        - alert: ForecatsPanelNotDrawn
+          # The nightly's last success going stale, rather than a failure. This is
+          # the one that catches a suspended schedule, a paused namespace, a
+          # CronJob renamed out from under a selector and a nightly deleted
+          # outright: none of them makes a failed Job, and the last three make no
+          # series either, which is what `or vector(0)` is for — an absent series
+          # is treated as a panel that has not been drawn in a very long time,
+          # because to whoever looks at the wall that is the same fact. It costs
+          # no scrape target: the series is the one above.
+          #
+          # `or` matches on label sets, so the fallback only replaces the metric
+          # when both sides carry the same ones: `max` without a `by` drops every
+          # label and leaves one unlabeled element, which is the only thing
+          # `vector(0)` can match. Aggregated by `namespace` instead the two
+          # elements never match, both survive, and `time() - 0` pages a healthy
+          # nightly every day — the alert that never stops firing is the same
+          # silence as the alert that never fires, one notification later.
+          expr: |
+            (
+              time()
+              - (
+                  max(kube_cronjob_status_last_successful_time{namespace="{{ $ns }}",cronjob_name="{{ $cronjob }}"})
+                  or vector(0)
+                )
+            ) > {{ mul $staleAfterHours 3600 }}
+          # Longer than the schedule interval, so a first install is not paged
+          # before the first run has had its turn: a CronJob that has never
+          # completed has no last successful time at all, and reads as stale from
+          # the moment it is created.
+          for: 30m
+          labels:
+            # The panel is the only thing this system puts on a wall, and this is
+            # the alert that says the wall is showing an old picture.
+            severity: critical
+            # The identity the series may no longer have: when the CronJob is gone
+            # the alert fires on `vector(0)`, which carries no labels at all, and a
+            # page that named nothing would be the silence again.
+            forecats_namespace: {{ $ns | quote }}
+            forecats_cronjob: {{ $cronjob | quote }}
+          annotations:
+            summary: "the forecats panel has stopped being drawn"
+            # The day, from the metric rather than from a guess: the value of this
+            # alert is the age, so the last success is `now - value`, and the only
+            # way to say that in an annotation is to ask Prometheus for the series
+            # it just alerted on. Bound to a variable and tested with `if`, not
+            # `with`: `with` skips its whole block on an empty vector, which is
+            # precisely the case this annotation has something to say about, and a
+            # page that went blank right there would be the silence again.
+            description: >-
+              The last successful run of the {{ $cronjob }} CronJob was
+              {{`{{ $last := query "`}}{{ $lastSuccessQuery }}{{`" }}{{ if $last }}{{ (index $last 0).Value | humanizeTimestamp }}{{ else }}more than `}}{{ $staleAfterHours }}h{{` ago, and kube-state-metrics has no record of it at all{{ end }}`}}
+              — that is the day the panel on the wall is for. It has been
+              {{`{{ $value | humanizeDuration }}`}} since, against a threshold of
+              {{ $staleAfterHours }}h, which is the number the viewer prints beside
+              the picture.
+              Check in this order: the schedule (suspend), the namespace (a pause
+              or a delete takes the CronJob's series with it), the CronJob's name
+              (a rename moves it out of this selector and out of the alert), and
+              only then kube-state-metrics itself.
+              The freshness artefact — the day the panel was drawn for, and the
+              instant it was drawn, as the pipeline wrote them — is at
+              {{ $freshnessUrl }}. It is not in this message and cannot be: the
+              pipeline writes it to a file beside the panel and no metric reads a
+              file. Carrying it here needs a target that exposes it, which means
+              either the viewer answering /metrics over the panels volume it
+              already mounts, or the nightly pushing it; until one exists this
+              alert names the day the CronJob's own status knows and links the
+              artefact it cannot reach.
