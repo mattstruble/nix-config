@@ -36,8 +36,8 @@ spec:
     - host: {{ required "ingress.host" .Values.ingress.host | quote }}
       http:
         paths:
-          # Prefix on / : the viewer answers three paths and owns all of them, and
-          # a page that added a fourth must not need this object edited.
+          # Prefix on / : every path the viewer answers is under / and belongs to
+          # it, and a server that adds a path must not need this object edited.
           - path: /
             pathType: Prefix
             backend:

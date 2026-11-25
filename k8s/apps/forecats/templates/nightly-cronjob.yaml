@@ -72,8 +72,6 @@ spec:
           restartPolicy: Never
           terminationGracePeriodSeconds: 30
           securityContext:
-            runAsUser: 1000
-            runAsGroup: 1000
             {{- include "forecats.podSecurityContext" . | nindent 12 }}
           containers:
             - name: claim
@@ -113,7 +111,19 @@ spec:
                   # never makes it wrong: the render pod then finds the panel and
                   # exits 0, which is the same answer one claim later.
                   day=$(TZ="$FORECATS_PLACE_TIMEZONE" date +%Y-%m-%d)
-                  if [ -e "{{ $panels.mountPath }}/panel-$day.png" ]; then
+                  panels_dir='{{ $panels.mountPath }}'
+                  # The test below is the only thing between this CronJob and a
+                  # claimed card every twenty minutes on a day that already has a
+                  # panel. A published directory this pod cannot search has exactly
+                  # one answer for it — "not published" — and that answer claims a
+                  # card, so refuse: one failed claimer is one alert, where a claim
+                  # that cannot ask spends a card every twenty minutes to say
+                  # nothing.
+                  if [ ! -x "$panels_dir" ]; then
+                    echo "forecats-nightly: $panels_dir is absent or not searchable by this pod's uid; cannot look for panel-$day.png" >&2
+                    exit 1
+                  fi
+                  if [ -e "$panels_dir/panel-$day.png" ]; then
                     echo "forecats-nightly: panel-$day.png is already published; no card claimed"
                     exit 0
                   fi

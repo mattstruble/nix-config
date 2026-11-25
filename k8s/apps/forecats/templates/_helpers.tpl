@@ -156,7 +156,40 @@ capabilities:
   drop: ["ALL"]
 {{- end -}}
 
+{{- /*
+The ids every pod in this chart runs as, and the pod securityContext around them.
+
+The uid is not this chart's to choose. The panels volume is a bind mount of a host
+directory nix creates 0770 owned by `forecatsStorage.uid`, and a pod that is
+neither that uid nor that group reaches it as "other", which has no bits: every
+read of the mount answers EACCES, and no event, condition or log line says so. The
+viewer keeps serving the page it mounts from its ConfigMap, so it is Ready through
+a panel that cannot be read, and the nightly's dedup test answers "not published"
+forever.
+
+So the relationship is asserted here rather than trusted: every declared volume
+must be reachable by the uid and group below, as its owner, as its group, or
+because the declaration made it readable by everyone. The modes that declaration
+produces give the group the owner's bits, so reaching a volume as its group is also
+reaching it for writing. A volume declared under a third owner fails the render,
+and the failure names the file that owns the id.
+*/ -}}
 {{- define "forecats.podSecurityContext" -}}
+{{- $uid := int (required "pod.uid: set by forecatsStorage in nix/services/k3s.nix, which also owns the host directory the writable volume is a bind mount of" .Values.pod.uid) -}}
+{{- $gid := int (required "pod.gid: set by forecatsStorage in nix/services/k3s.nix, which also owns the host directory the writable volume is a bind mount of" .Values.pod.gid) -}}
+{{- range .Values.persistence.volumes -}}
+{{- $ownerUid := int (required "persistence.volumes[].ownerUid is generated from forecatsStorage in nix/services/k3s.nix, beside the tmpfiles rule that creates the host directory with that owner" .ownerUid) -}}
+{{- $ownerGid := int (required "persistence.volumes[].ownerGid is generated from forecatsStorage in nix/services/k3s.nix, beside the tmpfiles rule that creates the host directory with that group" .ownerGid) -}}
+{{- if not (has .readableByAll (list true false)) -}}
+{{- fail "persistence.volumes[].readableByAll is generated from the mode forecatsStorage's host directory is created with, and it is what lets a pod that is neither the owner nor the group read the volume. It is missing, so the render cannot tell whether the uid below reaches this volume." -}}
+{{- end -}}
+{{- $reaches := or (eq $uid $ownerUid) (or (eq $gid $ownerGid) .readableByAll) -}}
+{{- if not $reaches -}}
+{{- fail (printf "the pods of this chart run as uid %d group %d, and the volume %q is a bind mount of a host directory that is %s owned by %d:%d, which gives neither. A local PV passes the host's modes into the pod unchanged, so every read of the mount answers EACCES with nothing on any object to say so. Move the uid in forecatsStorage in nix/services/k3s.nix, or the mode the same declaration creates the host directory with." $uid $gid .name (default "?" .mode) $ownerUid $ownerGid) -}}
+{{- end -}}
+{{- end -}}
+runAsUser: {{ $uid }}
+runAsGroup: {{ $gid }}
 runAsNonRoot: true
 seccompProfile:
   type: RuntimeDefault

@@ -314,6 +314,30 @@ in
       forecatsVolumeNames = builtins.attrNames forecatsStorage.volumes;
       forecatsVolume = name: forecatsStorage.volumes.${name};
       forecatsVolumeClaim = name: "forecats-${name}";
+      # The host directory a volume is a bind mount of: who owns it, with what
+      # mode, and so whether a given uid can read it. The tmpfiles rule that
+      # creates the directory and the values the chart renders are two views of
+      # one directory, and a pod whose uid does not reach it mounts the claim
+      # without complaint and reads EACCES from every request; nothing about the
+      # pod, the claim or the PV records that.
+      forecatsVolumeDirectory = name:
+        let
+          v = forecatsVolume name;
+          # Owner and group only for the volume a pod writes; the inputs nothing
+          # writes stay world-readable, so any uid the cluster gives a pod can
+          # still open them.
+          mode = if v.writable then "0770" else "0755";
+        in
+        {
+          inherit mode;
+          uid = if v.writable then forecatsStorage.uid else 0;
+          gid = if v.writable then forecatsStorage.gid else 0;
+          # The mode's "other" digit: what is left for every uid that is neither
+          # `uid` nor `gid`. Read off the mode here rather than parsed from it in
+          # a template, because a template that reads a mode wrong reaches a
+          # conclusion about a permission the host does not set.
+          readableByAll = builtins.elem (lib.substring 3 1 mode) [ "4" "5" "6" "7" ];
+        };
       # The namespace the PVs' claimRef below and the apply pass's -n both read, so
       # no render can point a volume at a namespace its claim is not in. A value
       # that could never name one fails evaluation instead: it would leave a PV
@@ -512,9 +536,16 @@ in
         # names a namespace inside a string it emits reads this: the render runs
         # with no --namespace, so .Release.Namespace would answer "default".
         namespace: ${forecatsNamespace}
-        render:
+        # The ids every pod in this chart runs as. They are the owner of the
+        # writable volume's host directory, because that directory is 0770 and a
+        # pod that is neither its owner nor its group is left with the mode's last
+        # digit, which is none. The chart renders them into all three pods and
+        # tests them against each volume's owner, so a uid that reaches nothing
+        # fails the render instead of reading EACCES at 03:20.
+        pod:
           uid: ${toString forecatsStorage.uid}
           gid: ${toString forecatsStorage.gid}
+        render:
           # The nightly's own command, as a store path the store volume mounts
           # read-only. The font the overlay stage opens is fixed inside this
           # package's wrapper, so nothing below names a font.
@@ -550,13 +581,22 @@ in
           volumes:
         ${lib.concatMapStrings (name: let
           v = forecatsVolume name;
+          d = forecatsVolumeDirectory name;
         in
           "    - name: ${name}\n"
           + "      claimName: ${forecatsVolumeClaim name}\n"
           + "      storageClass: ${forecatsVolumeClaim name}\n"
           + "      size: ${v.size}\n"
           + "      mountPath: ${v.hostPath}\n"
-          + "      readOnly: ${lib.boolToString (!v.writable)}\n")
+          + "      readOnly: ${lib.boolToString (!v.writable)}\n"
+          # The ownership of the host directory this volume is a bind mount of,
+          # and the mode it is created with by the tmpfiles rule above. The chart
+          # reads them to refuse a pod whose uid cannot reach the volume, which is
+          # the one thing a bind mount cannot report on its own.
+          + "      ownerUid: ${toString d.uid}\n"
+          + "      ownerGid: ${toString d.gid}\n"
+          + "      mode: \"${d.mode}\"\n"
+          + "      readableByAll: ${lib.boolToString d.readableByAll}\n")
         forecatsVolumeNames}
         # The Secret the calendar address and the place arrive in. The chart reads
         # `name` and hands the pod every key through `envFrom`, which is why the key
@@ -912,17 +952,18 @@ in
           "d ${wikiStorage.hostPath}/bookstack 0770 ${toString wikiStorage.bookstackUid} ${toString wikiStorage.bookstackGid} -"
           # Each forecats volume points at one of these: a local PV whose host path
           # is absent leaves its pod in ContainerCreating saying only that the host
-          # directory does not exist. The writable one is owned by the uid the render
-          # pod runs as for the same reason as the wiki's above; the read-only inputs
-          # stay root-owned because nothing in the cluster writes them. A volume that
-          # says it creates no directory (the store, which Nix owns) is left out of
-          # this list rather than chmod'd by the system manager.
+          # directory does not exist. The mode and owner of each come from
+          # `forecatsVolumeDirectory` above, the same expression the chart values
+          # carry the ownership in, so the uid the pods run as and the uid the
+          # directory belongs to are one number written once. A volume that says it
+          # creates no directory (the store, which Nix owns) is left out of this
+          # list rather than chmod'd by the system manager.
           "d /var/lib/forecats 0755 root root -"
         ]
         ++ map (name: let
           v = forecatsVolume name;
-          owner = if v.writable then toString forecatsStorage.uid else "root";
-        in "d ${v.hostPath} ${if v.writable then "0770" else "0755"} ${owner} ${owner} -")
+          d = forecatsVolumeDirectory name;
+        in "d ${v.hostPath} ${d.mode} ${toString d.uid} ${toString d.gid} -")
         (builtins.filter (name: (forecatsVolume name).createDirectory) forecatsVolumeNames);
 
         # Monitoring secrets (mjolnir-decryptable). Consumed by the rendered

@@ -59,11 +59,10 @@ data:
           restartPolicy: Never
           terminationGracePeriodSeconds: 30
           securityContext:
-            # The uid the panels volume is owned by on the host, so the render can
-            # write the panel without a chown init container — which the policy
-            # this namespace enforces would refuse anyway.
-            runAsUser: {{ required "render.uid" .Values.render.uid }}
-            runAsGroup: {{ required "render.gid" .Values.render.gid }}
+            # The ids the helper gives every pod in this chart: the owner of the
+            # panels volume's host directory, which is what lets the render write
+            # the panel without a chown init container — which the policy this
+            # namespace enforces would refuse anyway.
             {{- include "forecats.podSecurityContext" . | nindent 12 }}
           containers:
             - name: render

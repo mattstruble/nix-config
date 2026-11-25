@@ -27,8 +27,6 @@ spec:
       # identity.
       automountServiceAccountToken: false
       securityContext:
-        runAsUser: 1000
-        runAsGroup: 1000
         {{- include "forecats.podSecurityContext" . | nindent 8 }}
       containers:
         - name: viewer
@@ -48,11 +46,15 @@ spec:
           ports:
             - name: http
               containerPort: {{ .Values.viewer.port }}
-          # The page answers 404 for a missing artefact and 200 for itself, so a
-          # 200 here means the server is up, not that a panel exists — which is the
-          # right thing for a pod to be Ready for.
+          # The probe reads the volume, not the page. `GET /` answers from the
+          # ConfigMap the page is mounted from, so it held Ready steady through
+          # every request that failed on the panels volume — and the panels are the
+          # only thing this pod exists to serve. `/healthz` performs the one
+          # operation a panel request performs on the volume, which is resolving a
+          # name inside it: a directory the pod's uid cannot reach is NotReady, and
+          # a directory nothing has been published into yet is not.
           readinessProbe:
-            httpGet: { path: /, port: http }
+            httpGet: { path: /healthz, port: http }
             periodSeconds: 10
           securityContext:
             {{- include "forecats.containerSecurityContext" . | nindent 12 }}

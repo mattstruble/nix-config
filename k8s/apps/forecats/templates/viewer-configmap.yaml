@@ -8,7 +8,7 @@ metadata:
     {{- include "forecats.labels" . | nindent 4 }}
     app.kubernetes.io/component: viewer
 data:
-  # Three paths, and nothing else.
+  # Four paths, and nothing else.
   #
   # `python -m http.server` over the panels volume is the obvious version of this
   # and it is refused: the published directory holds a provenance sidecar per
@@ -28,10 +28,14 @@ data:
     index = Path(os.environ["FORECATS_INDEX_FILE"])
     # The name the pipeline publishes, and nothing that looks like a path.
     panel_name = re.compile(r"\A/panel-[0-9]{4}-[0-9]{2}-[0-9]{2}\.png\Z")
+    # A name the pipeline never publishes, resolved inside the published directory
+    # by the readiness probe. The pipeline writes panel-<date>.png, its provenance
+    # sidecar and freshness.json, and none of those begins with a dot.
+    probe_name = ".readiness-probe"
 
     class Handler(BaseHTTPRequestHandler):
-        def _send(self, body, content_type):
-            self.send_response(200)
+        def _send(self, status, body, content_type):
+            self.send_response(status)
             self.send_header("content-type", content_type)
             self.send_header("content-length", str(len(body)))
             self.send_header("cache-control", "no-store")
@@ -41,18 +45,47 @@ data:
         def do_GET(self):
             path = self.path.split("?", 1)[0]
             if path in ("/", "/index.html"):
-                return self._send(index.read_bytes(), "text/html; charset=utf-8")
+                return self._send(200, index.read_bytes(), "text/html; charset=utf-8")
+            if path == "/healthz":
+                return self._health()
             if path == "/freshness.json":
                 return self._file(panels / "freshness.json", "application/json")
             if panel_name.match(path):
                 return self._file(panels / path.lstrip("/"), "image/png")
-            self.send_error(404, "this server answers three paths")
+            self.send_error(404, "this server answers four paths")
+
+        def _health(self):
+            # The volume, not the page. The page is mounted from a ConfigMap, so it
+            # answers whether the volume does or not, and a probe that reads it is
+            # green through a panel that cannot be served. This performs the one
+            # operation a panel request performs on the volume: resolve a name
+            # inside it. Listing is deliberately not tested — this server never
+            # lists, and a probe that required the read bit would refuse a
+            # directory it could still serve panels out of.
+            refused = None
+            try:
+                os.stat(panels / probe_name)
+            except FileNotFoundError:
+                # The name is absent and the directory answered: the state before
+                # the first nightly, which is a Ready pod with nothing to show.
+                pass
+            except OSError as problem:
+                # EACCES is the pod's uid reaching a directory it is neither the
+                # owner nor the group of — the failure this probe exists to catch.
+                refused = type(problem).__name__
+            if refused is None:
+                return self._send(200, b"published directory is readable\n", "text/plain; charset=utf-8")
+            return self._send(
+                503,
+                ("published directory is not readable: %s\n" % refused).encode(),
+                "text/plain; charset=utf-8",
+            )
 
         def _file(self, candidate, content_type):
             # A missing artefact is the state before the first successful nightly,
             # and the page has to be able to say that rather than stack-trace.
             try:
-                return self._send(candidate.read_bytes(), content_type)
+                return self._send(200, candidate.read_bytes(), content_type)
             except FileNotFoundError:
                 self.send_error(404, "not published yet")
             except OSError as problem:

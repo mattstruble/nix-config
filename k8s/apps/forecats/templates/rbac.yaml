@@ -1,18 +1,32 @@
 {{- /*
-The claimer's only privilege: create a Job in this namespace.
-
-The shim itself needs nothing — a claim reads the pod list the busy-card scan
-already performs, which is why the entry point was chosen over a Job the shim
-creates. The command the claim runs is the part that writes to the API, and this
-Role is the whole of what it may write. No delete: the render Jobs expire on
-their own TTL, and a nightly that could delete is a nightly that could delete
-something else.
-
 Not pruned: rbac.authorization.k8s.io Role/RoleBinding and core ServiceAccount
 are not in PRUNE_ALLOWLIST in nix/services/k3s.nix, the same as the head-end's
 RBAC in the ai chart. Taking this Role out of the chart leaves it in the cluster
 until something removes it by hand.
+
+The rules list below is the whole of what this Role grants, so it is the one place
+a removal has to be argued in. What the shim really calls is Go, in another
+directory, and no build of this chart reads it — and a Role that is one verb short
+denies the claim before it has chosen a card, leaving a Job whose failure names a
+403 and no file. So the two verbs the claim path performs are asserted against the
+list at render time: dropping either fails the build and names the call it breaks.
 */ -}}
+{{- $rules := list
+      (dict "apiGroups" (list "batch") "resources" (list "jobs") "verbs" (list "create" "get"))
+      (dict "apiGroups" (list "") "resources" (list "pods") "verbs" (list "get" "list"))
+-}}
+{{- $granted := dict -}}
+{{- range $rule := $rules -}}
+{{- range $resource := $rule.resources -}}
+{{- $granted = set $granted $resource (concat (default (list) (index $granted $resource)) $rule.verbs) -}}
+{{- end -}}
+{{- end -}}
+{{- $podVerbs := default (list) (index $granted "pods") -}}
+{{- range $verb := list "get" "list" -}}
+{{- if not (has $verb $podVerbs) -}}
+{{- fail (printf "the forecats-nightly Role does not grant %q on pods. `swapk8s claim` reads the pod list twice: the busy-card scan before it chooses a card, and awaitJobPod after the Job it creates has been accepted, while the flock is still held. Without both the claim dies on a 403 having chosen nothing, and the render never happens. templates/head-end-rbac.yaml in the ai chart grants the same two verbs for the same call." $verb) -}}
+{{- end -}}
+{{- end -}}
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -24,6 +38,23 @@ metadata:
 # false`; nothing it does needs an identity. Only the claimer mounts one.
 automountServiceAccountToken: true
 ---
+# The claimer's privilege: create the render Job, and read the pod list a claim is
+# made of.
+#
+# `swapk8s claim` reads the API twice around the one thing it writes. The busy-card
+# scan GETs the pod list of the namespace to learn which cards are taken
+# (cardOwnerPods in src/swapk8s/main.go), and after the command it runs has created
+# the Job, awaitJobPod lists the pods again under the flock to confirm a gpu-job pod
+# carrying the card appeared — until that pod exists the card reads as free to the
+# next shim, so the second read is not a convenience. Both are a GET on a collection
+# with a label selector, which the API authorises as `list` on `pods`; the head-end
+# makes the same call for the same reason and its Role grants the same two verbs
+# (templates/head-end-rbac.yaml in the ai chart).
+#
+# No delete: the render Jobs expire on their own TTL, and a nightly that could
+# delete is a nightly that could delete something else. No pods/exec, no secrets, no
+# cluster scope, and no deployments/scale — the reclaim path that would need them is
+# not reached with --router-url unset.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
@@ -32,9 +63,7 @@ metadata:
     {{- include "forecats.labels" . | nindent 4 }}
     app.kubernetes.io/component: nightly
 rules:
-  - apiGroups: ["batch"]
-    resources: ["jobs"]
-    verbs: ["create", "get"]
+  {{- toYaml $rules | nindent 2 }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding

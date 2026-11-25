@@ -1,8 +1,10 @@
 # Values for the forecats chart (nightly render + the panel's viewer).
 #
-# `namespace`, `prometheus.ruleReleaseLabel`, everything under `render:` except
-# the flags below, `gpu.pool`, `claim.podClaimWindowSeconds`, everything under
-# `persistence:`, `secret.*` and `report.address` are deliberately absent: nix
+# `namespace`, `pod.*`, `prometheus.ruleReleaseLabel`, everything under `render:`
+# except the flags below, `gpu.pool`, `claim.podClaimWindowSeconds`, everything
+# under `persistence:` — including each volume's owner and mode, which is what the
+# uid under `pod:` is tested against — `secret.*` and `report.address` are
+# deliberately absent: nix
 # supplies them at render (`forecatsStorage`, `forecatsSecret`,
 # `services.k3s.forecats.*` and the ai chart's `headEnd.podClaimWindowSeconds` in
 # nix/services/k3s.nix), because the namespace the apply pass creates, the release
@@ -110,7 +112,7 @@ nightly:
 
 viewer:
   # The only thing that reads the published directory in this chart. It serves
-  # three paths and nothing else — see templates/viewer-configmap.yaml for why it
+  # four paths and nothing else — see templates/viewer-configmap.yaml for why it
   # is not `python -m http.server` over the panels volume.
   image: python:3.12-alpine@sha256:c5ba3deef00c7758561a0f03c26f44f10589263d40e732b8748e0d1f38f6dd89
   port: 8080
