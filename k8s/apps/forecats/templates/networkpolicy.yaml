@@ -1,0 +1,56 @@
+{{- /*
+The first document is the deny, and it has to be: k3s' embedded kube-router
+policy controller treats a pod that no NetworkPolicy selects as DEFAULT ALLOW, so
+a file that only ever *grants* leaves everything the file does not mention open,
+including the render pod's and the claimer's addresses.
+
+Egress is deliberately not in this file. The nightly is the only pod here that
+opens a connection out — the weather source and the household's calendar feed,
+both over 443 — and a policy that named them would have to name them by address,
+which k3s' controller can only do as an /32 it resolved at render time. The wiki
+namespace pays for that shape (templates/networkpolicy.yaml there) because its
+egress peer is one VPS; a weather API is not.
+*/ -}}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: forecats-default-deny-ingress
+  labels:
+    {{- include "forecats.labels" . | nindent 4 }}
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+{{- if .Values.ingress.enabled }}
+---
+# The only path to the panel: the edge in kube-system, on the viewer's port. The
+# render pod and the claimer are covered by the deny above and answer nothing.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: forecats-viewer-from-edge
+  labels:
+    {{- include "forecats.labels" . | nindent 4 }}
+    app.kubernetes.io/component: viewer
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "forecats.labels" . | nindent 6 }}
+      app.kubernetes.io/component: viewer
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              # k3s labels its own traefik pod this; the wiki's policy names the
+              # same peer for the same reason, and a wrong label here is a panel
+              # that times out with a green Ingress.
+              k8s-app: traefik
+      ports:
+        - protocol: TCP
+          port: {{ .Values.viewer.port }}
+{{- end }}

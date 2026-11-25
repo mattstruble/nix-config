@@ -1,0 +1,58 @@
+{{- /*
+The claimer's only privilege: create a Job in this namespace.
+
+The shim itself needs nothing — a claim reads the pod list the busy-card scan
+already performs, which is why the entry point was chosen over a Job the shim
+creates. The command the claim runs is the part that writes to the API, and this
+Role is the whole of what it may write. No delete: the render Jobs expire on
+their own TTL, and a nightly that could delete is a nightly that could delete
+something else.
+
+Not pruned: rbac.authorization.k8s.io Role/RoleBinding and core ServiceAccount
+are not in PRUNE_ALLOWLIST in nix/services/k3s.nix, the same as the head-end's
+RBAC in the ai chart. Taking this Role out of the chart leaves it in the cluster
+until something removes it by hand.
+*/ -}}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: forecats-nightly
+  labels:
+    {{- include "forecats.labels" . | nindent 4 }}
+    app.kubernetes.io/component: nightly
+# The render pod is created by this Job and runs with `automountServiceAccountToken:
+# false`; nothing it does needs an identity. Only the claimer mounts one.
+automountServiceAccountToken: true
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: forecats-nightly
+  labels:
+    {{- include "forecats.labels" . | nindent 4 }}
+    app.kubernetes.io/component: nightly
+rules:
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["create", "get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: forecats-nightly
+  labels:
+    {{- include "forecats.labels" . | nindent 4 }}
+    app.kubernetes.io/component: nightly
+subjects:
+  - kind: ServiceAccount
+    name: forecats-nightly
+    # A RoleBinding subject is a namespaced reference written inside a string the
+    # apply pass cannot fix afterwards: the render runs with no --namespace, so
+    # this reads the value nix owns rather than .Release.Namespace, which would
+    # answer "default" and bind the Role to a service account that does not exist.
+    namespace: {{ include "forecats.namespace" . }}
+roleRef:
+  kind: Role
+  name: forecats-nightly
+  apiGroup: rbac.authorization.k8s.io
+---

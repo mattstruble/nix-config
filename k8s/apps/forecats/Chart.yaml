@@ -1,0 +1,6 @@
+apiVersion: v2
+name: forecats
+description: Nightly panel of the household cats, rendered on a claimed GPU card and published to the panels volume
+type: application
+version: 0.1.0
+appVersion: "0"

@@ -1,0 +1,20 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: forecats-viewer
+  labels:
+    {{- include "forecats.labels" . | nindent 4 }}
+    app.kubernetes.io/component: viewer
+spec:
+  # ClusterIP only. The way in is the Ingress below, and a NodePort or a
+  # LoadBalancer here would put the panel on an interface the household's own
+  # edge does not control — which is the difference between a panel inside the
+  # house and a panel on a port.
+  type: ClusterIP
+  selector:
+    {{- include "forecats.labels" . | nindent 4 }}
+    app.kubernetes.io/component: viewer
+  ports:
+    - name: http
+      port: 80
+      targetPort: http

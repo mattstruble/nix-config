@@ -1,0 +1,48 @@
+{{- if .Values.ingress.enabled -}}
+{{- /*
+The one route to the panel, and what "limited to the household" means here.
+
+The grant's safeguard is that the generated pictures do not go out into the
+world. What this object does about that is: the hostname lives in the `.mjolnir`
+zone, which only the household's own resolver answers, and there is no public
+record, no certificate for a public name, and no token in the path — the panel is
+reachable from inside the house and not reachable from anywhere else, rather than
+being hard to guess. What it does not do is authenticate a household *account*:
+there is no credential in this path, and the chart says so rather than dressing a
+private hostname up as one. A per-account gate needs an OIDC relying party or an
+htpasswd the household does not have a key for yet — see the note in this chart's
+report; the wiki's BookStack is the one surface in this cluster that does have
+Pocket ID in front of it.
+
+The other half of the grant lives in the page this routes to: the generator and
+the personal-use restriction, and the address a report goes to.
+*/ -}}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: forecats-viewer
+  labels:
+    {{- include "forecats.labels" . | nindent 4 }}
+    app.kubernetes.io/component: viewer
+spec:
+  ingressClassName: {{ .Values.ingress.className }}
+  {{- with .Values.ingress.tlsSecret }}
+  tls:
+    - hosts:
+        - {{ $.Values.ingress.host | quote }}
+      secretName: {{ . }}
+  {{- end }}
+  rules:
+    - host: {{ required "ingress.host" .Values.ingress.host | quote }}
+      http:
+        paths:
+          # Prefix on / : the viewer answers three paths and owns all of them, and
+          # a page that added a fourth must not need this object edited.
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: forecats-viewer
+                port:
+                  name: http
+{{- end }}

@@ -18,19 +18,25 @@ let
   # `forecats_pipeline.pipeline` refuses without. Renaming one side alone gives
   # a pod that runs with no calendar and says nothing.
   #
-  # So the list holds only keys something reads. `place-latitude`,
-  # `place-longitude` and `place-timezone` sit in the same sops file and are the
-  # pipeline's `--latitude`/`--longitude`/`--timezone` flags, but no chart turns
-  # a Secret key into a flag yet — and every key on this list is a value the
-  # deploy reads before it applies anything, which is how three unread keys got
-  # as far as stopping the namespaces that do not read them. They join this list
-  # together with the chart that consumes them.
+  # So the list holds only keys something reads, and every one of them is read
+  # by the forecats chart: `calendar-feeds` reaches the nightly as the variable
+  # `forecats_pipeline.pipeline` refuses without, and the three place values are
+  # the `--latitude`/`--longitude`/`--timezone` flags the same command is built
+  # from. A key that stops being consumed belongs off this list, not on it: every
+  # key here is a value the deploy reads before it applies anything, which is how
+  # three unread keys once got as far as stopping the namespaces that do not read
+  # them.
   #
   # Hoisted out of the module below so the check at the foot of this file
   # asserts on the same text the Secret is rendered from, not a second copy.
   forecatsSecret = {
     name = "forecats-secrets";
-    keys = [ "calendar-feeds" ];
+    keys = [
+      "calendar-feeds"
+      "place-latitude"
+      "place-longitude"
+      "place-timezone"
+    ];
   };
   forecatsSopsName = key: "services/forecats/${key}";
   forecatsEnvName = key: "FORECATS_${lib.toUpper (lib.replaceStrings [ "-" ] [ "_" ] key)}";
@@ -71,7 +77,9 @@ let
     gid = 982;
     # One entry per volume. The storage class and the claim name are both the
     # attribute name prefixed with the app, so the PV, the claim that binds it
-    # and the values the chart reads cannot name different objects.
+    # and the values the chart reads cannot name different objects. The attribute
+    # name itself reaches the chart as a volume's `name`, which is how a template
+    # asks for the photos volume without spelling a claim name.
     volumes = {
       panels = {
         hostPath = "/var/lib/forecats/panels";
@@ -84,6 +92,7 @@ let
         # uid: the policy that keeps these pods non-root also forbids the chown
         # initContainer that would otherwise set that ownership.
         writable = true;
+        createDirectory = true;
       };
       weights = {
         # Ordinary host data, deliberately not a store path: nix garbage collected
@@ -95,15 +104,40 @@ let
         size = "20Gi";
         accessModes = [ "ReadOnlyMany" ];
         writable = false;
+        createDirectory = true;
       };
       photos = {
         hostPath = "/var/lib/forecats/photos";
         size = "2Gi";
         accessModes = [ "ReadOnlyMany" ];
         writable = false;
+        createDirectory = true;
+      };
+      # Quoted because the attribute name becomes a Kubernetes name: the claim is
+      # `forecats-nix-store`, and RFC 1123 has no upper case.
+      "nix-store" = {
+        # The nightly runs the pipeline this repository builds and a container
+        # starts from an image, so the store is mounted the way the ai chart mounts
+        # it: read-only, over the same path it has on the host, which is what lets
+        # a nix-built binary find its own dependencies. The mount point is the host
+        # path for the same reason it is for the two inputs above — the pipeline
+        # wrapper exports the directory it was built with, and a pod that mounted
+        # it anywhere else would have to name that path itself.
+        hostPath = "/nix/store";
+        size = "100Gi";
+        accessModes = [ "ReadOnlyMany" ];
+        writable = false;
+        # Nix owns this directory and its modes: a tmpfiles rule here would take
+        # ownership of the whole store off the package manager.
+        createDirectory = false;
       };
     };
   };
+
+  # k8s/ lives at the repo root; this module is in nix/services/. Hoisted out of
+  # the module so the check at the foot of the file is given the same tree the
+  # render derivations are, rather than a second copy of the path to it.
+  k8sDir = ../../k8s;
 in
 {
   # How the pipeline package reaches the declaration above: its wrapper exports the
@@ -119,8 +153,6 @@ in
     }:
     let
       cfg = config.services.k3s;
-      # k8s/ lives at the repo root; this module is in nix/services/.
-      k8sDir = ../../k8s;
       # k3s' default cluster-cidr. The nix k3s module exposes no cluster-cidr
       # option, so this literal is the single source of truth for both the
       # nftables rule below and the activation script's divergence check.
@@ -453,6 +485,28 @@ in
       # The host facts the forecats chart renders with; its templates `required`
       # them, so a bare `helm template` fails instead of inventing a claim name
       # that binds nothing.
+      #
+      # The card-claim window is the one number here that this repository writes
+      # down somewhere else. The shim requires `--pod-claim-window` because the
+      # router's wake deadline is summed from it (head-end-configmap.yaml in the ai
+      # chart), and that number is written in the ai chart's values file. A forecats
+      # copy of it would be a term of a deadline no render can see move, so the
+      # file that owns it is read instead — one key, matched over the whole line and
+      # required to appear exactly once, so a rename or a reindent fails the
+      # evaluation rather than yielding a window nobody budgeted.
+      forecatsPodClaimWindowSeconds =
+        let
+          aiValues = builtins.unsafeDiscardStringContext (builtins.readFile (k8sDir + "/apps/ai/values.yaml"));
+          pattern = "  podClaimWindowSeconds: ([0-9]+)";
+          lines = builtins.filter (l: builtins.match pattern l != null) (lib.splitString "\n" aiValues);
+          reason = ''
+            forecats: the shim's --pod-claim-window is read from headEnd.podClaimWindowSeconds
+            in k8s/apps/ai/values.yaml, because the router's wake deadline is summed from
+            that same number. ${builtins.toString (builtins.length lines)} lines in that file
+            matched the whole-line pattern, and one is required: a second copy of the
+            window in the forecats chart would be a deadline term no render can see.'';
+        in
+        lib.throwIfNot (builtins.length lines == 1) reason (builtins.fromJSON (builtins.head (builtins.match pattern (builtins.head lines))));
       forecatsValuesText = ''
         # The namespace the apply pass creates and applies into. A template that
         # names a namespace inside a string it emits reads this: the render runs
@@ -461,20 +515,46 @@ in
         render:
           uid: ${toString forecatsStorage.uid}
           gid: ${toString forecatsStorage.gid}
+          # The nightly's own command, as a store path the store volume mounts
+          # read-only. The font the overlay stage opens is fixed inside this
+          # package's wrapper, so nothing below names a font.
+          pipeline: ${builtins.unsafeDiscardStringContext cfg.forecats.pipelinePackage}
+          # Empty means the host has not named a CUDA diffusion CLI; the render
+          # then resolves `sd-cli` from PATH. See the option.
+          sdCliBinary: "${cfg.forecats.sdCliBinary}"
+        gpu:
+          pool: "${cfg.forecats.gpuPool}"
+        # The three binaries a claim is made of, as store paths the store volume
+        # mounts read-only: the shim that chooses the card, the API client that
+        # creates the pod carrying it, and the substitution that puts the chosen
+        # card into that pod's spec. Each is already in this system's closure for a
+        # reason of its own — `system.build.swapHeadEnd` is a toplevel build product,
+        # and the activation script below runs both `k3s kubectl` and `envsubst` —
+        # so the discarded string contexts cost nothing, and the pod runs the build
+        # the host runs instead of a tag someone moved.
+        tools:
+          swapHeadEnd: ${builtins.unsafeDiscardStringContext cfg.aiChart.headEndBundle}
+          k3s: ${builtins.unsafeDiscardStringContext pkgs.k3s}
+          envsubst: ${builtins.unsafeDiscardStringContext pkgs.envsubst}
+        claim:
+          podClaimWindowSeconds: ${toString forecatsPodClaimWindowSeconds}
         persistence:
           volumes:
         ${lib.concatMapStrings (name: let
           v = forecatsVolume name;
         in
-          "    - claimName: ${forecatsVolumeClaim name}\n"
+          "    - name: ${name}\n"
+          + "      claimName: ${forecatsVolumeClaim name}\n"
           + "      storageClass: ${forecatsVolumeClaim name}\n"
           + "      size: ${v.size}\n"
+          + "      mountPath: ${v.hostPath}\n"
           + "      readOnly: ${lib.boolToString (!v.writable)}\n")
         forecatsVolumeNames}
-        # The Secret the calendar address arrives in. The chart reads `name`
-        # through `envFrom`, and `keys` to refuse a `secretKeyRef` naming a key
-        # this module does not create — the guard the wiki chart applies through
-        # `wiki.secretKey`.
+        # The Secret the calendar address and the place arrive in. The chart reads
+        # `name` and hands the pod every key through `envFrom`, which is why the key
+        # names are the contract: `keys` itself is read by the check at the foot of
+        # this file, not by a template, because a Secret key nothing names is a
+        # value the deploy decrypts for nobody.
         secret:
           name: ${forecatsSecret.name}
           keys:
@@ -739,7 +819,65 @@ in
         '';
       };
 
+      # The card pool a nightly render may claim, in the shim's spelling: "0", "1"
+      # or "0,1". It is a host fact because it is about the cards bolted into this
+      # machine and what else is allowed to wake onto them; the chart renders it as
+      # `--gpu-pool` and refuses an empty one, which is the same refusal the shim
+      # makes — "a job that will not say which cards it may run on is a job that
+      # takes the model's card".
+      options.services.k3s.forecats.gpuPool = lib.mkOption {
+        type = lib.types.str;
+        default = "0,1";
+        description = ''
+          Comma-separated GPU card numbers the forecats nightly may claim.
+        '';
+      };
+
+      # The pipeline reaches the pod as a store path the way the strata and
+      # swap-head-end bundles do, and for the same reason: the binary the render
+      # starts has to be the one this generation built, and a wrapper that resolved
+      # a font, a Python or a source tree out of the host would work until the host
+      # changed. `nix/forecats-pipeline.nix` fixes the panel font into the wrapper
+      # as a store path, so the chart naming this path is the whole of how the
+      # overlay stage finds a font.
+      options.services.k3s.forecats.pipelinePackage = lib.mkOption {
+        type = lib.types.package;
+        default = inputs.self.packages.${pkgs.stdenv.hostPlatform.system}.forecats-pipeline;
+        defaultText = lib.literalExpression "inputs.self.packages.<system>.forecats-pipeline";
+        description = ''
+          The forecats nightly pipeline package, whose `bin/forecats-pipeline` the
+          render pod runs through the read-only store volume and whose
+          `bin/forecats-stage-inputs` the runbook uses on the host. It is installed
+          into the system so the store path the pod mounts is one the generation
+          retains; the chart render names it without a string context, so
+          evaluating the chart values does not build it.
+        '';
+      };
+
+      # The one render input this repository cannot name: the only nixpkgs build of
+      # the diffusion CLI that renders on a card does not evaluate on every host
+      # this configuration is built for, and the build that does is the portable
+      # one, which exits 0 on a CPU. So the host names it or leaves it to PATH, and
+      # an empty value here is that decision recorded rather than a gap.
+      options.services.k3s.forecats.sdCliBinary = lib.mkOption {
+        type = lib.types.str;
+        default = "";
+        description = ''
+          Store path of the CUDA diffusion CLI the nightly renders with, named by
+          the host that holds one. Left empty, the render resolves `sd-cli` from
+          PATH and the renderer refuses a build that reports a stub CUDA driver.
+        '';
+      };
+
       config = lib.mkIf cfg.enable {
+        # The nightly's command is mounted into the render pod from /nix/store, and
+        # a store path a pod mounts is only there as long as something retains it.
+        # Installing the package is that something, and it is wanted on its own
+        # account anyway: `forecats-stage-inputs`, the other half of the same
+        # package, is the runbook step that places the weights and the reference
+        # photos, and it runs on this host by hand.
+        environment.systemPackages = [ cfg.forecats.pipelinePackage ];
+
         # Host dir for the Postgres static PV (LiteLLM key store). Pre-owned by
         # uid 999 (the postgres image user) so the non-root pod can write it —
         # the cluster's non-root policy forbids a root chown initContainer, and
@@ -758,14 +896,16 @@ in
           # is absent leaves its pod in ContainerCreating saying only that the host
           # directory does not exist. The writable one is owned by the uid the render
           # pod runs as for the same reason as the wiki's above; the read-only inputs
-          # stay root-owned because nothing in the cluster writes them.
+          # stay root-owned because nothing in the cluster writes them. A volume that
+          # says it creates no directory (the store, which Nix owns) is left out of
+          # this list rather than chmod'd by the system manager.
           "d /var/lib/forecats 0755 root root -"
         ]
         ++ map (name: let
           v = forecatsVolume name;
           owner = if v.writable then toString forecatsStorage.uid else "root";
         in "d ${v.hostPath} ${if v.writable then "0770" else "0755"} ${owner} ${owner} -")
-        forecatsVolumeNames;
+        (builtins.filter (name: (forecatsVolume name).createDirectory) forecatsVolumeNames);
 
         # Monitoring secrets (mjolnir-decryptable). Consumed by the rendered
         # kps values (telegram) + the grafana admin Secret (grafanaPw) above.
@@ -824,12 +964,26 @@ in
           # address get their own rotation and their own diff, and the two
           # things that identify the household are visible as one unit.
           #
-          # Only the key `forecatsSecret.keys` names is declared: sops-nix
-          # decrypts every declared secret during activation, before the apply
-          # oneshot runs and with no pass left to skip, so a declaration nothing
-          # reads is still a host-wide deploy dependency. The three place values
-          # stay encrypted in the file until a chart reads them.
+          # One declaration per key `forecatsSecret.keys` names, and every one of
+          # them is read by the nightly: sops-nix decrypts every declared secret
+          # during activation, before the apply oneshot runs and with no pass left
+          # to skip, so a declaration nothing reads is still a host-wide deploy
+          # dependency.
           "services/forecats/calendar-feeds" = {
+            sopsFile = ./homelab/homelab-forecats-secrets.yaml;
+          };
+          # The pipeline's `--latitude`/`--longitude`/`--timezone`. The values are
+          # placeholders until the owner clears their use: the position was picked
+          # up as a side effect of a privacy check and has not been consented to
+          # for this, so nothing in this repository holds the real numbers and the
+          # chart passes only the Secret key name to the render.
+          "services/forecats/place-latitude" = {
+            sopsFile = ./homelab/homelab-forecats-secrets.yaml;
+          };
+          "services/forecats/place-longitude" = {
+            sopsFile = ./homelab/homelab-forecats-secrets.yaml;
+          };
+          "services/forecats/place-timezone" = {
             sopsFile = ./homelab/homelab-forecats-secrets.yaml;
           };
         };
@@ -1241,10 +1395,11 @@ in
             if [ "$FORECATS_DEPLOY" = "1" ]; then
               $ENVSUBST -no-unset -no-empty < ${forecatsSecretManifest} > "$T/forecats-secret.yaml"
               [ -s "$T/forecats-secret.yaml" ] || { echo "error: envsubst produced empty forecats-secret.yaml" >&2; exit 1; }
-              # The forecats pass carries the claims its own PVs are pre-bound to
-              # and the Secret the render pod reads; the chart's render joins this
-              # file when the chart lands.
-              label_all forecats "true" ${forecatsClaimManifest} "$T/forecats-secret.yaml" > "$T/forecats.json"
+              # The forecats pass carries the claims its own PVs are pre-bound to,
+              # the Secret the render pod reads, and the chart's render. All three
+              # or none: the pass prunes by selector, so a document missing one of
+              # them deletes whatever the cluster already holds of the other two.
+              label_all forecats "true" ${forecatsClaimManifest} ${appChartRenders.forecats}/rendered.yaml "$T/forecats-secret.yaml" > "$T/forecats.json"
             fi
             cat "$T/cluster-kps.json" "$T/cluster-kubelet-crb.json" > "$T/cluster.yaml"
             cat "$T/monitoring-kubelet-sa.json" "$T/monitoring-kps.json" "$T/monitoring-charts.json" > "$T/monitoring-static.json"
@@ -1682,6 +1837,8 @@ in
       checks.forecats-secret-keys = pkgs.runCommand "forecats-secret-keys-check" {
         secretManifest = builtins.toFile "forecats-secret.yaml" forecatsSecretText;
         chartValues = builtins.toFile "forecats-chart-values.yaml" inputs.self.nixosConfigurations.mjolnir.config.services.k3s.appChartValues.forecats;
+        chartTemplates = ../../k8s + "/apps/forecats/templates";
+        pipelineSource = ../../src/forecats-pipeline;
       } ''
         set -eu
         YQ="${pkgs.yq}/bin/yq"
@@ -1721,6 +1878,21 @@ in
         $YQ -e '(.data | to_entries | map(select(.value != "substituted")) | length) == 0' "$out" >/dev/null || { \
           echo "error: substituting the forecats Secret moved a value that is not its own <key>_B64 placeholder" >&2; \
           exit 1; }
+
+        # Every key the deploy decrypts is named, by the chart that turns it into a
+        # flag or by the pipeline that looks it up in its own environment. A key
+        # nothing reads is still decrypted during activation, before the apply
+        # oneshot runs and with no pass left to skip — which is how three unread
+        # keys got as far as stopping the namespaces that do not read them. The
+        # list this loops over is generated, so a key added to forecatsSecret.keys
+        # and consumed by nobody fails here.
+        for key in $(echo "$secretKeys" | $JQ -r '.[]'); do
+          if ! grep -rq -- "$key" "$chartTemplates" "$pipelineSource"; then
+            echo "error: $key is a key of the forecats Secret and neither k8s/apps/forecats/templates nor src/forecats-pipeline names it" >&2
+            echo "  a key that stops being consumed belongs off forecatsSecret.keys, not on it." >&2
+            exit 1
+          fi
+        done
       '';
     };
 }

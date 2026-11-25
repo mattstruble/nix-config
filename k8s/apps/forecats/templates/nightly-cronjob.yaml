@@ -1,0 +1,156 @@
+{{- /*
+The nightly, and the reason it is two pods.
+
+A card can only be pinned at the moment a container is created: the nvidia
+runtime hook reads NVIDIA_VISIBLE_DEVICES then, and pinning a process already
+inside a container "changes nothing the runtime can see" (runClaimed in
+src/swapk8s/main.go). So the pod that makes the claim cannot be the pod that
+holds the card. This one runs `swapk8s claim`, and the command the claim runs
+creates the render Job from templates/render-job-configmap.yaml with the card the
+shim chose substituted into it. When that command exits the shim holds the flock
+for claim.podClaimWindowSeconds to confirm a gpu-job pod carrying the card
+appeared; if none did, the card was never taken.
+
+Two things this mechanism does not do, and both are properties of the shim as
+built rather than choices made here:
+
+  - The placement flock is a file, and its default is inside the head-end pod's
+    own emptyDir. nightly.claimer.cardLockPath is therefore the lock of every
+    claim that mounts it, and of no other pod's — including the head-end's wakes.
+  - The busy-card scan lists pods in one namespace (--namespace, below), so a
+    gpu-job pod here is invisible to a model wake in `default` and the reverse.
+    A nightly and a wake can therefore choose the same card; the render loses it
+    to CUDA's own out-of-memory error rather than silently.
+
+Closing either needs the shim to take a shared lock path and a namespace list,
+not a chart that works around them.
+*/ -}}
+{{- $ns := include "forecats.namespace" . -}}
+{{- $panels := (fromYaml (include "forecats.volumeFor" (dict "ctx" $ "name" "panels"))) -}}
+{{- $window := required "claim.podClaimWindowSeconds: nix renders this from headEnd.podClaimWindowSeconds in the ai chart, because the router's wake deadline is summed from the same number" .Values.claim.podClaimWindowSeconds -}}
+{{- $cardWait := int .Values.nightly.claimer.cardWaitSeconds -}}
+{{- $tools := required "tools: nix supplies the shim, the API client and the substitution the claim runs" .Values.tools -}}
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: forecats-nightly
+  labels:
+    {{- include "forecats.labels" . | nindent 4 }}
+    app.kubernetes.io/component: nightly
+spec:
+  schedule: {{ required "nightly.schedule" .Values.nightly.schedule | quote }}
+  # Two claimers would take two cards for one night, and the second would find
+  # the panel the first published and exit 0 having held a card for nothing.
+  concurrencyPolicy: Forbid
+  # A node that was down through a scheduled time should not start a render for
+  # a minute nobody meant; the next slot is twenty minutes away.
+  startingDeadlineSeconds: 300
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      # A claim that failed to get a card is retried by the next schedule line,
+      # not by a Job that would re-claim under it.
+      backoffLimit: 0
+      ttlSecondsAfterFinished: {{ .Values.nightly.render.ttlSecondsAfterFinished }}
+      # The card wait is the long part, and the pod it creates outlives this one.
+      activeDeadlineSeconds: {{ add $cardWait 120 }}
+      template:
+        metadata:
+          labels:
+            {{- include "forecats.labels" . | nindent 12 }}
+            app.kubernetes.io/component: nightly
+        spec:
+          # The claimer is the API client: it creates the render Job, so it is the
+          # one pod in this chart that mounts a token, and the Role below is what
+          # limits it.
+          serviceAccountName: forecats-nightly
+          automountServiceAccountToken: true
+          restartPolicy: Never
+          terminationGracePeriodSeconds: 30
+          securityContext:
+            runAsUser: 1000
+            runAsGroup: 1000
+            {{- include "forecats.podSecurityContext" . | nindent 12 }}
+          containers:
+            - name: claim
+              image: {{ required "nightly.claimer.image" .Values.nightly.claimer.image }}
+              # The card goes from the shim's environment, through the
+              # substitution, into the Job's pod spec — the only place the runtime
+              # hook will read it.
+              #
+              # The substitution names one variable on purpose. The manifest also
+              # carries `$FORECATS_PLACE_LATITUDE` and friends, which are for the
+              # render pod's own shell to expand at run time; a bare `envsubst`
+              # would substitute them here, from an environment that is not the
+              # render pod's. `-no-unset -no-empty` is the pair the activation script
+              # uses for the Secret document: a placeholder with no value behind it
+              # is an error, not an empty pin, and an empty pin is a render pod with
+              # no card that says nothing.
+              #
+              # CARD_PATTERN is passed through the environment rather than quoted in
+              # place because the command below is already inside the single quotes
+              # of the shell the shim runs, and the pattern has to arrive at envsubst
+              # as the literal text `$SWAPK8S_CARD`.
+              command: ["/bin/sh", "-c"]
+              args:
+                - |
+                  set -eu
+                  # The day the pipeline would render, from the place's own
+                  # timezone, because the panel is named by that date and a second
+                  # render of a date would overwrite the only panel it has. Asking
+                  # here rather than after the claim is what keeps a night that is
+                  # already published from taking a card for the four seconds it
+                  # takes to discover that, forty-eight times a day. The timezone
+                  # comes from the Secret for the same reason the pipeline reads it
+                  # from there: it is the household's, not this host's clock.
+                  #
+                  # A claimer whose image has no zone database falls back to UTC,
+                  # which makes this test miss for a few hours around midnight and
+                  # never makes it wrong: the render pod then finds the panel and
+                  # exits 0, which is the same answer one claim later.
+                  day=$(TZ="$FORECATS_PLACE_TIMEZONE" date +%Y-%m-%d)
+                  if [ -e "{{ $panels.mountPath }}/panel-$day.png" ]; then
+                    echo "forecats-nightly: panel-$day.png is already published; no card claimed"
+                    exit 0
+                  fi
+                  CARD_PATTERN='$SWAPK8S_CARD'
+                  export CARD_PATTERN
+                  {{ $tools.swapHeadEnd }}/bin/swapk8s claim \
+                    --job forecats-nightly \
+                    --namespace '{{ $ns }}' \
+                    --gpu-pool '{{ required "gpu.pool: the card numbers a nightly may claim, from services.k3s.forecats.gpuPool" .Values.gpu.pool }}' \
+                    --gpu-mode any \
+                    --card-wait {{ $cardWait }}s \
+                    --pod-claim-window {{ $window }}s \
+                    --card-lock '{{ required "nightly.claimer.cardLockPath" .Values.nightly.claimer.cardLockPath }}' \
+                    -- /bin/sh -c '{{ $tools.envsubst }}/bin/envsubst -no-unset -no-empty "$CARD_PATTERN" < /etc/forecats/render-job.yaml | {{ $tools.k3s }}/bin/k3s kubectl create -f -'
+              env:
+                # This pod is an API client the same way the shim in it is: the
+                # service-account token, the CA bundle and KUBERNETES_SERVICE_HOST
+                # are put in the pod by Kubernetes, and both clients read them from
+                # there. HOME is pinned to the emptyDir so no kubeconfig is looked
+                # for and none is found — the fallback is the only path here, and an
+                # unset HOME would make it depend on the image's user record.
+                - name: HOME
+                  value: /tmp
+              envFrom:
+                # Only for the timezone the date test above needs; the claim itself
+                # reads no secret, and the render pod is the one that gets the rest.
+                - secretRef:
+                    name: {{ required "secret.name: the Secret nix builds from forecatsSecret.keys" .Values.secret.name }}
+              securityContext:
+                {{- include "forecats.containerSecurityContext" . | nindent 16 }}
+              resources:
+                {{- toYaml .Values.nightly.claimer.resources | nindent 16 }}
+              volumeMounts:
+                {{- include "forecats.volumeMounts" (dict "ctx" $ "names" (list "nix-store" "panels") "readOnly" true) | nindent 16 }}
+                - name: render-job
+                  mountPath: /etc/forecats
+                  readOnly: true
+          volumes:
+            {{- include "forecats.volumes" . | nindent 12 }}
+            - name: render-job
+              configMap:
+                name: forecats-render-job
+---

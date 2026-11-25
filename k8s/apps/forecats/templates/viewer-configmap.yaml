@@ -1,0 +1,125 @@
+{{- $panels := (fromYaml (include "forecats.volumeFor" (dict "ctx" $ "name" "panels"))) -}}
+{{- $report := include "forecats.reportAddress" . -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: forecats-viewer
+  labels:
+    {{- include "forecats.labels" . | nindent 4 }}
+    app.kubernetes.io/component: viewer
+data:
+  # Three paths, and nothing else.
+  #
+  # `python -m http.server` over the panels volume is the obvious version of this
+  # and it is refused: the published directory holds a provenance sidecar per
+  # panel, and a server that lists it names every date the household has a panel
+  # for and serves the sidecar beside it — which carries the calendar titles and
+  # the reference-photo paths the picture was drawn from. The grant's safeguard is
+  # that the panel reaches the household; a directory listing publishes the
+  # household.
+  server.py: |
+    import os
+    import re
+    import sys
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    from pathlib import Path
+
+    panels = Path(os.environ["FORECATS_PANELS_DIRECTORY"])
+    index = Path(os.environ["FORECATS_INDEX_FILE"])
+    # The name the pipeline publishes, and nothing that looks like a path.
+    panel_name = re.compile(r"\A/panel-[0-9]{4}-[0-9]{2}-[0-9]{2}\.png\Z")
+
+    class Handler(BaseHTTPRequestHandler):
+        def _send(self, body, content_type):
+            self.send_response(200)
+            self.send_header("content-type", content_type)
+            self.send_header("content-length", str(len(body)))
+            self.send_header("cache-control", "no-store")
+            self.end_headers()
+            self.wfile.write(body)
+
+        def do_GET(self):
+            path = self.path.split("?", 1)[0]
+            if path in ("/", "/index.html"):
+                return self._send(index.read_bytes(), "text/html; charset=utf-8")
+            if path == "/freshness.json":
+                return self._file(panels / "freshness.json", "application/json")
+            if panel_name.match(path):
+                return self._file(panels / path.lstrip("/"), "image/png")
+            self.send_error(404, "this server answers three paths")
+
+        def _file(self, candidate, content_type):
+            # A missing artefact is the state before the first successful nightly,
+            # and the page has to be able to say that rather than stack-trace.
+            try:
+                return self._send(candidate.read_bytes(), content_type)
+            except FileNotFoundError:
+                self.send_error(404, "not published yet")
+            except OSError as problem:
+                self.send_error(500, "cannot read %s" % type(problem).__name__)
+
+        def log_message(self, fmt, *args):
+            sys.stderr.write("%s - - %s\n" % (self.address_string(), fmt % args))
+
+    ThreadingHTTPServer(("0.0.0.0", int(os.environ["FORECATS_VIEWER_PORT"])), Handler).serve_forever()
+  # The viewer's whole page: the panel, how old it is, and the two things the
+  # MiniMax H3 grant obliges the household to put where a viewer can read them —
+  # what made the picture and who to tell if it should not exist.
+  #
+  # The report address is rendered in, not fetched: it is the same value the
+  # pipeline writes into every panel's provenance sidecar, and a page that showed
+  # it only after a successful fetch would drop the obligation on the one day the
+  # nightly had not run.
+  index.html: |
+    <!doctype html>
+    <html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="robots" content="noindex, nofollow">
+    <title>forecats</title>
+    <style>
+      body { margin: 0; background: #111; color: #ddd; font: 14px/1.5 system-ui, sans-serif; }
+      main { max-width: 100%; margin: 0 auto; padding: 1rem; }
+      img { max-width: 100%; height: auto; display: block; background: #000; }
+      .notice { display: flex; flex-wrap: wrap; gap: .25rem 1.5rem; font-size: .85rem; color: #aaa; }
+      .stale { color: #e8a33d; }
+      a { color: #9ecbff; }
+    </style>
+    </head>
+    <body>
+    <main>
+      <img id="panel" alt="Today's panel of the household cats">
+      <p class="notice">
+        <span id="age">checking whether this is today's panel…</span>
+        <span>Drawn with {{ .Values.notice.generator }}, from the household's own weather and calendar feeds.</span>
+        <span>{{ .Values.notice.personalUse }}</span>
+        <span>Seen something here that should not exist? <a href="mailto:{{ $report }}">{{ $report }}</a> — the panel comes off the wall first.</span>
+      </p>
+    </main>
+    <script>
+    // The panel's name is published, not guessed: `freshness.json` is written by
+    // the same publish step as the picture and names it, which is also the only
+    // way a viewer learns the picture is old.
+    const staleAfterHours = {{ int .Values.notice.staleAfterHours }};
+    const age = document.getElementById('age');
+    const panel = document.getElementById('panel');
+    function show(record) {
+      panel.src = './' + record.panel;
+      const hours = (Date.now() - Date.parse(record.rendered_at)) / 3.6e6;
+      const ago = hours < 1 ? 'minutes ago' : 'hours ago';
+      const shown = Math.max(1, Math.round(hours < 1 ? hours * 60 : hours));
+      age.textContent = 'published ' + shown + ' ' + ago;
+      if (hours > staleAfterHours) {
+        age.textContent = 'last published ' + Math.round(hours) + ' hours ago — the nightly is not running';
+        age.className = 'stale';
+      }
+    }
+    fetch('./freshness.json', { cache: 'no-store' })
+      .then((response) => response.ok ? response.json() : Promise.reject(response.status))
+      .then(show)
+      .catch(() => { age.textContent = 'no panel published yet'; age.className = 'stale'; });
+    </script>
+    </body>
+    </html>
+---

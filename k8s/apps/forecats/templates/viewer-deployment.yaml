@@ -1,0 +1,74 @@
+{{- $panels := (fromYaml (include "forecats.volumeFor" (dict "ctx" $ "name" "panels"))) -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: forecats-viewer
+  labels:
+    {{- include "forecats.labels" . | nindent 4 }}
+    app.kubernetes.io/component: viewer
+spec:
+  # Two replicas would add nothing: the panel is one PNG and one small JSON, read
+  # by a household. And `Recreate` rather than a rolling update because the pod
+  # holds no state a second one could disagree with.
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "forecats.labels" . | nindent 6 }}
+      app.kubernetes.io/component: viewer
+  template:
+    metadata:
+      labels:
+        {{- include "forecats.labels" . | nindent 8 }}
+        app.kubernetes.io/component: viewer
+    spec:
+      # The viewer answers the panel and nothing else: no API, no database, no
+      # identity.
+      automountServiceAccountToken: false
+      securityContext:
+        runAsUser: 1000
+        runAsGroup: 1000
+        {{- include "forecats.podSecurityContext" . | nindent 8 }}
+      containers:
+        - name: viewer
+          image: {{ required "viewer.image" .Values.viewer.image }}
+          command: ["python3", "/viewer/server.py"]
+          env:
+            # The published directory, which is the panels volume's mount point —
+            # the same path the render writes, because the declaration says so once.
+            - name: FORECATS_PANELS_DIRECTORY
+              value: {{ $panels.mountPath | quote }}
+            - name: FORECATS_INDEX_FILE
+              value: /viewer/index.html
+            - name: FORECATS_VIEWER_PORT
+              value: {{ .Values.viewer.port | quote }}
+            - name: HOME
+              value: /tmp
+          ports:
+            - name: http
+              containerPort: {{ .Values.viewer.port }}
+          # The page answers 404 for a missing artefact and 200 for itself, so a
+          # 200 here means the server is up, not that a panel exists — which is the
+          # right thing for a pod to be Ready for.
+          readinessProbe:
+            httpGet: { path: /, port: http }
+            periodSeconds: 10
+          securityContext:
+            {{- include "forecats.containerSecurityContext" . | nindent 12 }}
+          resources:
+            {{- toYaml .Values.viewer.resources | nindent 12 }}
+          volumeMounts:
+            # Read-only on top of a volume this pod's claim would let it write: a
+            # viewer that could delete the panel could delete the only copy of
+            # itself, and the nightly would draw the same picture back tomorrow.
+            {{- include "forecats.volumeMounts" (dict "ctx" $ "names" (list "panels") "readOnly" true) | nindent 12 }}
+            - name: site
+              mountPath: /viewer
+              readOnly: true
+      volumes:
+        {{- include "forecats.volumes" . | nindent 8 }}
+        - name: site
+          configMap:
+            name: forecats-viewer
+---

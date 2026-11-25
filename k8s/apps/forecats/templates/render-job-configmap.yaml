@@ -1,0 +1,123 @@
+{{- /*
+The pod spec the claim turns into a Job, as text with one hole in it.
+
+This is a ConfigMap and not a Job because the card is not known when the chart is
+rendered: it is chosen at claim time, and the pod has to carry it in its spec.
+The claim substitutes ${SWAPK8S_CARD} — the shim exports it beside the pin itself
+precisely for "the caller that names the card in a field of its own" — and pipes
+the result to the API.
+
+Two consequences of that, both deliberate:
+
+  - `generateName` and no `name`: every run creates its own Job, and nothing has
+    to invent a unique name in a shell.
+  - These Jobs are not in the apply pass's file, so the prune pass does not own
+    them and does not delete them. They expire through
+    `ttlSecondsAfterFinished`, which is the only cleanup that can outlive a
+    chart edit.
+
+The pod is PodSecurity `restricted`: no hostPath (which is why the three input
+volumes are claims over the host directories rather than the directories),
+non-root, dropped capabilities, read-only root filesystem at container level, and
+/tmp as the one writable path.
+*/ -}}
+{{- $panels := (fromYaml (include "forecats.volumeFor" (dict "ctx" $ "name" "panels"))) -}}
+{{- $pipeline := required "render.pipeline: the store path of packages.forecats-pipeline, supplied by services.k3s.forecats.pipelinePackage" .Values.render.pipeline -}}
+{{- $secretName := required "secret.name: the Secret nix builds from forecatsSecret.keys" .Values.secret.name -}}
+{{- $report := include "forecats.reportAddress" . -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: forecats-render-job
+  labels:
+    {{- include "forecats.labels" . | nindent 4 }}
+    app.kubernetes.io/component: nightly
+data:
+  # The one file the claim substitutes. Nothing in it may contain a `$` other
+  # than the card placeholder: envsubst runs without a shell-format argument, and
+  # -no-unset turns any other `$name` into a refusal rather than an empty string.
+  render-job.yaml: |
+    apiVersion: batch/v1
+    kind: Job
+    metadata:
+      generateName: forecats-render-
+      labels:
+        {{- include "forecats.renderLabels" . | nindent 8 }}
+    spec:
+      backoffLimit: {{ .Values.nightly.render.backoffLimit }}
+      ttlSecondsAfterFinished: {{ .Values.nightly.render.ttlSecondsAfterFinished }}
+      activeDeadlineSeconds: {{ .Values.nightly.render.activeDeadlineSeconds }}
+      template:
+        metadata:
+          labels:
+            {{- include "forecats.renderLabels" . | nindent 12 }}
+        spec:
+          # The render opens no connection to the API server: it reads mounted
+          # volumes and the calendar feed, draws a picture, and writes it. A token
+          # in here would be a credential for a pod whose whole job is offline.
+          automountServiceAccountToken: false
+          restartPolicy: Never
+          terminationGracePeriodSeconds: 30
+          securityContext:
+            # The uid the panels volume is owned by on the host, so the render can
+            # write the panel without a chown init container — which the policy
+            # this namespace enforces would refuse anyway.
+            runAsUser: {{ required "render.uid" .Values.render.uid }}
+            runAsGroup: {{ required "render.gid" .Values.render.gid }}
+            {{- include "forecats.podSecurityContext" . | nindent 12 }}
+          containers:
+            - name: render
+              image: {{ required "nightly.render.image" .Values.nightly.render.image }}
+              command: ["/bin/sh", "-c"]
+              args:
+                - |
+                  set -eu
+                  # The wrapper fixes the interpreter, both source trees, the
+                  # household file and the overlay font as store paths, and
+                  # exports the two input directories from the same storage
+                  # declaration that produced the mounts below. Nothing here names
+                  # a font: a pipeline that found one by looking in /usr/share is a
+                  # pipeline that works until the host changes.
+                  #
+                  # The place is read from the environment into the flags the
+                  # pipeline requires, so the coordinates reach argv at run time
+                  # and never appear in this file, in a values file, or in a
+                  # rendered manifest.
+                  exec {{ $pipeline }}/bin/forecats-pipeline \
+                    --timezone "$FORECATS_PLACE_TIMEZONE" \
+                    --latitude "$FORECATS_PLACE_LATITUDE" \
+                    --longitude "$FORECATS_PLACE_LONGITUDE" \
+                    --output-dir '{{ $panels.mountPath }}' \
+                    --renderer sd-cli{{ if .Values.nightly.drawForecastPlate }} \
+                    --draw-forecast-plate{{ end }}{{ with .Values.render.sdCliBinary }} \
+                    --sd-cli-binary '{{ . }}'{{ end }}
+              env:
+                # The card the claim chose. This is the pin: the runtime hook reads
+                # it when the container is created, which is the whole reason the
+                # pod is created after the claim rather than before it.
+                - name: NVIDIA_VISIBLE_DEVICES
+                  value: "${SWAPK8S_CARD}"
+                - name: SWAPK8S_CARD
+                  value: "${SWAPK8S_CARD}"
+                - name: HOME
+                  value: /tmp
+                # The grant's report address, beside the picture it is about. The
+                # pipeline refuses a publish without it and writes it into every
+                # panel's provenance sidecar.
+                - name: FORECATS_REPORT_ADDRESS
+                  value: {{ $report | quote }}
+              envFrom:
+                # The calendar address and the place, by name. envFrom gives the pod
+                # no way to rename a key, which is why the Secret's keys are the
+                # variables the pipeline reads.
+                - secretRef:
+                    name: {{ $secretName }}
+              securityContext:
+                {{- include "forecats.containerSecurityContext" . | nindent 16 }}
+              resources:
+                {{- toYaml .Values.nightly.render.resources | nindent 16 }}
+              volumeMounts:
+                {{- include "forecats.volumeMounts" (dict "ctx" $ "names" (list "panels" "weights" "photos" "nix-store")) | nindent 16 }}
+          volumes:
+            {{- include "forecats.volumes" . | nindent 12 }}
+---
