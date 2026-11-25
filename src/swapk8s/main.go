@@ -1319,11 +1319,12 @@ func cmdStart(ctx context.Context, kc *client, o *options) error {
 // Two rules, both learned on this cluster:
 //
 //  1. It must not have conditions. An earlier version refused to stop a model
-//     still in the roster, on the theory that a config reload makes llama-swap
-//     call cmdStop for models it is about to re-adopt. The reload path never
-//     calls cmdStop at all — cmdStop means eviction, ttl expiry, or unload.
-//     The conditional broke the first real swap: gemma held the GPU while
-//     swift crashlooped against a full card. cmdStop means stop.
+//     still in the roster, on the theory that a config reload calls cmdStop for
+//     models it is about to re-adopt, so obeying it would sleep a model the new
+//     config keeps. A reload really does call cmdStop for every loaded model, and
+//     a stop that arrives is the router's decision, not advice. The conditional
+//     broke the first real swap: gemma held the GPU while swift crashlooped
+//     against a full card. cmdStop means stop.
 //  2. It must exit. cmdStop runs on the router's reconcile path, so a stop that
 //     blocks stops the whole head-end — every model, not this one. The wait for
 //     pods to disappear is therefore bounded and a timeout is a log line, not a
@@ -1333,15 +1334,23 @@ func cmdStop(kc *client, o *options) error {
 	defer cancel()
 
 	// No conditions. An earlier version refused to stop a model that was still
-	// in the roster, on the theory that a config reload makes llama-swap call
-	// cmdStop for models it is about to re-adopt. That theory was the README's,
-	// and the README is wrong: the reload path never calls cmdStop
-	// (internal/router/base.go reloads state without touching running
-	// processes). cmdStop is called for exactly the reasons that mean it:
-	// eviction out of an exclusive group, ttl expiry, unload. Making it
-	// conditional broke the first real swap on this cluster - gemma held the
-	// GPU while swift crashlooped against a full card. cmdStop means stop; the
-	// shim is hands, and the router is the only brain in the room.
+	// in the roster, on the README's theory that a config reload calls cmdStop
+	// for models it is about to re-adopt, so obeying it would sleep a model the
+	// new config keeps. The README is wrong: at the pinned revision (v264,
+	// a025e03) a reload runs cmdStop for every loaded model - --watch-config
+	// polls the file, the change handler builds a new server and shuts the old
+	// one down, and that shutdown stops every process (llama-swap.go reload ->
+	// server.Server.Shutdown -> baseRouter.handleShutdown -> ProcessCommand.Stop
+	// -> killProcess -> sendStopSignal -> this command). What a reload does not
+	// do is restart the container, so readiness never flips while the fleet is
+	// scaled out from under a running request - which is why the chart runs
+	// llama-swap without --watch-config and turns a roster edit into a pod
+	// rollout (k8s/apps/ai/templates/head-end-deployment.yaml). cmdStop is
+	// called for exactly the reasons that mean it: eviction out of an exclusive
+	// group, ttl expiry, unload. Making it conditional broke the first real swap
+	// on this cluster - gemma held the GPU while swift crashlooped against a full
+	// card. cmdStop means stop; the shim is hands, and the router is the only
+	// brain in the room.
 	//
 	// And cmdStop owns the whole stop, process included: sendStopSignal runs
 	// CmdStop and returns without ever touching the process tree, so stopping
@@ -1552,8 +1561,9 @@ func pinChildEnv(base []string, card, job string) []string {
 // starting, which is the one moment when nothing it manages is legitimately
 // serving. A running model at that point is an orphan by definition: the
 // process that was proxying it is gone. This is what makes a head-end restart
-// deterministic - the fleet restarts asleep - without touching a config reload,
-// which never runs this code (the container runs --watch-config).
+// deterministic - the fleet restarts asleep. A roster edit reaches this pod as
+// one of those restarts rather than as a config reload: the chart checksums the
+// roster into the pod template and runs llama-swap without --watch-config.
 //
 // It scales down rather than deleting: the GPU and the RAM come back either
 // way, and deleting an object the chart might still describe trades a small

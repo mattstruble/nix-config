@@ -19,6 +19,20 @@ spec:
       app: swap-head-end
   template:
     metadata:
+      # A llama-swap config reload stops every loaded model on its way to the new
+      # config (the reload shuts the old server down, and that shutdown runs each
+      # model's cmdStop), while the container itself keeps running and stays
+      # Ready. So a roster edit that landed in place would sleep the fleet in the
+      # middle of requests nobody cancelled. The checksum makes the same edit a
+      # rollout instead: the router leaves the Service endpoints first, and the
+      # readiness gate and validate-config init below apply to the config that is
+      # taking over.
+      annotations:
+        # Taken from the rendered roster, never from a value someone bumps by
+        # hand. The spec ConfigMap is deliberately not in the sum: the shim reads
+        # a model's spec from disk at wake time, so those changes need no restart
+        # and a checksum over them would roll the router for nothing.
+        checksum/config: {{ include (print $.Template.BasePath "/head-end-configmap.yaml") . | sha256sum }}
       labels:
         app: swap-head-end
         app.kubernetes.io/part-of: ai
@@ -55,8 +69,9 @@ spec:
         # running model at that point is an orphan holding a GPU, because the
         # process that was proxying it is gone. The fleet restarts asleep, so a
         # SIGKILLed head-end cannot leave a model holding VRAM and nobody can
-        # outlive the swapper. A config reload never runs this (the container
-        # runs --watch-config), so a roster edit still costs zero model reloads.
+        # outlive the swapper. A roster edit is one of these restarts too (the
+        # checksum above), so it costs the fleet its loaded models - the price
+        # paid for never stopping them under a live request.
         - name: reap
           image: {{ $tools }}
           command: ["sh", "-c", "{{ $h.bundle }}/bin/swapk8s reap"]
@@ -72,7 +87,12 @@ spec:
           # The bundle is a nix store path mounted read-only from nix-store-pvc -
           # the same build-linked pattern as the strata pod, so the head-end runs
           # the llama-swap this generation built, not a tag someone else moved.
-          command: ["sh", "-c", "exec {{ $h.bundle }}/bin/llama-swap --config /etc/llama-swap/config.yaml --watch-config"]
+          #
+          # No --watch-config: with the roster checksummed into the pod template,
+          # an in-place reload could only ever fire before the rollout it should
+          # have caused (the kubelet syncs the volume on its own schedule), which
+          # is the silent mid-request stop the checksum exists to prevent.
+          command: ["sh", "-c", "exec {{ $h.bundle }}/bin/llama-swap --config /etc/llama-swap/config.yaml"]
           ports:
             - containerPort: {{ $h.port }}
               name: http
