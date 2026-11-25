@@ -927,6 +927,16 @@ type reclaimCandidate struct {
 	cost  int64
 }
 
+// reclaimCost is one model's reclaim cost as the spec dir stated it: the number
+// of seconds, or why there is no number. The reason is what an operator reads when
+// a model is never reclaimed, and the ways to have no cost are not one condition —
+// a model no spec names, a spec that declares no cost, a spec that could not be
+// read, a figure that is not a number — and only the second of them is a choice.
+type reclaimCost struct {
+	seconds int64
+	reason  string // empty when the cost was measured
+}
+
 // reclaimPlan is one reclaim decision: the card to ask the router for, and why
 // each card that could not be reclaimed was not. The reasons come out of the
 // same pass as the decision, so the line the claim logs cannot disagree with
@@ -948,8 +958,10 @@ type reclaimPlan struct {
 // live card owner is not a named model; states is the router's answer, and a
 // model absent from it is not running as far as the router is concerned. A card
 // nothing holds is not the reclaim's business: it is free, and the next
-// placement round takes it.
-func planReclaim(pool []string, holders, states map[string]string, costs map[string]int64) reclaimPlan {
+// placement round takes it. costs is what the spec dir stated about each model it
+// names; a model it does not name, or names with a reason instead of a figure, is
+// not reclaimable.
+func planReclaim(pool []string, holders, states map[string]string, costs map[string]reclaimCost) reclaimPlan {
 	plan := reclaimPlan{}
 	for _, card := range pool {
 		model, held := holders[card]
@@ -968,14 +980,22 @@ func planReclaim(pool []string, holders, states map[string]string, costs map[str
 			plan.refused = append(plan.refused, fmt.Sprintf("gpu %s: %s is %s", card, model, state))
 			continue
 		}
-		cost, measured := costs[model]
-		if !measured {
+		stated, named := costs[model]
+		if !named {
+			// The specs are the only place a cost exists, and this model is not in
+			// them: the pod outlived the spec that rendered it, or never had one.
+			stated.reason = "no spec file names it"
+		}
+		if stated.reason != "" {
 			// An unmeasured cost is not a cheap card. It is a card nobody has
 			// agreed what it costs to take, which is the one thing a reclaim may
-			// not guess at.
-			plan.refused = append(plan.refused, fmt.Sprintf("gpu %s: %s declares no reclaim cost", card, model))
+			// not guess at. The reason travels with the refusal because a model that
+			// is never reclaimed for a reason nobody wrote down is
+			// indistinguishable from a reclaim that does not work.
+			plan.refused = append(plan.refused, fmt.Sprintf("gpu %s: %s is not reclaimable (%s)", card, model, stated.reason))
 			continue
 		}
+		cost := stated.seconds
 		if plan.ok && cost >= plan.target.cost {
 			continue
 		}
@@ -1611,46 +1631,67 @@ const unloadRequestTimeout = 30 * time.Second
 // back, off the chart-rendered specs - the same files a wake reads its card pool
 // from, and the only place the cost exists once the shim consumes the label.
 //
-// A model with no cost is absent from the map. That is not zero: an unmeasured
-// card must never rank as the cheapest one on the box.
-func reclaimCosts(dir string) (map[string]int64, error) {
+// A model whose cost is not a measured figure is in the map carrying the reason
+// it is not, never absent and never zero: an unmeasured card must never rank as
+// the cheapest one on the box, and a model dropped for a reason nobody recorded
+// is a model no operator can explain.
+//
+// Only the directory itself failing is an error. A spec this shim cannot read is
+// one model that is not reclaimable and nothing more, and a broken file is a
+// static condition: an attempt that failed over it would refuse every card in
+// the fleet for as long as the file stays broken, which is a reclaim switched
+// off by one half-written ConfigMap key while every model whose spec did read
+// pays for it on every attempt.
+func reclaimCosts(dir string) (map[string]reclaimCost, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return nil, fmt.Errorf("read spec dir %s: %w", dir, err)
 	}
-	costs := map[string]int64{}
+	costs := map[string]reclaimCost{}
 	for _, e := range entries {
 		name, isSpec := strings.CutSuffix(e.Name(), ".json")
 		if e.IsDir() || !isSpec {
 			continue
 		}
-		raw, err := os.ReadFile(filepath.Join(dir, e.Name()))
-		if err != nil {
-			return nil, fmt.Errorf("read spec %s: %w", e.Name(), err)
-		}
-		var spec struct {
-			Metadata struct {
-				Labels map[string]json.RawMessage `json:"labels"`
-			} `json:"metadata"`
-		}
-		if err := json.Unmarshal(raw, &spec); err != nil {
-			return nil, fmt.Errorf("spec %s is not valid JSON: %w", e.Name(), err)
-		}
-		rawCost, declared := spec.Metadata.Labels[reclaimCostLabel]
-		if !declared {
+		seconds, reason := readSpecCost(dir, e.Name())
+		if reason != "" {
+			log.Printf("reclaim: %s; %s is not reclaimable", reason, name)
+			costs[name] = reclaimCost{reason: reason}
 			continue
 		}
-		cost, err := parseReclaimCost(rawCost)
-		if err != nil {
-			// A figure that is not a positive number of seconds is not a cost, and
-			// reading one as a cost would rank this card against measured ones. The
-			// model keeps its card and the line names the file to fix.
-			log.Printf("spec %s: %v; %s stays unreclaimable", e.Name(), err, name)
-			continue
-		}
-		costs[name] = cost
+		costs[name] = reclaimCost{seconds: seconds}
 	}
 	return costs, nil
+}
+
+// readSpecCost is what one spec file says about its model's reclaim cost: the
+// figure, or the reason there is none. Every reason names the file, because the
+// file is what an operator has to go and look at, beside the model that will
+// never be reclaimed.
+func readSpecCost(dir, file string) (int64, string) {
+	raw, err := os.ReadFile(filepath.Join(dir, file))
+	if err != nil {
+		return 0, fmt.Sprintf("spec %s cannot be read: %v", file, err)
+	}
+	var spec struct {
+		Metadata struct {
+			Labels map[string]json.RawMessage `json:"labels"`
+		} `json:"metadata"`
+	}
+	if err := json.Unmarshal(raw, &spec); err != nil {
+		return 0, fmt.Sprintf("spec %s is not valid JSON: %v", file, err)
+	}
+	rawCost, declared := spec.Metadata.Labels[reclaimCostLabel]
+	if !declared {
+		return 0, fmt.Sprintf("spec %s declares no reclaim cost", file)
+	}
+	seconds, err := parseReclaimCost(rawCost)
+	if err != nil {
+		// A figure that is not a positive number of seconds is not a cost, and
+		// reading one as a cost would rank this card against measured ones.
+		return 0, fmt.Sprintf("spec %s: %v", file, err)
+	}
+	return seconds, ""
 }
 
 // parseReclaimCost reads the label's value: a label value is a string, which is

@@ -1315,11 +1315,21 @@ func specCost(t *testing.T, dir, name, raw string) {
 	}
 }
 
+// corruptSpec writes a <name>.json no reader can use — the shape a spec ConfigMap
+// key has when the write that produced it stopped halfway.
+func corruptSpec(t *testing.T, dir, name string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(dir, name+".json"), []byte(`{"apiVersion":"apps/v1","metadata":{"labels":{`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // The cost reaches the shim the way the card pool does — a label on the rendered
 // spec — and a figure that is not a positive whole number of seconds is not a cost.
 // A model that declares nothing keeps its card; so does one whose figure is a zero,
 // a negative or a word, because each of those would otherwise rank the card among
-// the measured ones.
+// the measured ones. None of them is a zero in the map, and each carries the
+// reason it is not reclaimable.
 func TestReclaimCostsComeFromTheRenderedSpecs(t *testing.T) {
 	dir := t.TempDir()
 	specCost(t, dir, "gemma-4-26b-a4b", `"110"`)
@@ -1334,14 +1344,101 @@ func TestReclaimCostsComeFromTheRenderedSpecs(t *testing.T) {
 		t.Fatalf("reclaimCosts: %v", err)
 	}
 	want := map[string]int64{"gemma-4-26b-a4b": 110, "swift-qwen3-8-27b": 270}
-	if len(costs) != len(want) {
-		t.Fatalf("costs = %v, want %v", costs, want)
-	}
-	for name, cost := range want {
-		if costs[name] != cost {
-			t.Errorf("cost of %s = %d, want %d", name, costs[name], cost)
+	for name, seconds := range want {
+		if got := costs[name]; got.seconds != seconds || got.reason != "" {
+			t.Errorf("cost of %s = %+v, want %d seconds and no reason", name, got, seconds)
 		}
 	}
+	for _, name := range []string{"qwen3-6-35b-iq4xs", "flash-next-strata-iq4xs", "gemma-4-26b-a4b-think", "strata-ud-iq4-xs"} {
+		if got := costs[name]; got.reason == "" {
+			t.Errorf("%s is reclaimable at %d seconds; want it refused with a reason", name, got.seconds)
+		}
+	}
+}
+
+// A spec this shim cannot read or parse is that one model's bad day, not the
+// fleet's: the read returns every other spec and records why this model has no
+// cost, naming the file an operator has to go and look at. Failing the whole read
+// instead is a reclaim switched off by one half-written key, on an attempt that
+// will fail the same way forever.
+func TestAnUnreadableSpecDropsItsModelNotTheRead(t *testing.T) {
+	dir := t.TempDir()
+	specCost(t, dir, "swift-qwen3-8-27b", `"270"`)
+	corruptSpec(t, dir, "gemma-4-26b-a4b")
+	// A spec that is listed and cannot be read at all. A dangling symlink fails
+	// for every user, where a chmod-0 file would read fine for the root a head-end
+	// container runs as.
+	if err := os.Symlink(filepath.Join(dir, "no-such-key"), filepath.Join(dir, "qwen3-6-35b-iq4xs.json")); err != nil {
+		t.Fatal(err)
+	}
+
+	costs, err := reclaimCosts(dir)
+	if err != nil {
+		t.Fatalf("reclaimCosts: %v", err)
+	}
+	if got := costs["swift-qwen3-8-27b"]; got.seconds != 270 || got.reason != "" {
+		t.Errorf("the spec that read is %+v, want 270 seconds and no reason", got)
+	}
+	for _, want := range []struct{ name, reason string }{
+		{"gemma-4-26b-a4b", "gemma-4-26b-a4b.json is not valid JSON"},
+		{"qwen3-6-35b-iq4xs", "qwen3-6-35b-iq4xs.json cannot be read"},
+	} {
+		if reason := costs[want.name].reason; !strings.Contains(reason, want.reason) {
+			t.Errorf("reason for %s = %q, want it to say %q", want.name, reason, want.reason)
+		}
+	}
+}
+
+// A model that is never reclaimed is a state an operator has to be able to
+// explain, and the ways a cost goes missing are not one condition: a spec that
+// declares nothing is a host's choice, a spec that cannot be read is a render
+// that broke, and a model no spec names is a pod outliving its Deployment. All
+// three refuse the card, and the refusal says which one it is looking at.
+func TestTheRefusalSaysWhichKindOfUnmeasured(t *testing.T) {
+	dir := t.TempDir()
+	specCost(t, dir, "qwen3-6-35b-iq4xs", "")
+	corruptSpec(t, dir, "gemma-4-26b-a4b")
+	// swift-qwen3-8-27b has a pod on gpu 2 and no spec file at all.
+
+	costs, err := reclaimCosts(dir)
+	if err != nil {
+		t.Fatalf("reclaimCosts: %v", err)
+	}
+	plan := planReclaim([]string{"0", "1", "2"},
+		map[string]string{"0": "qwen3-6-35b-iq4xs", "1": "gemma-4-26b-a4b", "2": "swift-qwen3-8-27b"},
+		map[string]string{"qwen3-6-35b-iq4xs": stateIdle, "gemma-4-26b-a4b": stateIdle, "swift-qwen3-8-27b": stateIdle},
+		costs)
+	if plan.ok {
+		t.Fatalf("planned to take gpu %s from %s; no card here has a readable cost", plan.target.card, plan.target.model)
+	}
+	reasons := plan.refused
+	for _, want := range []struct{ card, model, reason string }{
+		{"0", "qwen3-6-35b-iq4xs", "spec qwen3-6-35b-iq4xs.json declares no reclaim cost"},
+		{"1", "gemma-4-26b-a4b", "spec gemma-4-26b-a4b.json is not valid JSON"},
+		{"2", "swift-qwen3-8-27b", "no spec file names it"},
+	} {
+		refusal := ""
+		for _, r := range reasons {
+			if strings.HasPrefix(r, "gpu "+want.card+":") {
+				refusal = r
+			}
+		}
+		if !strings.Contains(refusal, want.model) || !strings.Contains(refusal, want.reason) {
+			t.Errorf("gpu %s refused as %q, want it to name %s and say %q: %v",
+				want.card, refusal, want.model, want.reason, reasons)
+		}
+	}
+}
+
+// measured is a spec dir in which every one of these models declared its cost as
+// a number of seconds. A case about a model whose spec is missing or unusable
+// builds the map itself, because that is the condition it is about.
+func measured(seconds map[string]int64) map[string]reclaimCost {
+	costs := make(map[string]reclaimCost, len(seconds))
+	for name, s := range seconds {
+		costs[name] = reclaimCost{seconds: s}
+	}
+	return costs
 }
 
 // The reclaim decision, without a cluster or a router: the cheapest idle card is
@@ -1394,11 +1491,13 @@ func TestPlanReclaim(t *testing.T) {
 			wantRefused: "not in the router's running list",
 		},
 		{
-			name:        "a model with no measured cost is refused",
+			// The spec dir is the only place a cost exists, and this model is not
+			// in it: a pod with no spec file behind it is never reclaimed.
+			name:        "a model no spec file names is refused",
 			holders:     map[string]string{"1": "qwen3-6-35b-iq4xs"},
 			states:      map[string]string{"qwen3-6-35b-iq4xs": "idle"},
 			costs:       map[string]int64{},
-			wantRefused: "declares no reclaim cost",
+			wantRefused: "no spec file names it",
 		},
 		{
 			name:        "a card a job holds is not a model to unload",
@@ -1424,7 +1523,7 @@ func TestPlanReclaim(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			plan := planReclaim([]string{"0", "1"}, tc.holders, tc.states, tc.costs)
+			plan := planReclaim([]string{"0", "1"}, tc.holders, tc.states, measured(tc.costs))
 			if tc.wantModel == "" {
 				if plan.ok {
 					t.Fatalf("planned to take gpu %s from %s; want no candidate", plan.target.card, plan.target.model)
@@ -1623,6 +1722,81 @@ func TestReclaimNeverAsksForACardWithNoMeasuredCost(t *testing.T) {
 	}
 	if len(router.unloaded) != 0 {
 		t.Errorf("the router was asked to unload an unmeasured model: %v", router.unloaded)
+	}
+}
+
+// A corrupt spec is one model that is not reclaimable, not a reclaim that does
+// not run: the file will still be corrupt on the next attempt, so an attempt that
+// failed over it would leave every card in the pool un-reclaimable forever. The
+// specs that do read are still ranked, and a card still changes hands.
+func TestReclaimStillTakesACardBesideACorruptSpec(t *testing.T) {
+	dir := t.TempDir()
+	corruptSpec(t, dir, "gemma-4-26b-a4b")         // idle on gpu 0, and out of the running
+	specCost(t, dir, "swift-qwen3-8-27b", `"270"`) // idle on gpu 1, the only card that can be taken
+	specCost(t, dir, "qwen3-6-35b-iq4xs", `"110"`) // the cheaper figure, but it holds no card
+
+	fleet := &fakeFleet{
+		scans:     []string{pods(loaded("gemma-4-26b-a4b", "0"), loaded("swift-qwen3-8-27b", "1"))},
+		remaining: []int{1, 0},
+	}
+	router := &fakeRouter{states: map[string]string{"gemma-4-26b-a4b": "idle", "swift-qwen3-8-27b": "idle"}}
+	fleetSrv, routerSrv := httptest.NewServer(fleet), httptest.NewServer(router)
+	defer fleetSrv.Close()
+	defer routerSrv.Close()
+
+	err := newReclaimer(testClient(fleetSrv), reclaimOptions(dir, routerSrv.URL, time.Minute)).
+		try(context.Background(), time.Minute)
+	if err != nil {
+		t.Fatalf("reclaim: %v", err)
+	}
+	if !slices.Equal(router.unloaded, []string{"swift-qwen3-8-27b"}) {
+		t.Errorf("the router was asked to unload %v, want the one idle card whose cost could be read", router.unloaded)
+	}
+}
+
+// A spec dir in which nothing can be read is a claim that waits, exactly as it
+// waited before reclaim existed: the attempt is a log line, the flock goes back,
+// and no model is put to sleep on the strength of a file nobody could read. A
+// corrupt ConfigMap key is a static condition, so this is the state a fleet sits
+// in every night until a human fixes it, and a wait is survivable.
+func TestEverySpecUnreadableIsAWaitNotAFailure(t *testing.T) {
+	dir := t.TempDir()
+	corruptSpec(t, dir, "gemma-4-26b-a4b")
+	corruptSpec(t, dir, "swift-qwen3-8-27b")
+	lock := dir + "/cards.lock"
+
+	fleet := &fakeFleet{
+		scans:     []string{pods(loaded("gemma-4-26b-a4b", "0"), loaded("swift-qwen3-8-27b", "1"))},
+		remaining: []int{1},
+	}
+	router := &fakeRouter{states: map[string]string{"gemma-4-26b-a4b": "idle", "swift-qwen3-8-27b": "idle"}}
+	fleetSrv, routerSrv := httptest.NewServer(fleet), httptest.NewServer(router)
+	defer fleetSrv.Close()
+	defer routerSrv.Close()
+
+	claimed := false
+	_, err := claimCycle(context.Background(), lock,
+		scanOf(loaded("gemma-4-26b-a4b", "0"), loaded("swift-qwen3-8-27b", "1")),
+		[]string{"0", "1"}, "0,1", "any", refusalBudget, 5*time.Millisecond,
+		newReclaimer(testClient(fleetSrv), reclaimOptions(dir, routerSrv.URL, time.Minute)).try,
+		func(string, time.Time) error { claimed = true; return nil })
+
+	if err == nil || !strings.Contains(err.Error(), `no free card in pool "0,1"`) {
+		t.Fatalf("claim = %v, want the ordinary refusal to wait for a card", err)
+	}
+	if claimed {
+		t.Error("the command was handed a card nobody released")
+	}
+	if len(router.unloaded) != 0 {
+		t.Errorf("the reclaim asked the router to unload %v on the strength of a spec it could not read", router.unloaded)
+	}
+	// The reclaim got as far as looking at the cards, so the wait above is the
+	// outcome of a decision and not of an attempt that never ran.
+	if fleet.looks == 0 {
+		t.Error("the reclaim never scanned the card owners")
+	}
+	if !flockIsFree(t, lock) {
+		t.Error("the placement lock is still held")
 	}
 }
 
