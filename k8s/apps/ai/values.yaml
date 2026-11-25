@@ -36,13 +36,17 @@
 #   reclaimCostSeconds: a recorded measurement of what reclaiming this model's
 #               card costs whoever loses it - measured cold start plus the
 #               re-prefill of the session the eviction destroys, because the
-#               prompt cache dies with the pod. Nothing consumes it yet: the
-#               pinned llama-swap (v264) has no such field and its decoder
-#               ignores unknown keys, so the key sits in config.yaml inert, and
-#               the reclaim scheduler that would rank idle cards by it is not
-#               built. When it is, the figure is a cost and never a ceiling - no
-#               job is refused for outliving it. Declare it only from a
-#               measurement taken on this host: absent is not zero, and an
+#               prompt cache dies with the pod. The shim consumes it: a job
+#               waiting for a card takes the idle one with the lowest figure,
+#               and a model with no figure is never reclaimed. It reaches the
+#               shim as the ai.mestruble.dev/reclaim-cost-seconds label on the
+#               rendered spec, the same channel `gpu` travels on; the line in
+#               config.yaml stays inert, because the pinned llama-swap (v264)
+#               has no such field and its decoder ignores unknown keys. The
+#               figure is a cost and never a ceiling - no job is refused for
+#               outliving it - and it never buys an interruption: only a model
+#               the router itself reports idle is ever taken. Declare it only
+#               from a measurement taken on this host: absent is not zero, and an
 #               invented figure would be indistinguishable from a measured one.
 #               It may not exceed the model's own idle budget, because
 #               reclaiming past that costs more than waiting the ttl out. A

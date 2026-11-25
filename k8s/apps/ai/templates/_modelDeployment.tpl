@@ -40,6 +40,13 @@ metadata:
     ai.mestruble.dev/gpu-pool: {{ . | quote }}
     {{- end }}
     ai.mestruble.dev/gpu-mode: {{ $.m.gpuMode | default "any" | quote }}
+    # reclaim contract: what bringing this model back costs whoever loses its
+    # card; a job waiting for a card takes the idle one with the lowest figure.
+    # Emitted only where this host measured a cost - absent is not zero, and an
+    # invented figure would be indistinguishable from a measured one.
+    {{- with $.m.reclaimCostSeconds }}
+    ai.mestruble.dev/reclaim-cost-seconds: {{ . | quote }}
+    {{- end }}
 spec:
   # Recreate: each model owns its whole GPU (20+ GiB of 24 GiB), so a
   # RollingUpdate would run old + new pods concurrently and OOM the load.
