@@ -432,6 +432,24 @@ in
           export ${env}_B64="$(printf '%s' "${ref}" | $OPENSSL base64 -A)"
         ''
       ) forecatsSecret.keys;
+      # The four weight files a render opens are the MiniMax H3 model, licensed to
+      # the owner rather than owned, and the grant permits the render only while the
+      # owner keeps a mechanism for reporting a suspected violation of the agreement
+      # or its acceptable use policy reachable from what they publish. So the weights
+      # volume and a report address are one decision: a configuration that declares
+      # the volume and clears the address fails here rather than publishing a panel
+      # nobody can object to.
+      #
+      # A blank address is the only failure a build can see. That the address is a
+      # real inbox somebody monitors is not assertable from here — the option
+      # defaults to a placeholder, and only the owner's config makes it an address.
+      forecatsReportAddress = lib.throwIfNot (cfg.forecats.reportAddress != "") ''
+        forecats: services.k3s.forecats.reportAddress is blank while the render reads the
+        licensed MiniMax H3 weights from ${(forecatsVolume "weights").hostPath}. The grant
+        that permits those weights obliges the owner to keep a way to report a suspected
+        violation of it reachable from the panel, so name their inbox in config; the
+        default is a placeholder, which is not a value to restore by clearing this option.
+      '' cfg.forecats.reportAddress;
       # The host facts the forecats chart renders with; its templates `required`
       # them, so a bare `helm template` fails instead of inventing a claim name
       # that binds nothing.
@@ -461,6 +479,14 @@ in
           name: ${forecatsSecret.name}
           keys:
         ${lib.concatMapStringsSep "\n" (key: "    - ${forecatsEnvName key}") forecatsSecret.keys}
+        # Where a viewer reports a panel they believe breaks the MiniMax H3 grant or
+        # its acceptable use policy. The pipeline emits the same value into every
+        # panel's provenance sidecar, so the address reaches anyone who can see the
+        # picture; a chart that shows the panel renders it beside that picture and
+        # `required`s it, and hands it to the render as FORECATS_REPORT_ADDRESS, so
+        # the obligation cannot be dropped by a chart edit.
+        report:
+          address: "${forecatsReportAddress}"
       '';
       # A directory under k8s/apps/ is an app chart when it carries a Chart.yaml.
       # `just k8s-render` and the CI preview render apply the same rule, so an
@@ -685,6 +711,32 @@ in
             rendered and every model keeps the static lifecycle it has today.
           '';
         };
+      };
+
+      # The reporting half of the MiniMax H3 grant, and the only part of it this
+      # repository can hold: the grant obliges the owner to keep a mechanism for
+      # reporting a suspected violation of the agreement or its acceptable use
+      # policy, and to act promptly on notice. Proportionate for a household display
+      # is a named address a viewer can find, not a ticket queue.
+      #
+      # The default is a placeholder and it is deliberately not an empty string: a
+      # blank renders as an address that exists and reaches nobody, and the pipeline
+      # refuses a publish on it — `_report_address` in forecats_pipeline.pipeline
+      # reads this value as FORECATS_REPORT_ADDRESS.
+      #
+      # The real inbox is personal data and this repository is public, so it belongs
+      # in config that is not pushed here and in no file of this tree.
+      options.services.k3s.forecats.reportAddress = lib.mkOption {
+        type = lib.types.str;
+        default = "report@forecats.invalid";
+        apply = lib.trim;
+        description = ''
+          Inbox a viewer of a forecats panel writes to about a picture they believe
+          violates the MiniMax H3 grant or its acceptable use policy. Set it to the
+          owner's real address in config outside this repository; the `.invalid`
+          domain is reserved by RFC 2606, so the placeholder cannot quietly become a
+          mailbox someone else reads.
+        '';
       };
 
       config = lib.mkIf cfg.enable {

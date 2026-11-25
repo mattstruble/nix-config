@@ -4,9 +4,10 @@ Three files, and the third is the one that matters most.
 
 The panel is what the viewer sees. The provenance sidecar is what makes a wrong
 picture explainable afterwards — which template, which seed, which weights,
-which reference photos, and the raw payload each source actually answered with.
-The freshness artefact is what makes a *stopped* pipeline visible: nothing here
-keeps history, so a panel that has not been redrawn for nine days looks exactly
+which reference photos, and the raw payload each source actually answered with,
+beside the address a viewer writes to when they believe the picture should not
+exist. The freshness artefact is what makes a *stopped* pipeline visible: nothing
+here keeps history, so a panel that has not been redrawn for nine days looks exactly
 like one that was. The only difference a viewer can see is the timestamp beside
 it, so the timestamp is published as a separate, always-current file rather
 than being something a reader has to trust the PNG about.
@@ -19,7 +20,7 @@ from pathlib import Path
 from shutil import move
 
 from forecats_pipeline.contracts import Caption, DayContext, Published, Staleness
-from forecats_pipeline.render_stage import Rendered
+from forecats_pipeline.render_stage import REPORT_ADDRESS_ENV, Rendered
 
 __all__ = [
     "FRESHNESS_NAME",
@@ -58,23 +59,36 @@ def publish_panel(
     payloads: dict[str, object],
     *,
     output_dir: Path,
+    report_address: str,
     published_at: datetime | None = None,
 ) -> Published:
     """Write the panel, its provenance, and the freshness artefact."""
     _named_not_addressed(payloads)
+    if not report_address.strip():
+        # The obligation is on the published picture, so the check sits at the write
+        # and not only at the render: a panel nobody can object to is the state the
+        # model grant forbids, and it is reached as easily by a caller that forgot an
+        # argument as by a configuration that never had one.
+        raise ValueError(
+            "report_address must name the inbox a viewer reports a suspected violation of "
+            f"the model grant to; {REPORT_ADDRESS_ENV} carries it to the pipeline, and "
+            "nothing is published beside the panel until it is set"
+        )
     rendered_at = published_at or datetime.now(UTC)
     if rendered_at.tzinfo is None or rendered_at.utcoffset() is None:
         raise ValueError("published_at must be timezone-aware; it is what staleness is measured from")
 
     output_dir.mkdir(parents=True, exist_ok=True)
-    # The render is moved, not copied: the scratch name it was drawn under is
-    # a renderer detail, and a published directory that keeps both is a
-    # directory where a viewer has to guess which PNG is the panel.
-    panel_path = output_dir / panel_name(context.for_day)
-    move(rendered.panel_path, panel_path)
-
     staleness = Staleness(rendered_at=rendered_at, age_hours=0.0)
+    panel_path = output_dir / panel_name(context.for_day)
     provenance_path = output_dir / provenance_name(context.for_day)
+    # The two records are written before the panel appears, and the panel is the
+    # last of the three to reach its final name. A panel that got there with no
+    # sidecar beside it is a picture nobody can explain and nobody can report —
+    # the state the model grant forbids — and the nightly cannot recover from it,
+    # because a second run for a date finds the PNG and skips. A sidecar whose
+    # panel never arrived is the failure left behind instead: nothing shows, the
+    # render is still under its scratch name, and the next run writes both again.
     _write_json(
         provenance_path,
         {
@@ -88,6 +102,7 @@ def publish_panel(
             "template_hash": caption.template_hash,
             "style": caption.style,
             "caption": caption.text,
+            "report_address": report_address.strip(),
             "weights": list(rendered.weights),
             "reference_photos": [str(photo) for photo in rendered.reference_photos],
             "weather": asdict(context.weather) if context.weather else None,
@@ -109,6 +124,10 @@ def publish_panel(
             "age_hours_at_write": staleness.age_hours,
         },
     )
+    # Moved, not copied: the scratch name it was drawn under is a renderer
+    # detail, and a published directory that keeps both is a directory where a
+    # viewer has to guess which PNG is the panel.
+    move(rendered.panel_path, panel_path)
     return Published(
         panel_path=str(panel_path),
         provenance_path=str(provenance_path),

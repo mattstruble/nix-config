@@ -39,6 +39,7 @@ from forecats_pipeline.overlay_stage import overlay_forecast
 from forecats_pipeline.publish_stage import FRESHNESS_NAME, existing_panel, publish_panel
 from forecats_pipeline.render_stage import (
     MODEL_DIRECTORY_ENV,
+    REPORT_ADDRESS_ENV,
     FakeRenderer,
     Renderer,
     SdCliRenderer,
@@ -120,6 +121,7 @@ def run_nightly(
     renderer: Renderer,
     output_dir: Path,
     household: Household,
+    report_address: str,
     overlay_font: Path | None = None,
     researcher: OccasionResearcher | None = None,
     generator: ActivityGenerator | None = None,
@@ -211,6 +213,7 @@ def run_nightly(
         rendered,
         payloads.bodies() if payloads else {},
         output_dir=output_dir,
+        report_address=report_address,
         published_at=published_at,
     )
 
@@ -269,6 +272,7 @@ def _nightly(args: argparse.Namespace, output_dir: Path) -> int:
         ) from None
 
     feeds = _calendar_feeds()
+    report_address = _report_address()
     # The font env says where a font is; only the flag says to use it. The
     # devShell exports the font unconditionally, so keying the plate off the
     # environment would re-hang the pasted-on box the owner rejected.
@@ -293,9 +297,10 @@ def _nightly(args: argparse.Namespace, output_dir: Path) -> int:
         outcome = run_nightly(
             day,
             location,
-            **_nightly_collaborators(args, feeds),
+            **_nightly_collaborators(args, feeds, report_address),
             output_dir=output_dir,
             household=household,
+            report_address=report_address,
             overlay_font=font,
             researcher=_researcher(output_dir),
             generator=_generator(output_dir),
@@ -318,6 +323,25 @@ def _report(outcome: Published | Skipped | PipelineRefusal, output_dir: Path) ->
         f"(provenance {outcome.provenance_path}, freshness {output_dir / FRESHNESS_NAME})"
     )
     return 0
+
+
+def _report_address() -> str:
+    """Where a viewer reports a suspected violation, read from the environment.
+
+    No default of this program's own, and no flag for it either: the address is
+    personal data, it is the owner's rather than this repository's, and the
+    obligation the grant places on the owner is met by an inbox they monitor, not
+    by one a pipeline invented. `services.k3s.forecats.reportAddress` in nix is the
+    source, and whatever starts the render passes what that option holds.
+    """
+    address = os.environ.get(REPORT_ADDRESS_ENV, "").strip()
+    if not address:
+        raise ConfigurationError(
+            f"no report address: {REPORT_ADDRESS_ENV} is not set; the grant that permits a "
+            "render obliges the owner to keep a way to report a suspected violation of it "
+            "reachable from the panel, and no panel is published until one is named"
+        )
+    return address
 
 
 def _model_endpoint() -> tuple[str, str | None] | None:
@@ -400,7 +424,7 @@ def _calendar_feeds() -> tuple[tuple[str, str], ...]:
 
 
 def _nightly_collaborators(
-    args: argparse.Namespace, feeds: tuple[tuple[str, str], ...]
+    args: argparse.Namespace, feeds: tuple[tuple[str, str], ...], report_address: str
 ) -> dict[str, object]:
     # The labels are what the provenance sidecar names each payload by: the
     # addresses they stand for are credentials, and the sidecar is published.
@@ -411,7 +435,11 @@ def _nightly_collaborators(
         if args.renderer == "fake"
         else SdCliRenderer(
             args.sd_cli_binary,
-            SdCliSettings(_weights_directory(args), gpu_device=args.render_gpu),
+            SdCliSettings(
+                _weights_directory(args),
+                report_address=report_address,
+                gpu_device=args.render_gpu,
+            ),
         )
     )
     return {

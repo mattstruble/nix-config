@@ -175,8 +175,14 @@
           # events on, so the run gathers a day rather than an empty one.
           day=2026-03-08
           panels="$PWD/panels"
+          # The report address arrives the way the render pod will hand it over:
+          # named outside the package and read from the environment. The closure
+          # holds no address of its own — the real one is personal data, and a
+          # wrapper that defaulted it would publish a mailbox nobody reads beside
+          # every panel.
           PYTHONDONTWRITEBYTECODE=1 \
           FORECATS_CALENDAR_FEEDS="check=file://${placeholder "out"}/src/forecats-day-context/fixtures/day.ics" \
+          FORECATS_REPORT_ADDRESS="check@forecats.invalid" \
             "${placeholder "out"}/bin/forecats-pipeline" \
             --day "$day" \
             --timezone America/New_York \
@@ -205,6 +211,19 @@
           assert len(plate) > 1, f"{os.environ['PANEL']} is a flat field: no forecast plate"
           PY
 
+          # Existence is not the report address. The grant obliges the owner to keep a
+          # way to report a violation reachable from the panel, and the sidecar beside
+          # the picture is what a viewer has — so this is where the build checks that
+          # the value named above arrived there rather than being read and dropped.
+          PROVENANCE="$panels/panel-$day.provenance.json" python3 <<'PY'
+          import json
+          import os
+
+          with open(os.environ["PROVENANCE"], encoding="utf-8") as sidecar:
+              record = json.load(sidecar)
+          assert record["report_address"] == "check@forecats.invalid", record.get("report_address")
+          PY
+
           # A build has no weights, so the real renderer has nowhere to read from —
           # which is the state a volume that mounted empty leaves, and the one case
           # that must refuse before the CLI is spawned. What this checks is the
@@ -215,6 +234,7 @@
           if env -u FORECATS_MODEL_DIRECTORY -u FORECATS_PHOTO_DIRECTORY \
             PYTHONDONTWRITEBYTECODE=1 \
             FORECATS_CALENDAR_FEEDS="check=file://${placeholder "out"}/src/forecats-day-context/fixtures/day.ics" \
+            FORECATS_REPORT_ADDRESS="check@forecats.invalid" \
             NVIDIA_VISIBLE_DEVICES=1 \
             "${placeholder "out"}/bin/forecats-pipeline" \
             --day "$day" \

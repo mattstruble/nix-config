@@ -18,6 +18,11 @@ FEED_URL = "https://example.invalid/ics/day.ics"
 DAY = date(2026, 3, 8)
 MORNING = datetime(2026, 3, 8, 7, 30, tzinfo=UTC)
 
+# The inbox a viewer reports a panel to, published in every provenance sidecar.
+# A fixture address on a domain reserved for documentation, because the real one
+# is personal data and the sidecar carrying it is served beside the picture.
+REPORT_INBOX = "owner@example.invalid"
+
 
 class StubFeed:
     """An `HttpFetcher` for a feed whose text was written down beforehand."""

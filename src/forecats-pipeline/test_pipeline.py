@@ -13,7 +13,7 @@ from pathlib import Path
 
 import day_context
 import forecats_pipeline
-from conftest import DAY, DAY_ICS, FEED_URL, MORNING, StubFeed, StubWeatherProvider, two_pets
+from conftest import DAY, DAY_ICS, FEED_URL, MORNING, REPORT_INBOX, StubFeed, StubWeatherProvider, two_pets
 from day_context import (
     FailureKind,
     Fetched,
@@ -28,7 +28,12 @@ from forecats_pipeline.day_context_stage import PayloadLog, RecordingFetcher
 from forecats_pipeline.contracts import Published
 from forecats_pipeline.pipeline import CALENDAR_FEEDS_ENV, Skipped, main, run_nightly
 from forecats_pipeline.publish_stage import FRESHNESS_NAME, panel_name, provenance_name
-from forecats_pipeline.render_stage import MODEL_DIRECTORY_ENV, FakeRenderer, SdCliSettings
+from forecats_pipeline.render_stage import (
+    MODEL_DIRECTORY_ENV,
+    REPORT_ADDRESS_ENV,
+    FakeRenderer,
+    SdCliSettings,
+)
 
 # The two source trees, as the interpreter running the suite found them: the
 # subprocess tests below start the entry point the way the package's wrapper does.
@@ -122,7 +127,7 @@ FEED_TOKEN = "token-abc123"  # pragma: allowlist secret
 
 
 def run(output_dir: Path, **over):
-    parts = {**collaborators(), **over}
+    parts = {"report_address": REPORT_INBOX, **collaborators(), **over}
     return run_nightly(DAY, place(), published_at=MORNING, output_dir=output_dir, **parts)
 
 
@@ -144,6 +149,7 @@ def run_entry_point(tmp_path: Path, monkeypatch, capsys, feeds: str) -> None:
     removed, as it is on a render pod.
     """
     monkeypatch.setenv(CALENDAR_FEEDS_ENV, feeds)
+    monkeypatch.setenv(REPORT_ADDRESS_ENV, REPORT_INBOX)
     for name in POD_REMOVED_ENV:
         monkeypatch.delenv(name, raising=False)
 
@@ -282,6 +288,7 @@ def test_a_failure_no_stage_claimed_still_leaves_a_refusal_with_its_cause(
         raise OSError(28, "No space left on device")
 
     monkeypatch.setenv(CALENDAR_FEEDS_ENV, f"home={FEED_URL}")
+    monkeypatch.setenv(REPORT_ADDRESS_ENV, REPORT_INBOX)
     monkeypatch.setattr("forecats_pipeline.pipeline.run_nightly", disk_full)
 
     exit_code = main(
@@ -349,6 +356,33 @@ def test_a_day_that_is_not_a_date_names_the_flag_instead_of_the_failure(tmp_path
     assert "unhandled" not in printed
 
 
+def test_a_nightly_with_no_address_to_report_to_publishes_nothing(tmp_path, monkeypatch, capsys):
+    """An absent report address is the state the model grant forbids, not a blank to render under.
+
+    The obligation attaches to the published picture, so the run that cannot name
+    an inbox stops before it draws one — the same shape as the weights directory
+    two tests below, and refused for the same cost: a panel nobody can object to.
+    """
+    monkeypatch.setenv(CALENDAR_FEEDS_ENV, f"home={DAY_ICS.as_uri()}")
+    monkeypatch.delenv(REPORT_ADDRESS_ENV, raising=False)
+
+    exit_code = main(
+        nightly_argv(tmp_path / "panels")
+        + [
+            "--household-file",
+            str(household_file(tmp_path)),
+            "--weather",
+            "rain",
+        ]
+    )
+
+    printed = capsys.readouterr().out
+    assert exit_code == 1
+    assert "refused at config: no report address" in printed
+    assert REPORT_ADDRESS_ENV in printed
+    assert not (tmp_path / "panels" / panel_name(DAY)).exists()
+
+
 def test_a_render_with_no_weights_directory_names_the_variable_that_holds_it(
     tmp_path, monkeypatch, capsys
 ):
@@ -359,6 +393,7 @@ def test_a_render_with_no_weights_directory_names_the_variable_that_holds_it(
     files while the path that moved sits in another language two files away.
     """
     monkeypatch.setenv(CALENDAR_FEEDS_ENV, f"home={DAY_ICS.as_uri()}")
+    monkeypatch.setenv(REPORT_ADDRESS_ENV, REPORT_INBOX)  # not what this run is missing
     monkeypatch.delenv(MODEL_DIRECTORY_ENV, raising=False)
 
     exit_code = main(
@@ -388,6 +423,7 @@ def test_the_named_weights_directory_is_the_one_the_render_looks_in(tmp_path, mo
     holds.
     """
     monkeypatch.setenv(CALENDAR_FEEDS_ENV, f"home={DAY_ICS.as_uri()}")
+    monkeypatch.setenv(REPORT_ADDRESS_ENV, REPORT_INBOX)  # not what this run is missing
     monkeypatch.setenv(MODEL_DIRECTORY_ENV, str(tmp_path / "exported"))
     named = tmp_path / "named-by-the-flag"
     named.mkdir()
@@ -433,7 +469,7 @@ def test_the_entry_point_renders_with_no_host_and_no_ssh_credentials(tmp_path: P
     log = tmp_path / "cli.json"
 
     weights = tmp_path / "h3image"
-    settings = SdCliSettings(weights)
+    settings = SdCliSettings(weights, report_address=REPORT_INBOX)
     weights.mkdir()
     for name in settings.files:
         Path(name).write_bytes(b"the bytes of a weight")
@@ -466,6 +502,7 @@ def test_the_entry_point_renders_with_no_host_and_no_ssh_credentials(tmp_path: P
         "NVIDIA_VISIBLE_DEVICES": "1",
         CALENDAR_FEEDS_ENV: f"home={DAY_ICS.as_uri()}",
         MODEL_DIRECTORY_ENV: str(weights),
+        REPORT_ADDRESS_ENV: "owner@example.invalid",
     }
 
     run = subprocess.run(
@@ -510,6 +547,7 @@ def test_the_entry_point_renders_with_no_host_and_no_ssh_credentials(tmp_path: P
 
     record = json.loads((tmp_path / "panels" / provenance_name(DAY)).read_text(encoding="utf-8"))
     assert record["renderer"] == "sd-cli"
+    assert record["report_address"] == "owner@example.invalid"
     assert record["weights"] == [settings.diffusion_model, settings.vae, settings.text_encoder]
     assert record["reference_photos"] == [
         str(pictures / "milo.jpg"),

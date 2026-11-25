@@ -7,9 +7,10 @@ from pathlib import Path
 from struct import Struct
 
 import pytest
+from conftest import REPORT_INBOX
 from forecats_pipeline import render_stage
 from forecats_pipeline.contracts import Caption, PipelineRefusal
-from forecats_pipeline.render_stage import FakeRenderer, SdCliRenderer, SdCliSettings
+from forecats_pipeline.render_stage import REPORT_ADDRESS_ENV, FakeRenderer, SdCliRenderer, SdCliSettings
 
 CAPTION = Caption(text="a rainy street", template_hash="abc", style="risograph")
 CLI = "/nix/store/x/bin/sd-cli"
@@ -50,7 +51,7 @@ class FakeProcesses:
 
 def weights(root: Path) -> SdCliSettings:
     """The four weight files a render opens, as files that exist under `root`."""
-    settings = SdCliSettings(root)
+    settings = SdCliSettings(root, report_address=REPORT_INBOX)
     root.mkdir(parents=True, exist_ok=True)
     for name in settings.files:
         Path(name).write_bytes(b"weights")
@@ -205,7 +206,7 @@ def test_a_directory_holding_no_weights_refuses_before_the_cli_is_spawned(tmp_pa
     empty = tmp_path / "h3image"
     empty.mkdir()
 
-    refusal = SdCliRenderer(CLI, SdCliSettings(empty)).render(
+    refusal = SdCliRenderer(CLI, SdCliSettings(empty, report_address=REPORT_INBOX)).render(
         CAPTION, seed=1, reference_photos=[], destination=tmp_path / "panel.png"
     )
 
@@ -260,7 +261,7 @@ def test_a_render_that_outlives_its_budget_is_a_refusal(tmp_path: Path, monkeypa
 @pytest.mark.parametrize("binary", ["", "   "])
 def test_the_renderer_refuses_to_guess_where_the_cli_is(binary: str):
     with pytest.raises(ValueError, match="diffusion CLI to run"):
-        SdCliRenderer(binary, SdCliSettings("weights"))
+        SdCliRenderer(binary, SdCliSettings("weights", report_address=REPORT_INBOX))
 
 
 @pytest.mark.parametrize("stream", ["stdout", "stderr"])
@@ -420,7 +421,7 @@ def test_the_weights_are_the_named_files_under_the_directory_the_render_was_give
     Moving the volume changes the directory and nothing else: the four names are
     what the CLI is handed and what the placement step refuses to leave a gap in.
     """
-    settings = SdCliSettings(tmp_path / "llama-models")
+    settings = SdCliSettings(tmp_path / "llama-models", report_address=REPORT_INBOX)
 
     assert [Path(name).name for name in settings.files] == list(render_stage.WEIGHT_FILE_NAMES)
     assert all(Path(name).is_relative_to(tmp_path / "llama-models") for name in settings.files)
@@ -429,7 +430,20 @@ def test_the_weights_are_the_named_files_under_the_directory_the_render_was_give
 def test_settings_refuse_a_directory_nothing_named():
     """An empty `FORECATS_MODEL_DIRECTORY` is an unset one, not a relative render."""
     with pytest.raises(ValueError, match="weight files are read from"):
-        SdCliSettings("   ")
+        SdCliSettings("   ", report_address=REPORT_INBOX)
+
+
+def test_settings_refuse_a_licensed_model_with_nothing_to_report_it_to():
+    """The H3 weights are licensed to the owner, not owned, and the grant is the reason.
+
+    It permits the render only while a way to report a suspected violation of it
+    stays reachable from what is published, so a configuration naming the weights
+    and no address draws nothing — refused where the weights are named, which is
+    the one place a caller cannot forget it.
+    """
+    for blank in ("", "   "):
+        with pytest.raises(ValueError, match=REPORT_ADDRESS_ENV):
+            SdCliSettings("weights", report_address=blank)
 
 
 def test_the_timeout_covers_the_schedule_it_is_given():

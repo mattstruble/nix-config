@@ -5,7 +5,8 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 
 import pytest
-from conftest import MORNING
+from conftest import MORNING, REPORT_INBOX
+from forecats_pipeline import publish_stage
 from forecats_pipeline.contracts import Caption, DayContext, Occasion, Staleness, WeatherToday
 from forecats_pipeline.publish_stage import (
     FRESHNESS_NAME,
@@ -15,7 +16,7 @@ from forecats_pipeline.publish_stage import (
     publish_panel,
     read_freshness,
 )
-from forecats_pipeline.render_stage import Rendered
+from forecats_pipeline.render_stage import REPORT_ADDRESS_ENV, Rendered
 
 PAYLOADS = {"api.open-meteo.com": {"daily": {"time": ["2026-03-08"]}}}
 
@@ -66,7 +67,14 @@ def provenance(tmp_path: Path) -> dict:
 
 
 def test_the_sidecar_names_the_template_the_seed_the_weights_and_the_photos(tmp_path: Path):
-    publish_panel(context(), caption(), rendered(tmp_path), {}, output_dir=tmp_path)
+    publish_panel(
+        context(),
+        caption(),
+        rendered(tmp_path),
+        {},
+        output_dir=tmp_path,
+        report_address=REPORT_INBOX,
+    )
 
     record = provenance(tmp_path)
     assert record["template_hash"] == "deadbeef0000"
@@ -76,7 +84,14 @@ def test_the_sidecar_names_the_template_the_seed_the_weights_and_the_photos(tmp_
 
 
 def test_the_sidecar_holds_the_payloads_the_sources_actually_sent(tmp_path: Path):
-    publish_panel(context(), caption(), rendered(tmp_path), PAYLOADS, output_dir=tmp_path)
+    publish_panel(
+        context(),
+        caption(),
+        rendered(tmp_path),
+        PAYLOADS,
+        output_dir=tmp_path,
+        report_address=REPORT_INBOX,
+    )
 
     record = provenance(tmp_path)
     assert record["payloads"] == PAYLOADS
@@ -94,14 +109,94 @@ def test_a_payload_filed_under_its_address_is_not_published(tmp_path: Path):
     addressed = {"https://cloud.example.invalid/dav/public-calendars/token-abc123?export": "ics"}
 
     with pytest.raises(ValueError, match="feed label") as refusal:
-        publish_panel(context(), caption(), rendered(tmp_path), addressed, output_dir=tmp_path)
+        publish_panel(
+            context(),
+            caption(),
+            rendered(tmp_path),
+            addressed,
+            output_dir=tmp_path,
+            report_address=REPORT_INBOX,
+        )
 
     assert "token-abc123" not in str(refusal.value)
     assert list(tmp_path.glob("*.provenance.json")) == []
 
 
+def test_the_sidecar_names_where_to_report_a_panel_that_should_not_exist(tmp_path: Path):
+    """The grant obliges a way to report a violation, and the sidecar is what a viewer reads.
+
+    The address is emitted rather than only stored: nothing else beside the PNG
+    says who to tell, and a viewer with a complaint has the panel and this file.
+    """
+    publish_panel(
+        context(),
+        caption(),
+        rendered(tmp_path),
+        {},
+        output_dir=tmp_path,
+        report_address=REPORT_INBOX,
+    )
+
+    assert provenance(tmp_path)["report_address"] == REPORT_INBOX
+
+
+def test_nothing_is_published_where_nobody_can_report_it(tmp_path: Path):
+    """A blank address is no report mechanism, so the write refuses and takes the panel back."""
+    with pytest.raises(ValueError, match=REPORT_ADDRESS_ENV):
+        publish_panel(
+            context(),
+            caption(),
+            rendered(tmp_path),
+            {},
+            output_dir=tmp_path,
+            report_address="",
+        )
+
+    assert list(tmp_path.glob("panel-*")) == []
+    assert list(tmp_path.glob("*.json")) == []
+
+
+def test_a_sidecar_that_cannot_be_written_leaves_no_panel_on_the_wall(tmp_path, monkeypatch):
+    """The panel is the last of the three files to appear, and that order is the obligation.
+
+    A published PNG with no sidecar is a picture nobody can explain or report, and
+    the nightly cannot notice: a second run for the date finds the panel and skips.
+    Failing the other way round costs a sidecar naming a panel that never arrived
+    and a render still under its scratch name, both of which the next run replaces.
+    """
+    writes = publish_stage._write_json
+
+    def sidecar_that_fails(path, record):
+        if str(path).endswith(provenance_name(date(2026, 3, 8))):
+            raise OSError(28, "No space left on device")
+        writes(path, record)
+
+    monkeypatch.setattr(publish_stage, "_write_json", sidecar_that_fails)
+
+    with pytest.raises(OSError, match="No space left"):
+        publish_panel(
+            context(),
+            caption(),
+            rendered(tmp_path),
+            {},
+            output_dir=tmp_path,
+            report_address=REPORT_INBOX,
+        )
+
+    assert list(tmp_path.glob("panel-*")) == []
+    assert (tmp_path / "scratch.png").is_file()
+
+
 def test_a_viewer_can_date_the_panel_that_is_hanging_up(tmp_path: Path):
-    publish_panel(context(), caption(), rendered(tmp_path), {}, output_dir=tmp_path, published_at=MORNING)
+    publish_panel(
+        context(),
+        caption(),
+        rendered(tmp_path),
+        {},
+        output_dir=tmp_path,
+        report_address=REPORT_INBOX,
+        published_at=MORNING,
+    )
 
     later = MORNING + timedelta(hours=30)
     staleness = read_freshness(tmp_path, now=later)
@@ -110,7 +205,15 @@ def test_a_viewer_can_date_the_panel_that_is_hanging_up(tmp_path: Path):
 
 
 def test_the_freshness_artefact_names_the_panel_it_is_about(tmp_path: Path):
-    publish_panel(context(), caption(), rendered(tmp_path), {}, output_dir=tmp_path, published_at=MORNING)
+    publish_panel(
+        context(),
+        caption(),
+        rendered(tmp_path),
+        {},
+        output_dir=tmp_path,
+        report_address=REPORT_INBOX,
+        published_at=MORNING,
+    )
 
     record = json.loads((tmp_path / FRESHNESS_NAME).read_text(encoding="utf-8"))
     assert record["panel"] == panel_name(date(2026, 3, 8))
@@ -130,11 +233,27 @@ def test_a_clock_without_a_zone_cannot_claim_a_render_time(tmp_path: Path):
     naive = datetime(2026, 3, 8, 3, 0, tzinfo=None)
 
     with pytest.raises(ValueError, match="timezone-aware"):
-        publish_panel(context(), caption(), rendered(tmp_path), {}, output_dir=tmp_path, published_at=naive)
+        publish_panel(
+            context(),
+            caption(),
+            rendered(tmp_path),
+            {},
+            output_dir=tmp_path,
+            report_address=REPORT_INBOX,
+            published_at=naive,
+        )
 
 
 def test_freshness_cannot_be_read_against_a_naive_clock(tmp_path: Path):
-    publish_panel(context(), caption(), rendered(tmp_path), {}, output_dir=tmp_path, published_at=MORNING)
+    publish_panel(
+        context(),
+        caption(),
+        rendered(tmp_path),
+        {},
+        output_dir=tmp_path,
+        report_address=REPORT_INBOX,
+        published_at=MORNING,
+    )
 
     naive_now = datetime(2026, 3, 9).replace(tzinfo=None)
 

@@ -29,6 +29,7 @@ from forecats_pipeline.contracts import Caption, PipelineRefusal
 __all__ = [
     "MODEL_DIRECTORY_ENV",
     "PHOTO_DIRECTORY_ENV",
+    "REPORT_ADDRESS_ENV",
     "WEIGHT_FILE_NAMES",
     "FakeRenderer",
     "Rendered",
@@ -75,6 +76,12 @@ WEIGHT_FILE_NAMES = (
     "p-h3-image_text_encoder_int8_convrot.safetensors",
     "p-h3-image_tokenizer.json",
 )
+
+# Where a viewer sends a concern about a picture this renderer drew. Named by the
+# environment and never defaulted here: the address is the owner's own, it is
+# personal data, and an inbox this module invented would satisfy the code and not
+# the obligation.
+REPORT_ADDRESS_ENV = "FORECATS_REPORT_ADDRESS"
 
 # The schedule, in one place. The timeout used to be a separate number sized for
 # a 6-step run, so moving to 20 steps made every render die at 600 s with a
@@ -166,20 +173,37 @@ class FakeRenderer:
 
 @dataclass(frozen=True)
 class SdCliSettings:
-    """Which directory's weight files a render opens, and which card it opens them on.
+    """Which directory's weight files a render opens, on which card, and where a
+    complaint about its output goes.
 
     The directory is required, never defaulted: it is the mount point of the
     weights volume, which the storage declaration owns, and a default here would
     be a location the declaration is free to have moved away from. The four files
     under it are named by `WEIGHT_FILE_NAMES`.
+
+    The report address is required by a different authority: those four files are
+    the MiniMax H3 model, licensed to the owner rather than owned, and the grant
+    keeps its permission only while the owner keeps a mechanism for reporting a
+    suspected violation of the agreement or its acceptable use policy reachable
+    from what they publish. A licensed render with no address is not a
+    configuration, so the check sits on the settings and not on the call site that
+    happens to build them.
     """
 
     directory: str | Path
+    report_address: str
     gpu_device: str | None = None
 
     def __post_init__(self) -> None:
         if not str(self.directory).strip():
             raise ValueError("directory must be the directory the weight files are read from")
+        if not str(self.report_address).strip():
+            raise ValueError(
+                "report_address must name an inbox a viewer of the panel can reach: the "
+                "weights this render opens are licensed, not owned, and the licence obliges "
+                "the owner to keep a way to report a suspected violation of it reachable "
+                f"from the panel; {REPORT_ADDRESS_ENV} carries the address to the render"
+            )
 
     @property
     def diffusion_model(self) -> str:

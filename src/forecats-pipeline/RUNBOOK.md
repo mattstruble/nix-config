@@ -112,6 +112,9 @@ can tell.
   pin, where GPU0 is the owner's live session.
 - `FORECATS_CALENDAR_FEEDS`, and the model endpoint or key if an occasion is to
   be asked about, from the namespace's Secret.
+- `FORECATS_REPORT_ADDRESS`, the address a viewer reports a suspected violation
+  of the model grant to. Nothing in the package defaults it and no panel is
+  published without it; the section below is why.
 - `forecats-pipeline` from `packages.forecats-pipeline` as the command, and the
   diffusion CLI itself. The package closure carries no `sd-cli`: the only nixpkgs
   build that renders on a card does not evaluate on every host the package is
@@ -122,3 +125,31 @@ can tell.
   build anyway, and the renderer refuses that render rather than publishing the
   picture it drew.
 - Nothing else. No host, no key, no agent.
+
+## Reporting a panel that should not exist
+
+The four weight files are the MiniMax H3 model, licensed to the owner rather than
+owned. The grant permits the render on two conditions this repository carries: a
+reasonably accessible mechanism for reporting a suspected violation of the
+agreement or its acceptable use policy, and prompt action once a report arrives.
+For a display on a household wall, proportionate means a named address a viewer
+can find — not a ticket queue, not a form, not an inbox nobody watches.
+
+The address is `services.k3s.forecats.reportAddress`, it reaches the render as
+`FORECATS_REPORT_ADDRESS`, and it is written into every panel's provenance sidecar
+as `report_address` — beside the seed, the weights and the reference photos that
+made the picture, which is what a report is about. The mechanism fails loudly in
+both directions: a render with no address refuses before it draws, and a publish
+with no address refuses before it writes. The nix default is a placeholder on a
+domain reserved for documentation, because the real address is personal data and
+this repository is public; the owner sets it in config that is not pushed here.
+
+**On notice, the owner takes that day's panel off the wall before anything else:
+delete `panel-<date>.png` and `panel-<date>.provenance.json` from the panels
+volume, then answer the person who reported it and say that it is down.**
+
+What prompt action cannot mean is deleting the file and expecting the picture to
+stay gone. The seed is the date and the caption is built from the household file,
+so a re-render of a taken-down day draws the same panel from the same inputs; what
+changes is the caption, the reference photo, or the decision not to render that day
+again.
