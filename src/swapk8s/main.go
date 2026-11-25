@@ -483,6 +483,14 @@ func (c *client) readyPod(ns string, sel map[string]string) (string, string, err
 	return "", reason, nil
 }
 
+// busyCardSelector is the labelSelector the busy-card scan sends. It is set-based
+// because comma-separated equality terms are a conjunction: naming both
+// components that way asks for a pod that is both at once, and the API answers
+// with nothing — every card then reads as free.
+func busyCardSelector() string {
+	return componentLabel + " in (" + strings.Join(cardOwnerComponents, ",") + ")"
+}
+
 // busyCards returns the cards held by the pods that own one - models and
 // gpu-jobs - in the namespace. A card is busy from the moment a pod claiming it
 // exists - not from readiness - because a loading pod already owns its card, and
@@ -492,7 +500,7 @@ func (c *client) readyPod(ns string, sel map[string]string) (string, string, err
 // cardsFromPods.
 func (c *client) busyCards(ctx context.Context, ns string) (map[string]bool, error) {
 	q := url.Values{}
-	q.Set("labelSelector", componentLabel+" in ("+strings.Join(cardOwnerComponents, ",")+")")
+	q.Set("labelSelector", busyCardSelector())
 	raw, err := c.do(http.MethodGet, fmt.Sprintf("/api/v1/namespaces/%s/pods?%s", ns, q.Encode()), "", nil)
 	if err != nil {
 		return nil, err

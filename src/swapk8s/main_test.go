@@ -5,9 +5,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
 	"testing"
@@ -266,6 +269,116 @@ func pods(specs ...podSpec) string {
 		items = append(items, s.json())
 	}
 	return `{"items":[` + strings.Join(items, ",") + `]}`
+}
+
+// ---- the busy-card query ---------------------------------------------------
+
+// testClient points a client at a test server: what the scan sends is only
+// observable at the HTTP boundary, and that query is the half of the busy-card
+// scan no pod list can stand in for.
+func testClient(srv *httptest.Server) *client { return &client{base: srv.URL, hc: srv.Client()} }
+
+// The selector is pinned as the value the API receives, decoded from the request
+// the scan really makes. An equality form, a dropped member, a missing space or a
+// label constant rename that did not reach this line is a query the API accepts
+// and answers with an empty list; an empty list is not an error, it is zero busy
+// cards, a card handed to a second job, and a suite that stayed green.
+func TestBusyCardsSendsTheCardOwnerSelector(t *testing.T) {
+	var selector string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		selector = r.URL.Query().Get("labelSelector")
+		fmt.Fprint(w, pods())
+	}))
+	defer srv.Close()
+
+	if _, err := testClient(srv).busyCards(context.Background(), "ai"); err != nil {
+		t.Fatalf("busyCards: %v", err)
+	}
+	const want = "app.kubernetes.io/component in (model,gpu-job)"
+	if selector != want {
+		t.Errorf("labelSelector = %q, want %q", selector, want)
+	}
+}
+
+// The members are cardOwnerComponents, not a second list that happens to match it
+// today: a third kind of card holder added to that list and not to the selector is
+// a pod placement never sees, which is the bug component=gpu-job was added for.
+func TestBusyCardSelectorMembersAreCardOwnerComponents(t *testing.T) {
+	selector := busyCardSelector()
+	_, members, set := strings.Cut(selector, " in (")
+	if !set || !strings.HasSuffix(members, ")") {
+		t.Fatalf("selector %q is not the set form the card owners go into", selector)
+	}
+	got := strings.Split(strings.TrimSuffix(members, ")"), ",")
+	if !slices.Equal(got, cardOwnerComponents) {
+		t.Errorf("selector selects %v; cardOwnerComponents is %v", got, cardOwnerComponents)
+	}
+}
+
+// A scan the API refused arrives with no pods in it, exactly like a namespace in
+// which nothing holds a card. Read as the second, the first hands out a card a
+// running pod owns, so the distinction the caller has to be able to make is the
+// error.
+func TestBusyCardsSeparatesAnEmptyListFromAFailedScan(t *testing.T) {
+	rejected := `{"kind":"Status","status":"Failure","message":"the label selector is invalid"}`
+	cases := []struct {
+		name    string
+		status  int
+		body    string
+		wantErr bool
+	}{
+		{"an empty list is a scan that found nothing", http.StatusOK, pods(), false},
+		{"a rejected selector is a failure", http.StatusBadRequest, rejected, true},
+		{"a scan the ServiceAccount is not allowed to make is a failure", http.StatusForbidden, rejected, true},
+		{"a body that is not a pod list is a failure", http.StatusOK, `{"items":[`, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(tc.status)
+				fmt.Fprint(w, tc.body)
+			}))
+			defer srv.Close()
+
+			busy, err := testClient(srv).busyCards(context.Background(), "ai")
+			if !tc.wantErr {
+				if err != nil {
+					t.Fatalf("a namespace with no card holders must scan clean, got %v", err)
+				}
+				if len(busy) != 0 {
+					t.Errorf("busy = %v, want no card held", busy)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("a scan that failed returned busy=%v and no error; the caller reads that as every card free", busy)
+			}
+		})
+	}
+}
+
+// And the error is what a placement does with: a claim whose scan failed must not
+// reach the command that starts the pod, and the API's answer has to survive to
+// whoever reads the failure.
+func TestClaimRefusesWhenTheBusyScanFails(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		fmt.Fprint(w, `{"kind":"Status","status":"Failure","message":"the label selector is invalid"}`)
+	}))
+	defer srv.Close()
+
+	claimed := false
+	card, err := claimJob(t, t.TempDir()+"/cards.lock", testClient(srv).scanCards("ai"), "1", "any",
+		func(string) error { claimed = true; return nil })
+	if err == nil {
+		t.Fatalf("a claim whose scan failed reported card %q", card)
+	}
+	if claimed {
+		t.Error("a claim whose scan failed handed the card to the command it runs")
+	}
+	if !strings.Contains(err.Error(), "400") {
+		t.Errorf("err = %v; want the API's answer, which is the diagnosis", err)
+	}
 }
 
 // A card held by a gpu-job refuses a wake exactly as a card held by a model
