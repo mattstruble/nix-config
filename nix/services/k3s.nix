@@ -49,8 +49,67 @@ let
     type: Opaque
     data:
   '' + lib.concatMapStrings (key: "  ${forecatsEnvName key}: \"$" + "{${forecatsEnvName key}_B64}\"\n") forecatsSecret.keys;
+
+  # The forecats namespace, the account the nightly render runs as, and the three
+  # volumes it writes or reads. Same rule as the wiki's storage below: a host fact
+  # is written once here and read by everything that has to agree with it — the PVs
+  # the module generates, the claims that bind them, the host directories tmpfiles
+  # creates, the values the chart renders with, and the environment the render
+  # process starts with — and nothing else in this repo connects them. Each drift
+  # is quiet: a pod running as an id that cannot write the directory it mounts, a
+  # claim that cannot bind its pre-bound PV and sits Pending on an event that names
+  # no file, a render reading the directory a moved volume left behind.
+  #
+  # Hoisted out of the module because the pipeline package is built in `perSystem`,
+  # where no module config is in scope: `flake.forecatsStorage` is how that package
+  # learns the two directories its wrapper exports, so no Python file holds a
+  # second copy of a path this declaration owns.
+  forecatsStorage = {
+    namespace = "forecats";
+    # 982 is unassigned on mjolnir; 983 is the wiki's BookStack account.
+    uid = 982;
+    gid = 982;
+    # One entry per volume. The storage class and the claim name are both the
+    # attribute name prefixed with the app, so the PV, the claim that binds it
+    # and the values the chart reads cannot name different objects.
+    volumes = {
+      panels = {
+        hostPath = "/var/lib/forecats/panels";
+        size = "10Gi";
+        # The nightly job writes here and whatever serves forecats.mjolnir reads
+        # it. A claim binds only a PV listing every mode it asks for, so both
+        # modes are listed rather than the one the first consumer wants.
+        accessModes = [ "ReadWriteOnce" "ReadWriteMany" ];
+        # The render pod writes here, so the host directory belongs to the pod's
+        # uid: the policy that keeps these pods non-root also forbids the chown
+        # initContainer that would otherwise set that ownership.
+        writable = true;
+      };
+      weights = {
+        # Ordinary host data, deliberately not a store path: nix garbage collected
+        # the glibc out from under a hand-built sd-cli, and the weights survived
+        # precisely because they are not in the store.
+        hostPath = "/var/lib/llama-models/h3image";
+        # 17.9 GB sits there today. A static PV's capacity is only compared against
+        # the claim's request, so it is headroom, not a reservation.
+        size = "20Gi";
+        accessModes = [ "ReadOnlyMany" ];
+        writable = false;
+      };
+      photos = {
+        hostPath = "/var/lib/forecats/photos";
+        size = "2Gi";
+        accessModes = [ "ReadOnlyMany" ];
+        writable = false;
+      };
+    };
+  };
 in
 {
+  # How the pipeline package reaches the declaration above: its wrapper exports the
+  # two `hostPath`s, and nothing else of this reaches Python.
+  flake.forecatsStorage = forecatsStorage;
+
   flake.modules.nixos.k3s =
     {
       config,
@@ -220,54 +279,6 @@ in
                       values:
                         - mjolnir
       '';
-      # The forecats namespace, the account the nightly render runs as, and the
-      # three volumes it writes or reads. Same rule as `wikiStorage` above: each
-      # host fact is written once here and read by consumers in three languages —
-      # the PVs generated below, the claims that bind them, the host directories
-      # tmpfiles creates, and the values the chart renders with — and nothing else
-      # in this repo connects them. Both drifts are quiet: a pod running as an id
-      # that cannot write the directory it mounts, and a claim that cannot bind
-      # its pre-bound PV sitting Pending with an event that names no file.
-      forecatsStorage = {
-        namespace = "forecats";
-        # 982 is unassigned on mjolnir; 983 is the wiki's BookStack account.
-        uid = 982;
-        gid = 982;
-        # One entry per volume. The storage class and the claim name are both the
-        # attribute name prefixed with the app, so the PV, the claim that binds it
-        # and the values the chart reads cannot name different objects.
-        volumes = {
-          panels = {
-            hostPath = "/var/lib/forecats/panels";
-            size = "10Gi";
-            # The nightly job writes here and whatever serves forecats.mjolnir reads
-            # it. A claim binds only a PV listing every mode it asks for, so both
-            # modes are listed rather than the one the first consumer wants.
-            accessModes = [ "ReadWriteOnce" "ReadWriteMany" ];
-            # The render pod writes here, so the host directory belongs to the
-            # pod's uid: the policy that keeps these pods non-root also forbids
-            # the chown initContainer that would otherwise set that ownership.
-            writable = true;
-          };
-          weights = {
-            # Ordinary host data, deliberately not a store path: nix garbage
-            # collected the glibc out from under a hand-built sd-cli, and the
-            # weights survived precisely because they are not in the store.
-            hostPath = "/var/lib/llama-models/h3image";
-            # 17.9 GB sits there today. A static PV's capacity is only compared
-            # against the claim's request, so it is headroom, not a reservation.
-            size = "20Gi";
-            accessModes = [ "ReadOnlyMany" ];
-            writable = false;
-          };
-          photos = {
-            hostPath = "/var/lib/forecats/photos";
-            size = "2Gi";
-            accessModes = [ "ReadOnlyMany" ];
-            writable = false;
-          };
-        };
-      };
       forecatsVolumeNames = builtins.attrNames forecatsStorage.volumes;
       forecatsVolume = name: forecatsStorage.volumes.${name};
       forecatsVolumeClaim = name: "forecats-${name}";

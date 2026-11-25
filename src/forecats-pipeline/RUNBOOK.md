@@ -15,9 +15,11 @@ would be a bug rather than a convenience.
 | `sd-cli` | `PATH`, which `--sd-cli-binary` defaults to | the render host, which names a CUDA build with `--sd-cli-binary` or puts one first on `PATH`; `packages.forecats-pipeline` carries none |
 
 A volume's mount point is the path the render reads, in the pod and on the host
-that fills it. The default and the mount are one fact, not two, which is why
-these paths are constants rather than configuration: a render that looked
-elsewhere would find an empty directory.
+that fills it. `nix/services/k3s.nix` declares it once, and the host directory it
+creates, the local volume over it and the two variables the pipeline wrapper
+exports are all read from that one entry — the render holds no path of its own,
+so moving a volume is a change to the declaration and to nothing else. A render
+aimed at a directory nothing mounts refuses rather than drawing from an empty one.
 
 The two input volumes are read-only in the pod and root-owned on the host,
 because nothing in the cluster writes them. The panels volume is the writable
@@ -71,7 +73,10 @@ file only says what a pod mounts them at.
    makes the step repeatable after a full volume stopped a copy halfway.
 
 `--to` names another directory: the weights a render was told to read elsewhere,
-or a second set to compare.
+or a second set to compare. Without it the directory comes from
+`FORECATS_MODEL_DIRECTORY`, which the wrapper exports from the declaration; run
+straight from a shell that has never seen the wrapper, the command refuses and
+names that variable.
 
 ## Place the reference photos
 
@@ -99,6 +104,9 @@ can tell.
 ## What a render pod has to provide
 
 - The three claims, mounted at the three paths above, the two inputs read-only.
+  The wrapper exports the two input mount points, so a pod that mounts one of them
+  somewhere else names that path with `FORECATS_MODEL_DIRECTORY` and
+  `FORECATS_PHOTO_DIRECTORY`.
 - `NVIDIA_VISIBLE_DEVICES` naming the card the job holds. The render inherits it
   rather than naming a card of its own; `--render-gpu` is for a host with no such
   pin, where GPU0 is the owner's live session.

@@ -1,4 +1,4 @@
-{ ... }:
+{ inputs, ... }:
 {
   # The pipeline is standard library only: the weather and calendar providers
   # it composes are themselves stdlib plus the ICS expander, and adding a
@@ -22,6 +22,7 @@
       ...
     }:
     let
+      storage = inputs.self.forecatsStorage;
       runtimeDeps =
         ps: with ps; [
           pillow
@@ -31,6 +32,16 @@
       runtimePython = pkgs.python3.withPackages runtimeDeps;
       testPython = pkgs.python3.withPackages (ps: runtimeDeps ps ++ [ ps.pytest ]);
       panelFont = "${pkgs.dejavu_fonts}/share/fonts/truetype/DejaVuSans-Bold.ttf";
+
+      # The two directories a render reads, taken from the declaration that creates
+      # them: `forecatsStorage` in nix/services/k3s.nix makes the host directories and
+      # the local volumes over them. Written once for both wrappers so the nightly and
+      # the placement step cannot disagree, and as `${VAR:-default}` because a pod that
+      # mounts a volume at another mount point names its own.
+      volumeExports = ''
+        export FORECATS_MODEL_DIRECTORY="''${FORECATS_MODEL_DIRECTORY:-${storage.volumes.weights.hostPath}}"
+        export FORECATS_PHOTO_DIRECTORY="''${FORECATS_PHOTO_DIRECTORY:-${storage.volumes.photos.hostPath}}"
+      '';
 
       # The two trees, as the installed layout names them. Both entry points run
       # one interpreter over both, and the path is written once so the wrappers
@@ -45,12 +56,13 @@
       #
       # One nightly render, on a host with no checkout: every path the run needs
       # — the two source trees, the panel font, the household file — is a store
-      # path fixed in at build time. The diffusion CLI is the one input that is
-      # not: the only nixpkgs build of it that renders on a card does not evaluate
-      # on every host this package is built for, so the render host supplies it
-      # and names it. The devShell below cannot say any of that; its PYTHONPATH is
-      # relative to a repository root, which is the thing that tied the pipeline to
-      # the laptop it was developed on.
+      # path fixed in at build time, and the two volume directories the render reads
+      # are exported above from the declaration that creates them. The diffusion CLI
+      # is the one input that is not: the only nixpkgs build of it that renders on a
+      # card does not evaluate on every host this package is built for, so the render
+      # host supplies it and names it. The devShell below cannot say any of that; its
+      # PYTHONPATH is relative to a repository root, which is the thing that tied the
+      # pipeline to the laptop it was developed on.
       packages.forecats-pipeline = pkgs.stdenvNoCC.mkDerivation (finalAttrs: {
         pname = "forecats-pipeline";
         version = "0";
@@ -86,6 +98,7 @@
 
           export FORECATS_PANEL_FONT='${panelFont}'
           export PYTHONPATH='${pythonPath}'
+          ${volumeExports}
 
           # The pipeline's own default for the household file is a path under a
           # repository root; the file that ships in this closure is the default
@@ -113,6 +126,7 @@
           set -eu
 
           export PYTHONPATH='${pythonPath}'
+          ${volumeExports}
 
           exec '${runtimePython}/bin/python3' -m forecats_pipeline.stage_inputs "$@"
           WRAPPER
@@ -136,6 +150,11 @@
           cp -r "${placeholder "out"}/src" "$installed"
           chmod -R u+w "$installed"
           cd "$installed/forecats-pipeline"
+          # The suite reads the two volume directories out of the environment, the
+          # way the nightly does: the household file names its photos by absolute
+          # path, and what it has to agree with is the declaration, not a copy of the
+          # path written into a test.
+          ${volumeExports}
           PYTHONPATH="$installed/forecats-day-context:$installed/forecats-pipeline" python3 -m pytest -q .
 
           # The suite above imports the package; it never runs a wrapper, and the
@@ -186,6 +205,35 @@
           assert len(plate) > 1, f"{os.environ['PANEL']} is a flat field: no forecast plate"
           PY
 
+          # A build has no weights, so the real renderer has nowhere to read from —
+          # which is the state a volume that mounted empty leaves, and the one case
+          # that must refuse before the CLI is spawned. What this checks is the
+          # export, so the two variables are taken away from this run: the directory
+          # named on the refusal line has to have come from the wrapper, and a
+          # pipeline that fell back to a default of its own fails the build here.
+          refused="$PWD/sd-cli-refusal.txt"
+          if env -u FORECATS_MODEL_DIRECTORY -u FORECATS_PHOTO_DIRECTORY \
+            PYTHONDONTWRITEBYTECODE=1 \
+            FORECATS_CALENDAR_FEEDS="check=file://${placeholder "out"}/src/forecats-day-context/fixtures/day.ics" \
+            NVIDIA_VISIBLE_DEVICES=1 \
+            "${placeholder "out"}/bin/forecats-pipeline" \
+            --day "$day" \
+            --timezone America/New_York \
+            --latitude 40.7128 \
+            --longitude -74.006 \
+            --output-dir "$PWD/panels-refused" \
+            --renderer sd-cli \
+            --weather snow --high 1 --low -3 \
+            >"$refused" 2>&1; then
+            echo "error: a render with no weights anywhere on this host exited 0" >&2
+            exit 1
+          fi
+          grep -q "${storage.volumes.weights.hostPath}" "$refused" || {
+            echo "error: the render refused without naming ${storage.volumes.weights.hostPath}, so the directory it read did not come from the storage declaration" >&2
+            cat "$refused" >&2
+            exit 1
+          }
+
           # The other wrapper: same interpreter, same two trees, its own module
           # name to get wrong.
           PYTHONDONTWRITEBYTECODE=1 "${placeholder "out"}/bin/forecats-stage-inputs" --help >/dev/null
@@ -225,6 +273,11 @@
 
         env.PYTHONPATH = "src/forecats-day-context:src/forecats-pipeline";
         env.FORECATS_PANEL_FONT = panelFont;
+        # The same two directories the installed wrappers export, so the suite
+        # checks the household file and the staging defaults against the storage
+        # declaration rather than against a path written down in a test.
+        env.FORECATS_MODEL_DIRECTORY = storage.volumes.weights.hostPath;
+        env.FORECATS_PHOTO_DIRECTORY = storage.volumes.photos.hostPath;
       };
     };
 }

@@ -28,7 +28,7 @@ from forecats_pipeline.day_context_stage import PayloadLog, RecordingFetcher
 from forecats_pipeline.contracts import Published
 from forecats_pipeline.pipeline import CALENDAR_FEEDS_ENV, Skipped, main, run_nightly
 from forecats_pipeline.publish_stage import FRESHNESS_NAME, panel_name, provenance_name
-from forecats_pipeline.render_stage import FakeRenderer, SdCliSettings
+from forecats_pipeline.render_stage import MODEL_DIRECTORY_ENV, FakeRenderer, SdCliSettings
 
 # The two source trees, as the interpreter running the suite found them: the
 # subprocess tests below start the entry point the way the package's wrapper does.
@@ -74,7 +74,7 @@ def collaborators() -> dict:
     return {
         "weather_providers": [sky],
         "calendar_provider": MultiFeedCalendarProvider(feed, ((FEED_LABEL, FEED_URL),)),
-        "renderer": FakeRenderer(weights=("/var/lib/llama-models/h3image/model.gguf",)),
+        "renderer": FakeRenderer(weights=("/refs/model.gguf",)),
         "payloads": log,
         "household": two_pets(),
     }
@@ -349,13 +349,81 @@ def test_a_day_that_is_not_a_date_names_the_flag_instead_of_the_failure(tmp_path
     assert "unhandled" not in printed
 
 
+def test_a_render_with_no_weights_directory_names_the_variable_that_holds_it(
+    tmp_path, monkeypatch, capsys
+):
+    """The weights directory is a host fact, so nothing in here defaults it.
+
+    A pod that lost the export would otherwise read the directory the storage
+    declaration no longer mounts, and end on a line about four missing weight
+    files while the path that moved sits in another language two files away.
+    """
+    monkeypatch.setenv(CALENDAR_FEEDS_ENV, f"home={DAY_ICS.as_uri()}")
+    monkeypatch.delenv(MODEL_DIRECTORY_ENV, raising=False)
+
+    exit_code = main(
+        nightly_argv(tmp_path / "panels")
+        + [
+            "--household-file",
+            str(household_file(tmp_path)),
+            "--weather",
+            "rain",
+            "--renderer",
+            "sd-cli",
+        ]
+    )
+
+    printed = capsys.readouterr().out
+    assert exit_code == 1
+    assert "refused at config: no weights directory" in printed
+    assert MODEL_DIRECTORY_ENV in printed
+    assert not (tmp_path / "panels" / panel_name(DAY)).exists()
+
+
+def test_the_named_weights_directory_is_the_one_the_render_looks_in(tmp_path, monkeypatch, capsys):
+    """`--model-directory` still names it, and the refusal is what proves it landed.
+
+    The flag outranks the export, and the line the run ends on names the directory
+    it actually opened — the derived value, never a default this module no longer
+    holds.
+    """
+    monkeypatch.setenv(CALENDAR_FEEDS_ENV, f"home={DAY_ICS.as_uri()}")
+    monkeypatch.setenv(MODEL_DIRECTORY_ENV, str(tmp_path / "exported"))
+    named = tmp_path / "named-by-the-flag"
+    named.mkdir()
+
+    exit_code = main(
+        nightly_argv(tmp_path / "panels")
+        + [
+            "--household-file",
+            str(household_file(tmp_path)),
+            "--weather",
+            "rain",
+            "--renderer",
+            "sd-cli",
+            "--model-directory",
+            str(named),
+            "--render-gpu",
+            "0",
+        ]
+    )
+
+    printed = capsys.readouterr().out
+    assert exit_code == 1
+    assert "refused at render" in printed
+    assert str(named) in printed
+    assert "exported" not in printed
+
+
 def test_the_entry_point_renders_with_no_host_and_no_ssh_credentials(tmp_path: Path):
     """The nightly path, in an environment shaped like the render pod.
 
     `PATH` holds the diffusion CLI and nothing else, so a renderer that still
     shelled out to `ssh` or `scp` would not have found them. `HOME` is an empty
     directory, so there is no key to fall back to even if it did. The card is the
-    pod's, named by `NVIDIA_VISIBLE_DEVICES`.
+    pod's, named by `NVIDIA_VISIBLE_DEVICES`, and the weights directory arrives as
+    the wrapper exports it — from the environment, with no flag on the command
+    line and no path of this program's own to fall back on.
     """
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
@@ -365,7 +433,7 @@ def test_the_entry_point_renders_with_no_host_and_no_ssh_credentials(tmp_path: P
     log = tmp_path / "cli.json"
 
     weights = tmp_path / "h3image"
-    settings = SdCliSettings.for_directory(weights)
+    settings = SdCliSettings(weights)
     weights.mkdir()
     for name in settings.files:
         Path(name).write_bytes(b"the bytes of a weight")
@@ -397,6 +465,7 @@ def test_the_entry_point_renders_with_no_host_and_no_ssh_credentials(tmp_path: P
         "FAKE_CLI_LOG": str(log),
         "NVIDIA_VISIBLE_DEVICES": "1",
         CALENDAR_FEEDS_ENV: f"home={DAY_ICS.as_uri()}",
+        MODEL_DIRECTORY_ENV: str(weights),
     }
 
     run = subprocess.run(
@@ -418,8 +487,6 @@ def test_the_entry_point_renders_with_no_host_and_no_ssh_credentials(tmp_path: P
             str(household),
             "--renderer",
             "sd-cli",
-            "--model-directory",
-            str(weights),
             "--weather",
             "snow",
             "--high",

@@ -38,7 +38,7 @@ from forecats_pipeline.occasion_research import OccasionResearcher
 from forecats_pipeline.overlay_stage import overlay_forecast
 from forecats_pipeline.publish_stage import FRESHNESS_NAME, existing_panel, publish_panel
 from forecats_pipeline.render_stage import (
-    MODEL_DIRECTORY,
+    MODEL_DIRECTORY_ENV,
     FakeRenderer,
     Renderer,
     SdCliRenderer,
@@ -411,7 +411,7 @@ def _nightly_collaborators(
         if args.renderer == "fake"
         else SdCliRenderer(
             args.sd_cli_binary,
-            SdCliSettings.for_directory(args.model_directory, gpu_device=args.render_gpu),
+            SdCliSettings(_weights_directory(args), gpu_device=args.render_gpu),
         )
     )
     return {
@@ -429,6 +429,24 @@ def _nightly_collaborators(
         "renderer": renderer,
         "payloads": payloads,
     }
+
+
+def _weights_directory(args: argparse.Namespace) -> str:
+    """Where the weight files are: the flag, or the environment nix exports.
+
+    No default of this program's own. The directory is the mount point of the
+    weights volume, and the storage declaration that creates it is the source of
+    the path; a default here would be a second answer, and the render would keep
+    reading the directory a moved volume left behind.
+    """
+    directory = args.model_directory or os.environ.get(MODEL_DIRECTORY_ENV, "")
+    if not directory.strip():
+        raise ConfigurationError(
+            f"no weights directory: --model-directory is not given and {MODEL_DIRECTORY_ENV} is "
+            "not set; the storage declaration that mounts the weights volume names the "
+            "directory, and the pipeline wrapper exports it"
+        )
+    return directory
 
 
 def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
@@ -479,10 +497,10 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--model-directory",
-        default=MODEL_DIRECTORY,
         help=(
-            "the directory the weight files are read from; the default is where the "
-            "weights volume mounts, which is what a render pod has"
+            "read the weight files from this directory; the default is what "
+            f"{MODEL_DIRECTORY_ENV} holds, which the render host exports from the storage "
+            "declaration that mounts the weights volume"
         ),
     )
     parser.add_argument(

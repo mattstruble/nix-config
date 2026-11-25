@@ -1,11 +1,12 @@
 """The household file is hand-edited, so a typo should fail here and not on a wall."""
 
+import os
 from pathlib import Path
 
 import pytest
 
 from forecats_pipeline.household import load_household
-from forecats_pipeline.render_stage import PHOTO_DIRECTORY
+from forecats_pipeline.render_stage import PHOTO_DIRECTORY_ENV
 
 REPO = Path(__file__).parents[2]
 
@@ -30,10 +31,16 @@ def test_the_shipped_household_loads_and_keeps_both_brothers_distinct():
 
 
 def test_the_shipped_photos_are_the_ones_the_photo_volume_carries():
-    """A photo path outside the mounted directory is a pet no pod can render."""
-    household = load_household(REPO / "src/forecats-pipeline/household.yaml")
+    """A photo path outside the mounted directory is a pet no pod can render.
 
-    assert {str(pet.reference_photo.parent) for pet in household.pets} == {PHOTO_DIRECTORY}
+    The directory is the one the storage declaration creates and the wrapper
+    exports; the household file is the third thing that has to name it, so it is
+    checked against that export rather than against a copy of the path here.
+    """
+    household = load_household(REPO / "src/forecats-pipeline/household.yaml")
+    photo_directory = os.environ[PHOTO_DIRECTORY_ENV]
+
+    assert {str(pet.reference_photo.parent) for pet in household.pets} == {photo_directory}
 
 
 def test_a_pet_with_no_photo_is_refused_before_the_render(tmp_path):

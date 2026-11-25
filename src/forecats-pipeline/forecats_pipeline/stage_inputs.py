@@ -16,7 +16,9 @@ alternative is a render that quietly uses the wrong weights.
 
 `python3 -m forecats_pipeline.stage_inputs weights --from <dir> --manifest <file>`
 and `... photos --from <dir>` are the two commands; `RUNBOOK.md` says where their
-arguments come from.
+arguments come from. Neither names its destination, because the wrapper exports
+both volume directories from the storage declaration that creates them — `--to`
+is for the one-off run that stages somewhere else.
 """
 
 import argparse
@@ -32,7 +34,11 @@ from shutil import copyfileobj
 import yaml
 
 from forecats_pipeline.household import load_household
-from forecats_pipeline.render_stage import MODEL_DIRECTORY, PHOTO_DIRECTORY, SdCliSettings
+from forecats_pipeline.render_stage import (
+    MODEL_DIRECTORY_ENV,
+    PHOTO_DIRECTORY_ENV,
+    WEIGHT_FILE_NAMES,
+)
 
 __all__ = ["StageError", "main"]
 
@@ -141,14 +147,14 @@ def _sha256_of(path: Path) -> str:
 
 def _stage_weights(args: argparse.Namespace) -> int:
     manifest = _read_manifest(Path(args.manifest))
-    required = [Path(name).name for name in SdCliSettings().files]
+    required = list(WEIGHT_FILE_NAMES)
     missing = [name for name in required if name not in manifest]
     if missing:
         raise StageError(
             f"{args.manifest} does not name {', '.join(missing)}; the render opens all four, "
             "so placing three of them is a render that fails on the GPU"
         )
-    destination = Path(args.destination)
+    destination = Path(_volume_directory(MODEL_DIRECTORY_ENV, args.destination))
     placements = stage_files(
         Path(args.source_dir), destination, sorted(manifest), manifest, on_place=_announce
     )
@@ -160,7 +166,7 @@ def _stage_photos(args: argparse.Namespace) -> int:
     # runs, so a relative one means nothing until a directory is named for it —
     # and comparing one against `--to` would answer relative to this shell's
     # directory rather than to anything the render will see.
-    destination = Path(os.path.abspath(args.destination))
+    destination = Path(os.path.abspath(_volume_directory(PHOTO_DIRECTORY_ENV, args.destination)))
     household = load_household(Path(args.household_file))
     names: list[str] = []
     for pet in household.pets:
@@ -180,6 +186,22 @@ def _stage_photos(args: argparse.Namespace) -> int:
             names.append(photo.name)
     placements = stage_files(Path(args.source_dir), destination, names, on_place=_announce)
     return _summary("photos", destination, placements)
+
+
+def _volume_directory(env_name: str, destination: str | None) -> str:
+    """The volume to stage into, from `--to` or from the environment nix exports.
+
+    The storage declaration that creates the directory is what names it, so this
+    module holds no path of its own; a run with neither is refused rather than
+    aimed at a directory nothing mounts.
+    """
+    directory = destination or os.environ.get(env_name, "")
+    if not directory.strip():
+        raise StageError(
+            f"no destination: --to is not given and {env_name} is not set; the storage "
+            "declaration that mounts the volume names the directory, and the wrapper exports it"
+        )
+    return directory
 
 
 def _read_manifest(path: Path) -> dict[str, str]:
@@ -231,7 +253,11 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
 
     weights = commands.add_parser("weights", help="the diffusion weights, digest-verified")
     weights.add_argument("--from", dest="source_dir", required=True, help="downloaded weight files")
-    weights.add_argument("--to", dest="destination", default=MODEL_DIRECTORY)
+    weights.add_argument(
+        "--to",
+        dest="destination",
+        help=f"the weights directory; the default is what {MODEL_DIRECTORY_ENV} holds",
+    )
     weights.add_argument(
         "--manifest",
         required=True,
@@ -240,7 +266,11 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
 
     photos = commands.add_parser("photos", help="one reference photo per pet, by the household file")
     photos.add_argument("--from", dest="source_dir", required=True, help="the photo files to place")
-    photos.add_argument("--to", dest="destination", default=PHOTO_DIRECTORY)
+    photos.add_argument(
+        "--to",
+        dest="destination",
+        help=f"the photo directory; the default is what {PHOTO_DIRECTORY_ENV} holds",
+    )
     photos.add_argument(
         "--household-file",
         default="src/forecats-pipeline/household.yaml",

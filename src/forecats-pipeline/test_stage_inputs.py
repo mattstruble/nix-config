@@ -14,10 +14,14 @@ from pathlib import Path
 
 import day_context
 import forecats_pipeline
-from forecats_pipeline.render_stage import SdCliSettings
+from forecats_pipeline.render_stage import (
+    MODEL_DIRECTORY_ENV,
+    PHOTO_DIRECTORY_ENV,
+    WEIGHT_FILE_NAMES,
+)
 
 # The four files a render opens; placement refuses a manifest that leaves one out.
-REQUIRED = [Path(name).name for name in SdCliSettings().files]
+REQUIRED = list(WEIGHT_FILE_NAMES)
 
 # The two source trees, as the running interpreter found them. `-m` imports the
 # package, and the package imports the day-context layer.
@@ -26,12 +30,30 @@ SOURCE_ROOTS = os.pathsep.join(
 )
 
 
-def run_module(*arguments: str) -> subprocess.CompletedProcess:
+def run_module(
+    *arguments: str,
+    environment: dict[str, str] | None = None,
+    unset: tuple[str, ...] = (),
+) -> subprocess.CompletedProcess:
+    """One placement, in a child whose environment this test names.
+
+    `unset` takes an exported volume directory away, which is the state of a shell
+    the wrapper was not run from; `environment` stands in for the one the wrapper
+    did export.
+    """
+    child = {
+        **os.environ,
+        "PYTHONPATH": SOURCE_ROOTS,
+        "PYTHONDONTWRITEBYTECODE": "1",
+        **(environment or {}),
+    }
+    for name in unset:
+        child.pop(name, None)
     return subprocess.run(
         [sys.executable, "-m", "forecats_pipeline.stage_inputs", *arguments],
         capture_output=True,
         text=True,
-        env={**os.environ, "PYTHONPATH": SOURCE_ROOTS, "PYTHONDONTWRITEBYTECODE": "1"},
+        env=child,
         check=False,
     )
 
@@ -255,6 +277,71 @@ def test_a_household_file_that_stopped_parsing_is_refused_not_traced(tmp_path: P
     assert run.returncode == 1
     assert "staging refused" in run.stdout
     assert "Traceback" not in run.stderr
+
+
+def test_the_exported_weights_directory_is_the_destination_nothing_named(tmp_path: Path):
+    """The wrapper exports the directory the storage declaration created.
+
+    The placement step and the render then agree on one path written in one
+    language: what this test puts in the environment is what the weights land in.
+    """
+    source, _, listed = place_weights(tmp_path)
+    volume = tmp_path / "var-lib-llama-models"
+
+    run = run_module(
+        "weights",
+        "--from",
+        str(source),
+        "--manifest",
+        str(listed),
+        environment={MODEL_DIRECTORY_ENV: str(volume)},
+    )
+
+    assert run.returncode == 0, run.stderr
+    assert sorted(path.name for path in volume.iterdir()) == sorted(REQUIRED)
+
+
+def test_a_weights_directory_neither_named_nor_exported_is_refused(tmp_path: Path):
+    """No path here is a second answer to a question the declaration answers.
+
+    With neither `--to` nor the exported directory there is nothing to stage into,
+    and a literal default would have staged into a directory the declaration may
+    have moved — the drift that leaves a render reading an empty volume.
+    """
+    source, destination, listed = place_weights(tmp_path)
+
+    run = run_module(
+        "weights",
+        "--from",
+        str(source),
+        "--manifest",
+        str(listed),
+        unset=(MODEL_DIRECTORY_ENV,),
+    )
+
+    assert run.returncode == 1
+    assert MODEL_DIRECTORY_ENV in run.stdout
+    assert not destination.exists()
+
+
+def test_a_photo_directory_neither_named_nor_exported_is_refused(tmp_path: Path):
+    source = tmp_path / "camera-roll"
+    source.mkdir()
+    source.joinpath("milo.jpg").write_bytes(b"\xff\xd8\xff\xe0")
+    listed = household(tmp_path, tmp_path / "photos", "milo.jpg")
+
+    run = run_module(
+        "photos",
+        "--from",
+        str(source),
+        "--household-file",
+        str(listed),
+        unset=(PHOTO_DIRECTORY_ENV,),
+    )
+
+    assert run.returncode == 1
+    assert PHOTO_DIRECTORY_ENV in run.stdout
+    assert not (tmp_path / "photos").exists()
 
 
 def test_the_module_answers_a_bare_invocation_with_what_it_takes():

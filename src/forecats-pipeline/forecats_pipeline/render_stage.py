@@ -27,6 +27,9 @@ from zlib import crc32, compressobj
 from forecats_pipeline.contracts import Caption, PipelineRefusal
 
 __all__ = [
+    "MODEL_DIRECTORY_ENV",
+    "PHOTO_DIRECTORY_ENV",
+    "WEIGHT_FILE_NAMES",
     "FakeRenderer",
     "Rendered",
     "Renderer",
@@ -54,14 +57,24 @@ CPU_FALLBACK_MARKS = ("CUDA driver is a stub library", "no GPU devices")
 # prevent, so an absent pin refuses and nothing here may choose a card of its own.
 DEVICE_PIN_ENV = "NVIDIA_VISIBLE_DEVICES"
 
-# The directory the weights volume is mounted at, in the pod and on the host that
-# fills it. One path for both, so the file names below are the files a render
-# opens; `forecats-weights` is the claim that carries them.
-MODEL_DIRECTORY = "/var/lib/llama-models/h3image"
+# The two directories a render reads, named by the environment and never here.
+# They are where the `forecats-weights` and `forecats-photos` volumes mount, and
+# the storage declaration that creates those directories is what exports them:
+# `forecatsStorage` in nix/services/k3s.nix, through the package wrapper. A path
+# written in this module would be a second answer, and the quieter one — a render
+# would go on reading the directory a moved volume left behind.
+MODEL_DIRECTORY_ENV = "FORECATS_MODEL_DIRECTORY"
+PHOTO_DIRECTORY_ENV = "FORECATS_PHOTO_DIRECTORY"
 
-# Where the reference-photo volume is mounted, on the same arrangement from the
-# read-only `forecats-photos` claim.
-PHOTO_DIRECTORY = "/var/lib/forecats/photos"
+# The four files a render opens, in the order sd-cli names them. The names are
+# the model's and belong here; the directory that holds them is the host's, and
+# arrives as `SdCliSettings.directory`.
+WEIGHT_FILE_NAMES = (
+    "minimax_h3_image_pruned-Q3_K_M.gguf",
+    "vae_diffusion_pytorch_model.safetensors",
+    "p-h3-image_text_encoder_int8_convrot.safetensors",
+    "p-h3-image_tokenizer.json",
+)
 
 # The schedule, in one place. The timeout used to be a separate number sized for
 # a 6-step run, so moving to 20 steps made every render die at 600 s with a
@@ -153,19 +166,36 @@ class FakeRenderer:
 
 @dataclass(frozen=True)
 class SdCliSettings:
-    """Which weight files a render opens, and which card it opens them on.
+    """Which directory's weight files a render opens, and which card it opens them on.
 
-    Paths, not a directory listing: the model directory holds 17 GB and the four
-    files that matter are named here on purpose. They are the defaults rather
-    than a setting because the volume they mount from is fixed by the claim, and
-    a render that looked elsewhere would find an empty directory.
+    The directory is required, never defaulted: it is the mount point of the
+    weights volume, which the storage declaration owns, and a default here would
+    be a location the declaration is free to have moved away from. The four files
+    under it are named by `WEIGHT_FILE_NAMES`.
     """
 
-    diffusion_model: str = f"{MODEL_DIRECTORY}/minimax_h3_image_pruned-Q3_K_M.gguf"
-    vae: str = f"{MODEL_DIRECTORY}/vae_diffusion_pytorch_model.safetensors"
-    text_encoder: str = f"{MODEL_DIRECTORY}/p-h3-image_text_encoder_int8_convrot.safetensors"
-    tokenizer: str = f"{MODEL_DIRECTORY}/p-h3-image_tokenizer.json"
+    directory: str | Path
     gpu_device: str | None = None
+
+    def __post_init__(self) -> None:
+        if not str(self.directory).strip():
+            raise ValueError("directory must be the directory the weight files are read from")
+
+    @property
+    def diffusion_model(self) -> str:
+        return self._file(WEIGHT_FILE_NAMES[0])
+
+    @property
+    def vae(self) -> str:
+        return self._file(WEIGHT_FILE_NAMES[1])
+
+    @property
+    def text_encoder(self) -> str:
+        return self._file(WEIGHT_FILE_NAMES[2])
+
+    @property
+    def tokenizer(self) -> str:
+        return self._file(WEIGHT_FILE_NAMES[3])
 
     @property
     def weights(self) -> tuple[str, ...]:
@@ -176,22 +206,8 @@ class SdCliSettings:
         """Every weight-side file the CLI is handed, tokenizer included."""
         return (*self.weights, self.tokenizer)
 
-    @classmethod
-    def for_directory(cls, directory: str | Path, gpu_device: str | None = None) -> "SdCliSettings":
-        """The same four files, read out of another directory.
-
-        The defaults are the mount point of the weights volume, which is what a
-        pod has; a host that keeps the weights anywhere else names its own.
-        """
-        defaults = cls()
-        root = Path(directory)
-        return cls(
-            diffusion_model=str(root / Path(defaults.diffusion_model).name),
-            vae=str(root / Path(defaults.vae).name),
-            text_encoder=str(root / Path(defaults.text_encoder).name),
-            tokenizer=str(root / Path(defaults.tokenizer).name),
-            gpu_device=gpu_device,
-        )
+    def _file(self, name: str) -> str:
+        return str(Path(self.directory) / name)
 
 
 class SdCliRenderer:
@@ -298,9 +314,19 @@ class SdCliRenderer:
 
     def _absent_reason(self, absent: Sequence[Path]) -> str:
         named = ", ".join(str(path) for path in absent)
+        weights_directory = str(self._settings.directory)
+        # The other directories are read off the paths this render was handed, not
+        # off a constant of this module: a refusal that quoted a default would
+        # point at a directory that exists while the volume it was aimed at sits
+        # somewhere else.
+        elsewhere = dict.fromkeys(
+            str(path.parent) for path in absent if str(path.parent) != weights_directory
+        )
+        where = weights_directory
+        if elsewhere:
+            where = f"{weights_directory} and its reference photos from {', '.join(elsewhere)}"
         return (
-            f"{self.name}: no such file — {named}; weights are read from the "
-            f"{MODEL_DIRECTORY} volume and reference photos from the {PHOTO_DIRECTORY} one, "
+            f"{self.name}: no such file — {named}; this render reads its weights from {where}, "
             "so an absent file is a volume that mounted empty (see RUNBOOK.md)"
         )
 

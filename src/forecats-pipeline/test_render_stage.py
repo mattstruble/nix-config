@@ -50,12 +50,7 @@ class FakeProcesses:
 
 def weights(root: Path) -> SdCliSettings:
     """The four weight files a render opens, as files that exist under `root`."""
-    settings = SdCliSettings(
-        diffusion_model=str(root / "model.gguf"),
-        vae=str(root / "vae.safetensors"),
-        text_encoder=str(root / "text-encoder.safetensors"),
-        tokenizer=str(root / "tokenizer.json"),
-    )
+    settings = SdCliSettings(root)
     root.mkdir(parents=True, exist_ok=True)
     for name in settings.files:
         Path(name).write_bytes(b"weights")
@@ -191,8 +186,34 @@ def test_a_missing_reference_photo_refuses_rather_than_inventing_a_cat(tmp_path,
 
     assert isinstance(refusal, PipelineRefusal)
     assert str(absent) in refusal.reason
-    assert render_stage.PHOTO_DIRECTORY in refusal.reason
+    # The directory it actually looked in, so the line points at the value the
+    # render was given rather than at a default this module no longer holds.
+    assert str(absent.parent) in refusal.reason
     assert processes.started == []
+
+
+def test_a_directory_holding_no_weights_refuses_before_the_cli_is_spawned(tmp_path, monkeypatch):
+    """A volume that mounted empty is a directory that exists and holds nothing.
+
+    The path the render was aimed at is the one the storage declaration exported,
+    and a wrong one is indistinguishable from an unplaced set of weights until
+    something refuses. sd-cli would take the four paths, fail over them, and the
+    log would blame the model.
+    """
+    processes = FakeProcesses()
+    monkeypatch.setattr(render_stage.subprocess, "run", processes)
+    empty = tmp_path / "h3image"
+    empty.mkdir()
+
+    refusal = SdCliRenderer(CLI, SdCliSettings(empty)).render(
+        CAPTION, seed=1, reference_photos=[], destination=tmp_path / "panel.png"
+    )
+
+    assert isinstance(refusal, PipelineRefusal)
+    assert str(empty) in refusal.reason
+    assert all(name in refusal.reason for name in render_stage.WEIGHT_FILE_NAMES)
+    assert processes.started == []
+    assert not (tmp_path / "panel.png").exists()
 
 
 def test_a_weight_the_volume_does_not_carry_is_refused_before_the_cli(tmp_path, monkeypatch):
@@ -206,7 +227,7 @@ def test_a_weight_the_volume_does_not_carry_is_refused_before_the_cli(tmp_path, 
     )
 
     assert settings.diffusion_model in refusal.reason
-    assert render_stage.MODEL_DIRECTORY in refusal.reason
+    assert str(settings.directory) in refusal.reason
     assert processes.started == []
 
 
@@ -239,7 +260,7 @@ def test_a_render_that_outlives_its_budget_is_a_refusal(tmp_path: Path, monkeypa
 @pytest.mark.parametrize("binary", ["", "   "])
 def test_the_renderer_refuses_to_guess_where_the_cli_is(binary: str):
     with pytest.raises(ValueError, match="diffusion CLI to run"):
-        SdCliRenderer(binary, SdCliSettings())
+        SdCliRenderer(binary, SdCliSettings("weights"))
 
 
 @pytest.mark.parametrize("stream", ["stdout", "stderr"])
@@ -393,11 +414,22 @@ def test_a_card_is_named_only_when_the_caller_asks_for_one(tmp_path: Path, monke
     assert "LD_LIBRARY_PATH" not in environment
 
 
-def test_the_default_weights_are_the_files_the_weights_volume_carries():
-    """A default outside the mounted directory is a file no pod can open."""
-    settings = SdCliSettings()
+def test_the_weights_are_the_named_files_under_the_directory_the_render_was_given(tmp_path: Path):
+    """The file names are the model's; the directory is the host's.
 
-    assert all(Path(name).is_relative_to(render_stage.MODEL_DIRECTORY) for name in settings.files)
+    Moving the volume changes the directory and nothing else: the four names are
+    what the CLI is handed and what the placement step refuses to leave a gap in.
+    """
+    settings = SdCliSettings(tmp_path / "llama-models")
+
+    assert [Path(name).name for name in settings.files] == list(render_stage.WEIGHT_FILE_NAMES)
+    assert all(Path(name).is_relative_to(tmp_path / "llama-models") for name in settings.files)
+
+
+def test_settings_refuse_a_directory_nothing_named():
+    """An empty `FORECATS_MODEL_DIRECTORY` is an unset one, not a relative render."""
+    with pytest.raises(ValueError, match="weight files are read from"):
+        SdCliSettings("   ")
 
 
 def test_the_timeout_covers_the_schedule_it_is_given():
