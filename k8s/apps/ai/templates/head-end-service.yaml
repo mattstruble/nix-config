@@ -13,6 +13,10 @@ spec:
   selector:
     app: swap-head-end
   ports:
+    # The router is bound to this port by head-end-deployment.yaml's --listen,
+    # which reads the same headEnd.port that targetPort and containerPort read:
+    # the Service reaches the listener through one value, not because llama-swap
+    # binds 8080 when told nothing.
     - name: http
       port: {{ .Values.headEnd.port }}
       targetPort: {{ .Values.headEnd.port }}

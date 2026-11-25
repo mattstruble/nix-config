@@ -92,7 +92,19 @@ spec:
           # an in-place reload could only ever fire before the rollout it should
           # have caused (the kubelet syncs the volume on its own schedule), which
           # is the silent mid-request stop the checksum exists to prevent.
-          command: ["sh", "-c", "exec {{ $h.bundle }}/bin/llama-swap --config /etc/llama-swap/config.yaml"]
+          #
+          # --listen is the only mechanism that binds the router: llama-swap's
+          # config struct has no listen field, so the address is stated here and
+          # not in the roster. The wildcard is a decision, not an inherited
+          # default - the router's only client is the swap-head-end Service, whose
+          # endpoints are this Pod's cluster IP, so a loopback bind answers only
+          # 127.0.0.1 inside the pod's own namespace and refuses every connection
+          # the Service makes while the pod stays Ready. No hostPort and no Ingress
+          # publish this container on a host interface, which is what upstream's
+          # 0.0.0.0 warning is about; the listener answers on the pod network. The
+          # port is headEnd.port, the value containerPort, the probes and the
+          # Service's targetPort all read.
+          command: ["sh", "-c", "exec {{ $h.bundle }}/bin/llama-swap --config /etc/llama-swap/config.yaml --listen 0.0.0.0:{{ $h.port }}"]
           ports:
             - containerPort: {{ $h.port }}
               name: http

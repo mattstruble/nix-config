@@ -48,7 +48,11 @@ data:
     # ${PORT} appears in both cmd and proxy: llama-swap refuses a config where
     # proxy allocates a port that cmd never binds (validation error, and the
     # first spike's reload failed exactly this way).
-    listen: "0.0.0.0:{{ $h.port }}"
+    #
+    # No listen key: llama-swap's config struct has no listen field and its
+    # decoder ignores unknown keys, so nothing written here can move the
+    # listener - head-end-deployment.yaml's --listen flag is what binds it.
+    #
     # The whole wake, not the load: this is cardWaitSeconds +
     # podClaimWindowSeconds + the cold-load budget of the roster. In the pinned
     # llama-swap doStart sets this deadline once and only moves it when the health
