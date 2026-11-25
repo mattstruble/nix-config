@@ -21,6 +21,10 @@
 # Built natively on mjolnir, like the strata bundle: it is an x86_64-linux
 # derivation and the local machine is aarch64-darwin.
 let
+  # The commit the binary is built from, named once so the fetch and the commit
+  # stamp below cannot disagree about which commit this is.
+  llamaSwapRev = "a025e0373addc2cd76e77a5064d60c517f05dcf8"; # pragma: allowlist secret (v264 git commit id, not a secret)
+
   llamaSwap = buildGo127Module rec {
     pname = "llama-swap";
     # Tag v264. Pinned to a commit because a tag can be re-pointed and a store
@@ -30,7 +34,7 @@ let
     src = fetchFromGitHub {
       owner = "mostlygeek";
       repo = "llama-swap";
-      rev = "a025e0373addc2cd76e77a5064d60c517f05dcf8"; # pragma: allowlist secret (v264 git commit id, not a secret)
+      rev = llamaSwapRev;
       hash = "sha256-GwMa1V1zOWyT3pLPiOIlarqF0X0Vyeq7tmnK9mUJfvI="; # pragma: allowlist secret
     };
 
@@ -69,10 +73,22 @@ let
     # Upstream's tests shell out to llama-server and bind ports.
     doCheck = false;
 
+    # Upstream declares `version`, `commit` and `date` at package scope in
+    # llama-swap.go, reports all three at GET /api/version, and stamps those
+    # three from its own Makefile; the Go linker drops an `-X` naming a symbol it
+    # cannot find without a word, so a name that is not upstream's is a pod that
+    # answers /api/version with the source defaults and cannot say what it runs.
+    # `checks.swap-head-end-version-stamp` is what keeps a renamed upstream
+    # variable from putting that back.
+    #
+    # `date` stays at its default: the only value nix could stamp it with is
+    # taken at evaluation, and an evaluation-time timestamp would change this
+    # bundle's store path — a build input of the head-end manifest — every eval.
     ldflags = [
       "-s"
       "-w"
-      "-X main.Build=${version}"
+      "-X main.version=${version}"
+      "-X main.commit=${llamaSwapRev}"
     ];
 
     meta = {
@@ -116,4 +132,12 @@ pkgs.symlinkJoin {
     llamaSwap
     swapk8s
   ];
+  # The two packages, so the check reaches the flag list and the source tree of
+  # the derivation that builds them rather than a description of either.
+  passthru = {
+    inherit
+      llamaSwap
+      swapk8s
+      ;
+  };
 }
