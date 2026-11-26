@@ -82,15 +82,19 @@ const (
 	gpuPoolLabel = "ai.mestruble.dev/gpu-pool"
 	gpuModeLabel = "ai.mestruble.dev/gpu-mode"
 	// reclaimCostLabel is the third chart-to-shim transport label: what bringing
-	// this model back costs whoever loses its card, in whole seconds. It is a
-	// label and not a key in llama-swap's config.yaml because the pinned router
-	// has no such field and ignores it there; here it decides which idle card a
-	// waiting job takes. A model that renders no cost is never reclaimed.
+	// this model back costs whoever loses its card, in whole seconds. It is a label
+	// and not a key in llama-swap's config.yaml because the pinned router has no such
+	// field and ignores it there; here it ranks which card a waiting job takes first.
+	// A model with no figure is still taken - last, behind every card this host
+	// measured.
 	reclaimCostLabel = "ai.mestruble.dev/reclaim-cost-seconds"
-	// appNameLabel is the model ID on a model pod (ai.modelLabels renders it, and
-	// it is the Deployment's selector). A reclaim names the model whose card it is
-	// taking, and the pod is the only object that says which model holds which
-	// card: the Deployment carries the pool, not the card placement resolved.
+	// appNameLabel is the model ID on a model pod (ai.modelLabels renders it, and it
+	// is both the Deployment's selector and the Deployment's name). An eviction names
+	// the model whose card it is taking, and the pod is the only object that says which
+	// model holds which card: the Deployment carries the pool, not the card placement
+	// resolved. The model ID is also the whole handle an eviction needs, because the
+	// shim names a model's Deployment after the model and never the other way round -
+	// so taking a card back reads no Deployment at all.
 	appNameLabel = "app"
 	// The env var the spec uses to pin a card, rendered from the values entry.
 	// In the spec ConfigMap it carries the POOL; at placement time the shim
@@ -277,6 +281,17 @@ func (c *client) scale(ns, name string, replicas int) (bool, error) {
 	return err == nil, err
 }
 
+// deleteDeployment removes a model's Deployment, and with it the pod holding its
+// card. A 404 is success: the object this call meant to remove is already gone,
+// which is the outcome the caller is waiting for anyway.
+func (c *client) deleteDeployment(ns, name string) error {
+	_, err := c.do(http.MethodDelete, fmt.Sprintf("/apis/apps/v1/namespaces/%s/deployments/%s", ns, name), "", nil)
+	if ae, ok := err.(*apiErr); ok && ae.status() == http.StatusNotFound {
+		return nil
+	}
+	return err
+}
+
 // normalizeSpec turns the chart-rendered spec into the two request bodies this
 // binary needs. gpu is the resolved card(s) for NVIDIA_VISIBLE_DEVICES - for an
 // "any"-mode model exactly one card, for an "all"-mode (spanning) model the
@@ -420,6 +435,7 @@ type podList struct {
 type podItem struct {
 	Metadata struct {
 		Name              string            `json:"name"`
+		Namespace         string            `json:"namespace"`
 		Labels            map[string]string `json:"labels"`
 		DeletionTimestamp any               `json:"deletionTimestamp"`
 	} `json:"metadata"`
@@ -507,36 +523,46 @@ func busyCardSelector() string {
 	return componentLabel + " in (" + strings.Join(cardOwnerComponents, ",") + ")"
 }
 
-// busyCards returns the cards held by the pods that own one - models and
-// gpu-jobs - in the namespace. A card is busy from the moment a pod claiming it
-// exists - not from readiness - because a loading pod already owns its card, and
-// treating it otherwise is how a second wake lands on a busy card and
-// crashloops. The selector asks the API for the card-owning components only;
-// the rules about which of those pods actually holds what live in
-// busyFromPods.
-func (c *client) busyCards(ctx context.Context, ns string) (map[string]bool, error) {
-	pl, err := c.cardOwnerPods(ns)
+// busyCards returns the cards held by the pods that own one - models and gpu-jobs -
+// across every namespace the placement scans. A card is busy from the moment a pod
+// claiming it exists - not from readiness - because a loading pod already owns its
+// card, and treating it otherwise is how a second wake lands on a busy card and
+// crashloops. The selector asks the API for the card-owning components only; the
+// rules about which of those pods actually holds what live in busyFromPods.
+func (c *client) busyCards(ctx context.Context, namespaces []string) (map[string]bool, error) {
+	pl, err := c.cardOwnerPods(namespaces)
 	if err != nil {
 		return nil, err
 	}
 	return busyFromPods(pl), nil
 }
 
-// cardOwnerPods lists the pods that own a card. It is the one list two decisions
-// read: placement, which wants the cards that are not free, and a reclaim, which
-// wants the model that holds each card that is.
-func (c *client) cardOwnerPods(ns string) (*podList, error) {
+// cardOwnerPods lists the pods that own a card, in every namespace listed, as one
+// list. It is the one read two decisions share: placement, which wants the cards
+// that are not free, and an eviction, which wants the model that holds each card
+// that is - and the namespace to take it back in. A namespace whose list the API
+// refused is an error and not an empty stretch of the fleet: read as empty, a scan
+// that missed the namespace the models live in answers "every card free".
+//
+// The merged list carries each pod's own metadata.namespace, which is what lets an
+// eviction name the namespace it writes in without a second lookup.
+func (c *client) cardOwnerPods(namespaces []string) (*podList, error) {
 	q := url.Values{}
 	q.Set("labelSelector", busyCardSelector())
-	raw, err := c.do(http.MethodGet, fmt.Sprintf("/api/v1/namespaces/%s/pods?%s", ns, q.Encode()), "", nil)
-	if err != nil {
-		return nil, err
+
+	merged := &podList{}
+	for _, ns := range namespaces {
+		raw, err := c.do(http.MethodGet, fmt.Sprintf("/api/v1/namespaces/%s/pods?%s", ns, q.Encode()), "", nil)
+		if err != nil {
+			return nil, fmt.Errorf("scan card owners in %s: %w", ns, err)
+		}
+		pl := &podList{}
+		if err := json.Unmarshal(raw, pl); err != nil {
+			return nil, fmt.Errorf("decode card owners in %s: %w", ns, err)
+		}
+		merged.Items = append(merged.Items, pl.Items...)
 	}
-	pl := &podList{}
-	if err := json.Unmarshal(raw, pl); err != nil {
-		return nil, err
-	}
-	return pl, nil
+	return merged, nil
 }
 
 // cardsFromPods is the pure half of busyCards so the busy-card rules are
@@ -648,10 +674,25 @@ func splitCards(v string) []string {
 // one scan, and so the claim path is testable without an API server.
 type busyScan func(context.Context) (map[string]bool, error)
 
-// scanCards fixes the namespace for the life of one placement; the scan itself
-// is what differs between a cluster and a test.
-func (c *client) scanCards(ns string) busyScan {
-	return func(ctx context.Context) (map[string]bool, error) { return c.busyCards(ctx, ns) }
+// scanCards fixes the namespace list for the life of one placement; the scan
+// itself is what differs between a cluster and a test.
+func (c *client) scanCards(namespaces []string) busyScan {
+	return func(ctx context.Context) (map[string]bool, error) { return c.busyCards(ctx, namespaces) }
+}
+
+// cardNamespaces is the namespace list one placement scans: its own first, then
+// every --fleet-namespace, duplicates dropped. A scan that saw only its own
+// namespace handed one card to a job and to a model at the same instant - it
+// answered "free" for a card a pod in the other namespace already owned - and an
+// eviction that cannot see the fleet has nothing to evict.
+func cardNamespaces(own, fleet string) []string {
+	out := []string{own}
+	for _, ns := range splitCards(fleet) {
+		if ns != own {
+			out = append(out, ns)
+		}
+	}
+	return out
 }
 
 // errNoFreeCard is one placement round's answer when nothing in the pool was
@@ -695,21 +736,21 @@ func claimRound(ctx context.Context, lockPath string, scan busyScan, cards []str
 	return chosen, nil
 }
 
-// reclaimFunc is a waiting claim's one chance to have a card handed over rather
-// than waited for. claimCycle runs it after a round found nothing free and
-// before the next wait, outside the flock: holding the placement lock for the
-// minutes a model's pod takes to terminate would wedge every other placement in
-// the fleet to arbitrate a decision the router makes anyway.
+// evictFunc is a waiting claim's one chance to have a card handed over rather than
+// waited for. claimCycle runs it after a round found nothing free and before the
+// next wait, outside the flock: holding the placement lock for the minutes a
+// model's pod takes to terminate would wedge every other placement in the fleet to
+// arbitrate a decision only this claim is making.
 //
-// Its failure is a log line and never the claim's failure - a reclaim that did
-// not happen is exactly the wait that was already happening - and it is offered
-// once, because a second attempt at a card the router would not give back is a
-// second model put to sleep for the same card.
+// Its failure is a log line and never the claim's failure - a card that was not
+// taken is exactly the wait that was already happening - and it is offered once,
+// because a second attempt at a card nobody gave back is a second model put to
+// sleep for the same card.
 //
 // budget is the card-wait time left when the attempt starts, and the attempt fits
-// inside it: the card wait is the term the router's wake deadline was summed
-// from, so a reclaim that outlives it is a wake the router aborts.
-type reclaimFunc func(ctx context.Context, budget time.Duration) error
+// inside it: the card wait is the term the router's wake deadline was summed from,
+// so an eviction that outlives it is a wake the router aborts.
+type evictFunc func(ctx context.Context, budget time.Duration) error
 
 // claimCycle is the choose-and-claim cycle every entry point shares: rounds of
 // claimRound until one hands over a card, with the card-wait budget as the only
@@ -722,10 +763,10 @@ type reclaimFunc func(ctx context.Context, budget time.Duration) error
 // command produces - and the flock goes back the moment it has, on the way out of
 // a failure, a panic or a success alike.
 //
-// reclaim is the one attempt to have a busy card handed over rather than waited
-// for; nil, which is what a model wake passes, means this claim only waits.
+// evict is the one attempt to have a busy card handed over rather than waited for;
+// nil, which is what a model wake passes, means this claim only waits.
 func claimCycle(ctx context.Context, lockPath string, scan busyScan, cards []string, pool, mode string,
-	wait, poll time.Duration, reclaim reclaimFunc, onClaim func(card string, claimedAt time.Time) error) (string, error) {
+	wait, poll time.Duration, evict evictFunc, onClaim func(card string, claimedAt time.Time) error) (string, error) {
 	deadline := time.Now().Add(wait)
 	asked := false
 	for {
@@ -737,13 +778,13 @@ func claimCycle(ctx context.Context, lockPath string, scan busyScan, cards []str
 			return "", err
 		}
 		// Nothing free. Before this claim joins the shims waiting for a card to
-		// free itself, it spends its one reclaim attempt - paid out of the same
+		// free itself, it spends its one eviction attempt - paid out of the same
 		// card-wait budget, because that wait is the term the router's wake
 		// deadline was summed from.
-		if reclaim != nil && !asked {
+		if evict != nil && !asked {
 			asked = true
-			if rerr := reclaim(ctx, time.Until(deadline)); rerr != nil {
-				log.Printf("reclaim: %v", rerr)
+			if eerr := evict(ctx, time.Until(deadline)); eerr != nil {
+				log.Printf("evict: %v", eerr)
 			}
 		}
 		if time.Now().After(deadline) {
@@ -819,7 +860,7 @@ type wakeCluster interface {
 	readyPod(ns string, sel map[string]string) (ip, reason string, err error)
 	applyDeployment(ns, name, gpu string, spec []byte, existing *deployment) error
 	scale(ns, name string, replicas int) (bool, error)
-	scanCards(ns string) busyScan
+	scanCards(namespaces []string) busyScan
 }
 
 var _ wakeCluster = (*client)(nil)
@@ -912,104 +953,111 @@ func chooseCard(busy map[string]bool, cards []string, pool, mode string) string 
 	return ""
 }
 
-// ---- reclaiming a card from an idle model ----------------------------------
+// ---- taking a card from the model that holds it -----------------------------
 
-// stateIdle is the one router state a card may be reclaimed from. prefill,
-// decode and loading each have a request in flight or about to be, and taking a
-// card out of one of them is preemption, which this fleet does not do. A state
-// this binary has never seen is refused for the same reason it is unknown.
-const stateIdle = "idle"
-
-// reclaimCandidate is one loaded model a waiting job may take a card from.
-type reclaimCandidate struct {
-	model string
-	card  string
-	cost  int64
+// cardHolder is the model one card belongs to, and the namespace its pod lives in.
+// An empty model means "a card owner that is not one named model": a gpu-job's own
+// pod, or two pods holding one card. The namespace travels with the holder because
+// a claim scans the fleet where it lives rather than only its own namespace, and
+// the write that takes the card back happens where the Deployment is.
+type cardHolder struct {
+	namespace, model string
 }
 
-// reclaimCost is one model's reclaim cost as the spec dir stated it: the number
-// of seconds, or why there is no number. The reason is what an operator reads when
-// a model is never reclaimed, and the ways to have no cost are not one condition —
-// a model no spec names, a spec that declares no cost, a spec that could not be
-// read, a figure that is not a number — and only the second of them is a choice.
+// evictTarget is one model a waiting job may take a card from: which model, where
+// its Deployment is, which card, and what bringing it back costs - or why nobody
+// measured that cost.
+type evictTarget struct {
+	model, namespace, card string
+	cost                   int64
+	reason                 string // why there is no measured cost; empty when there is one
+}
+
+func (t evictTarget) measured() bool { return t.reason == "" }
+
+// reclaimCost is one model's reclaim cost as the spec dir stated it: the number of
+// seconds, or why there is no number. The reason is what an operator reads when a
+// card ranks last, and the ways to have no cost are not one condition - a model no
+// spec names, a spec that declares no cost, a spec that could not be read, a figure
+// that is not a number - and only the second of them is a choice.
 type reclaimCost struct {
 	seconds int64
 	reason  string // empty when the cost was measured
 }
 
-// reclaimPlan is one reclaim decision: the card to ask the router for, and why
-// each card that could not be reclaimed was not. The reasons come out of the
-// same pass as the decision, so the line the claim logs cannot disagree with
-// the rule that refused the card.
-type reclaimPlan struct {
-	target  reclaimCandidate
+// evictPlan is one eviction decision: the card to take, and why each card that
+// could not be taken was not. The reasons come out of the same pass as the
+// decision, so the line the claim logs cannot disagree with the rule that refused
+// the card.
+type evictPlan struct {
+	target  evictTarget
 	ok      bool
 	refused []string
 }
 
-// planReclaim is the reclaim decision, pure so the ranking and both refusals are
-// testable without a cluster or a router: of the cards the pool holds, only a
-// model the router itself reports idle is a candidate, and only one this host
-// measured a cost for. The lowest cost wins; a tie goes to the earlier card of
-// the pool, so two claims deciding at the same instant choose the same card
-// instead of each choosing a victim.
+// planEvict is the eviction decision, pure so the ranking and the refusal are
+// testable without a cluster: of the cards the pool holds, a card one named model
+// holds is a candidate whatever that model is doing. A request in flight is not a
+// reason to leave the render without a card - the owner reversed that on
+// 2026-11-26, and a coding session that pays a cold start pays it on a host that
+// was going to be idle anyway.
 //
-// holders maps a card to the model that holds it, or to the empty string when a
-// live card owner is not a named model; states is the router's answer, and a
-// model absent from it is not running as far as the router is concerned. A card
-// nothing holds is not the reclaim's business: it is free, and the next
-// placement round takes it. costs is what the spec dir stated about each model it
-// names; a model it does not name, or names with a reason instead of a figure, is
-// not reclaimable.
-func planReclaim(pool []string, holders, states map[string]string, costs map[string]reclaimCost) reclaimPlan {
-	plan := reclaimPlan{}
+// Ranking: a card this host measured goes before one it did not, and among the
+// measured the cheapest to bring back wins. A tie, and two unmeasured cards, go to
+// the earlier card of the pool, so two claims deciding at the same instant choose
+// the same card instead of each choosing a victim.
+//
+// holders maps a card to the model that holds it, or to an empty model when a live
+// card owner is not one named model. costs is what the spec dir stated about each
+// model it names. A model no spec names, or one whose figure cannot be read, is
+// still taken - last, behind every card that was measured. Refusing it instead
+// would put the render behind a card nobody has written down, which is the outcome
+// the reversal was about.
+func planEvict(pool []string, holders map[string]cardHolder, costs map[string]reclaimCost) evictPlan {
+	plan := evictPlan{}
 	for _, card := range pool {
-		model, held := holders[card]
+		holder, held := holders[card]
 		if !held {
 			plan.refused = append(plan.refused, fmt.Sprintf("gpu %s is free", card))
 			continue
 		}
-		if model == "" {
-			plan.refused = append(plan.refused, fmt.Sprintf("gpu %s is held by a card owner that is not a named model", card))
+		if holder.model == "" {
+			plan.refused = append(plan.refused, fmt.Sprintf("gpu %s is held by a card owner that is not one named model - a job's own pod, or two pods on one card; a claim never evicts another claim", card))
 			continue
 		}
-		if state := states[model]; state != stateIdle {
-			if state == "" {
-				state = "not in the router's running list"
-			}
-			plan.refused = append(plan.refused, fmt.Sprintf("gpu %s: %s is %s", card, model, state))
-			continue
-		}
-		stated, named := costs[model]
+		stated, named := costs[holder.model]
 		if !named {
 			// The specs are the only place a cost exists, and this model is not in
 			// them: the pod outlived the spec that rendered it, or never had one.
 			stated.reason = "no spec file names it"
 		}
-		if stated.reason != "" {
-			// An unmeasured cost is not a cheap card. It is a card nobody has
-			// agreed what it costs to take, which is the one thing a reclaim may
-			// not guess at. The reason travels with the refusal because a model that
-			// is never reclaimed for a reason nobody wrote down is
-			// indistinguishable from a reclaim that does not work.
-			plan.refused = append(plan.refused, fmt.Sprintf("gpu %s: %s is not reclaimable (%s)", card, model, stated.reason))
+		target := evictTarget{model: holder.model, namespace: holder.namespace, card: card,
+			cost: stated.seconds, reason: stated.reason}
+		if plan.ok && !ranksBefore(target, plan.target) {
 			continue
 		}
-		cost := stated.seconds
-		if plan.ok && cost >= plan.target.cost {
-			continue
-		}
-		plan.target, plan.ok = reclaimCandidate{model: model, card: card, cost: cost}, true
+		plan.target, plan.ok = target, true
 	}
 	return plan
 }
 
-// reclaimHolders is the reclaim's view of a pod list: the model that holds each
-// card. A card two pods hold, or one a gpu-job holds, or one a model pod that
-// names no model holds, maps to the empty string - the reclaim takes a card from
-// one named model, and "something is on that card" is not a model to unload.
-func reclaimHolders(pl *podList) map[string]string {
-	holders := map[string]string{}
+// ranksBefore is the ordering planEvict applies: measured before unmeasured, then
+// the cheaper figure, then - for two cards the host never measured - the one that
+// came first in the pool.
+func ranksBefore(candidate, best evictTarget) bool {
+	if candidate.measured() != best.measured() {
+		return candidate.measured()
+	}
+	return candidate.measured() && candidate.cost < best.cost
+}
+
+// evictHolders is the eviction's view of a pod list: the model that holds each
+// card, in the namespace to take it back in. A card two pods hold, or one a
+// gpu-job holds, or one a model pod that names no model holds, gets an empty
+// model - the eviction takes a card from one named model, and "something is on that
+// card" is not a model to remove.
+func evictHolders(pl *podList) map[string]cardHolder {
+	holders := map[string]cardHolder{}
 	for _, p := range pl.Items {
 		if holdsNothing(p) {
 			continue
@@ -1019,9 +1067,9 @@ func reclaimHolders(pl *podList) map[string]string {
 			name = p.Metadata.Labels[appNameLabel]
 		}
 		for _, card := range heldCards(p) {
-			holder := name
+			holder := cardHolder{namespace: p.Metadata.Namespace, model: name}
 			if prev, seen := holders[card]; seen && prev != holder {
-				holder = "" // two owners, or an owner and a job: no single model to unload
+				holder = cardHolder{} // two owners, or an owner and a job: no single model to evict
 			}
 			holders[card] = holder
 		}
@@ -1104,15 +1152,16 @@ type options struct {
 	// makes the claim outlive the decision.
 	job, gpuPool, gpuMode, cardLock string
 	jobCmd                          []string
-	// routerURL is the llama-swap API a waiting claim asks for a card, and empty
-	// means the claim only waits. It is a flag and not a default because the port
-	// is a value of the chart's, and a shim that guesses it reclaims through a URL
-	// nothing agreed to.
-	routerURL string
-	// reclaimDeadline bounds "the router took the unload" until "the reclaimed
-	// model's pod is gone". It is paid out of --card-wait, because that wait is
-	// the term the router's wake deadline was summed from.
-	reclaimDeadline time.Duration
+	// fleetNamespace names the namespaces whose card-owning pods a placement counts
+	// besides --namespace's own, comma-separated. A claim has to see the fleet to
+	// evict from it, and a model wake has to see the render's pod to refuse its card;
+	// a scan of one namespace answers "free" for a card a pod in the other already
+	// owns, which is how one card gets two owners.
+	fleetNamespace string
+	// evictDeadline bounds "the card holder is gone" after the eviction is asked
+	// for. It is paid out of --card-wait, because that wait is the term the router's
+	// wake deadline was summed from.
+	evictDeadline time.Duration
 	// cmdPid is llama-swap's ${PID}: the pid of the serve process it is
 	// stopping. cmdStop is responsible for stopping the cmd process itself
 	// (internal/process/process_command.go: sendStopSignal runs CmdStop and
@@ -1156,8 +1205,8 @@ func main() {
 	fs.StringVar(&o.job, "job", "", "name a card claim is attributed to (claim)")
 	fs.StringVar(&o.gpuPool, "gpu-pool", "", `card pool a job may run on: "0", "1", "0,1" (claim)`)
 	fs.StringVar(&o.gpuMode, "gpu-mode", "any", `"any" free card of the pool, "all" every card of it (claim)`)
-	fs.StringVar(&o.routerURL, "router-url", "", "llama-swap API a claim reclaims a busy card through, e.g. http://127.0.0.1:8080 from inside the head-end pod; empty means a claim whose pool is full only waits (claim)")
-	fs.DurationVar(&o.reclaimDeadline, "reclaim-deadline", 2*time.Minute, "wait this long for the reclaimed model's pod to go away after the router took the unload; it is paid out of --card-wait, and a stop still running when it expires is left to a human")
+	fs.StringVar(&o.fleetNamespace, "fleet-namespace", "", `comma-separated namespaces whose card-owning pods this placement counts besides --namespace's own, e.g. "default" for a claim running in another namespace; empty means this placement sees one namespace and evicts nothing from the others (claim, serve, start)`)
+	fs.DurationVar(&o.evictDeadline, "evict-deadline", 2*time.Minute, "wait this long for the evicted model's pod to go away after its Deployment was deleted; it is paid out of --card-wait, and a pod still there when it expires is left to a human (claim)")
 	if err := fs.Parse(os.Args[2:]); err != nil {
 		log.Fatal(err)
 	}
@@ -1307,9 +1356,9 @@ func wake(ctx context.Context, kc wakeCluster, o *options) (*deployment, error) 
 	// round that queued behind another shim's hold would find its budget already
 	// spent, probe once - no pod exists milliseconds after its own scale - and hand
 	// the card back blaming the pod.
-	chosen, err := claimCycle(ctx, o.cardLock, kc.scanCards(o.namespace), cards, pool, mode, o.cardWait, o.poll,
-		// No reclaim for a model wake: taking a card off an idle model is a one-off
-		// job's move, never a model's. Two models reclaiming from each other is the
+	chosen, err := claimCycle(ctx, o.cardLock, kc.scanCards(cardNamespaces(o.namespace, o.fleetNamespace)), cards, pool, mode, o.cardWait, o.poll,
+		// No eviction for a model wake: taking a card off another model is a
+		// one-off job's move, never a model's. Two models evicting each other is the
 		// swap storm the router's exclusive groups exist to prevent, and it is the
 		// same decision that stopped coding agents from evicting each other.
 		nil,
@@ -1618,30 +1667,22 @@ func cmdStop(kc *client, o *options) error {
 	}
 }
 
-// ---- the reclaiming claim --------------------------------------------------
+// ---- the evicting claim --------------------------------------------------
 
-// unloadRequestTimeout bounds one router request. llama-swap holds the unload
-// POST open for its own unloadTimeout (10s at the pinned revision, and the chart
-// renders no such key), so a client bound under that abandons a request the
-// router is still working on; this sits above that default and well under the
-// reclaim window it is paid from.
-const unloadRequestTimeout = 30 * time.Second
-
-// reclaimCosts reads what each model this head-end can render costs to bring
-// back, off the chart-rendered specs - the same files a wake reads its card pool
-// from, and the only place the cost exists once the shim consumes the label.
+// reclaimCosts reads what each model this head-end can render costs to bring back,
+// off the chart-rendered specs - the same files a wake reads its card pool from, and
+// the only place the cost exists once the shim consumes the label.
 //
-// A model whose cost is not a measured figure is in the map carrying the reason
-// it is not, never absent and never zero: an unmeasured card must never rank as
-// the cheapest one on the box, and a model dropped for a reason nobody recorded
-// is a model no operator can explain.
+// A model whose cost is not a measured figure is in the map carrying the reason it
+// is not, never absent and never zero: an unmeasured card must never rank among the
+// measured ones, and a model with no figure for a reason nobody recorded is a model
+// no operator can explain.
 //
-// Only the directory itself failing is an error. A spec this shim cannot read is
-// one model that is not reclaimable and nothing more, and a broken file is a
-// static condition: an attempt that failed over it would refuse every card in
-// the fleet for as long as the file stays broken, which is a reclaim switched
-// off by one half-written ConfigMap key while every model whose spec did read
-// pays for it on every attempt.
+// Only the directory itself failing is an error. A spec this shim cannot read is one
+// model that ranks last and nothing more, and a broken file is a static condition:
+// an attempt that failed over it would rank every card in the fleet as unmeasured
+// for as long as the file stays broken, which is a ranking switched off by one
+// half-written ConfigMap key.
 func reclaimCosts(dir string) (map[string]reclaimCost, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -1655,7 +1696,7 @@ func reclaimCosts(dir string) (map[string]reclaimCost, error) {
 		}
 		seconds, reason := readSpecCost(dir, e.Name())
 		if reason != "" {
-			log.Printf("reclaim: %s; %s is not reclaimable", reason, name)
+			log.Printf("evict: %s; %s has no measured cost and ranks behind every card that does", reason, name)
 			costs[name] = reclaimCost{reason: reason}
 			continue
 		}
@@ -1666,8 +1707,8 @@ func reclaimCosts(dir string) (map[string]reclaimCost, error) {
 
 // readSpecCost is what one spec file says about its model's reclaim cost: the
 // figure, or the reason there is none. Every reason names the file, because the
-// file is what an operator has to go and look at, beside the model that will
-// never be reclaimed.
+// file is what an operator has to go and look at, beside the model whose card will
+// rank last when a job is choosing one to take.
 func readSpecCost(dir, file string) (int64, string) {
 	raw, err := os.ReadFile(filepath.Join(dir, file))
 	if err != nil {
@@ -1705,223 +1746,156 @@ func parseReclaimCost(raw json.RawMessage) (int64, error) {
 	return seconds, nil
 }
 
-// reclaimer is a waiting job's one attempt to have the router hand a card over:
-// read what each card of the pool costs to bring back, ask for the cheapest one
-// whose model is idle, and wait for the pod that holds it to actually go away.
+// evictor is a waiting job's one attempt to have a card handed over: read what each
+// card of the pool costs to bring back, take the cheapest one a model holds, and
+// wait for the pod that holds it to actually go away.
 //
-// The router is asked rather than the Deployment scaled, because the router is
-// the one process that holds the model's connections and its queue: between "the
-// scan says idle" and "the unload lands" a request can arrive, and only the
-// router can tell that from an idle model at the instant the card changes hands.
-// Asking it is also what leaves the reclaimed model in the roster, so its next
-// request wakes it on the ordinary path and the client sees the loading stream
-// instead of an error.
+// The shim writes the cluster itself, and deletes the model's Deployment rather than
+// scaling it to zero, because the head-end's serve process is what tells the router
+// a model is gone. cmdStop scales and then SIGTERMs that process precisely because a
+// Deployment at zero with its serve process still looping is a model the router
+// still believes it has - the next request is a proxy to a dead pod and never a
+// wake. Deleting the Deployment is the one write that makes the serve process exit
+// on its own (cmdServe), and the model's next request then runs the ordinary wake,
+// which creates the Deployment again from the spec ConfigMap and places it on a free
+// card. The shim owns that object's existence already - the chart deliberately does
+// not render it - so un-creating it is a write the shim is allowed to make, and
+// re-creating it is the path every wake already is.
 //
-// Nothing here forces a card. A reclaim the router did not carry out is reported
-// and the claim goes back to waiting under the flock, exactly as it did before
-// the attempt.
-type reclaimer struct {
-	kc      *client
-	ns      string
-	pool    []string
-	mode    string
-	specDir string
-	window  time.Duration
-	poll    time.Duration
-	// router is the llama-swap API base, and empty is this claim not reclaiming:
-	// a claim that cannot reach the router waits, because waiting is what a claim
-	// did before reclaim existed.
-	router string
-	hc     *http.Client
+// Nothing is asked of the router. Which pod holds which card is a fact about pods,
+// and the pod list answers it; the router's view of its own processes was never what
+// decided a card, and a claim that waited on it would have waited forever.
+//
+// The evicted model is not scaled back up on the way out: this process knows when
+// its own command exits, not when the render finishes. The fleet's on-demand wake
+// brings the model back, and that cold start is the accepted cost of a render that
+// runs whatever the fleet happens to be doing.
+type evictor struct {
+	kc         *client
+	namespaces []string
+	pool       []string
+	mode       string
+	specDir    string
+	window     time.Duration
+	poll       time.Duration
 }
 
-func newReclaimer(kc *client, o *options) *reclaimer {
-	return &reclaimer{
-		kc:      kc,
-		ns:      o.namespace,
-		pool:    splitCards(strings.TrimSpace(o.gpuPool)),
-		mode:    strings.TrimSpace(o.gpuMode),
-		specDir: o.specDir,
-		window:  o.reclaimDeadline,
-		poll:    o.poll,
-		router:  strings.TrimRight(o.routerURL, "/"),
-		// No credential: the router's routes are default-allow in this pod (the
-		// chart renders no apiKeys), and the head-end's service account token has
-		// no business leaving the kube API for a localhost proxy.
-		hc: &http.Client{Timeout: unloadRequestTimeout},
+func newEvictor(kc *client, o *options) *evictor {
+	return &evictor{
+		kc:         kc,
+		namespaces: cardNamespaces(o.namespace, o.fleetNamespace),
+		pool:       splitCards(strings.TrimSpace(o.gpuPool)),
+		mode:       strings.TrimSpace(o.gpuMode),
+		specDir:    o.specDir,
+		window:     o.evictDeadline,
+		poll:       o.poll,
 	}
 }
 
-// try spends the claim's one reclaim attempt, bounded by the card-wait budget
-// still left. Every way out of here is a log line and a claim that keeps waiting:
-// what this returns is the reason it is still waiting, not the claim's failure.
-func (r *reclaimer) try(ctx context.Context, budget time.Duration) error {
-	if r.router == "" {
-		return errors.New("not attempted: no --router-url, so nothing here can ask the router for a card back")
+// try spends the claim's one eviction attempt, bounded by the card-wait budget still
+// left. Every way out of here is a log line and a claim that keeps waiting: what
+// this returns is the reason it is still waiting, not the claim's failure.
+func (e *evictor) try(ctx context.Context, budget time.Duration) error {
+	if e.mode == "all" {
+		return errors.New("not attempted: a spanning claim needs every card of its pool free at once, and evicting several models to race for them is not one decision")
 	}
-	if r.mode == "all" {
-		return errors.New("not attempted: a spanning claim needs every card of its pool free at once, and unloading several models to race for them is not one decision")
-	}
-	within := r.window
+	within := e.window
 	if budget < within {
 		within = budget
 	}
 	if within <= 0 {
-		return errors.New("not attempted: the card-wait budget has no time left to wait an unload out")
+		return errors.New("not attempted: the card-wait budget has no time left to wait an eviction out")
 	}
 
-	costs, err := reclaimCosts(r.specDir)
+	costs, err := reclaimCosts(e.specDir)
 	if err != nil {
 		return err
 	}
-	pl, err := r.kc.cardOwnerPods(r.ns)
+	pl, err := e.kc.cardOwnerPods(e.namespaces)
 	if err != nil {
 		return fmt.Errorf("scan card owners: %w", err)
 	}
-	states, err := r.runningStates(ctx)
-	if err != nil {
-		return err
-	}
-	plan := planReclaim(r.pool, reclaimHolders(pl), states, costs)
+	plan := planEvict(e.pool, evictHolders(pl), costs)
 	if !plan.ok {
-		return fmt.Errorf("no card of %s can be reclaimed: %s", strings.Join(r.pool, ","), strings.Join(plan.refused, "; "))
+		return fmt.Errorf("no card of %s can be taken: %s", strings.Join(e.pool, ","), strings.Join(plan.refused, "; "))
 	}
-	log.Printf("reclaim: taking gpu %s from %s, the idle card that costs least to bring back (%ds)",
-		plan.target.card, plan.target.model, plan.target.cost)
-	if err := r.requestUnload(ctx, plan.target.model); err != nil {
-		return err
+	target := plan.target
+	if target.measured() {
+		log.Printf("evict: taking gpu %s from %s in %s, the card that costs least to bring back (%ds)",
+			target.card, target.model, target.namespace, target.cost)
+	} else {
+		log.Printf("evict: taking gpu %s from %s in %s, which has no measured cost (%s) and ranks behind every card that does",
+			target.card, target.model, target.namespace, target.reason)
 	}
-	// A 200 is the router accepting the request, not the card coming back: an
-	// unload it does carry out hands cmdStop to a goroutine the POST never waits
-	// for, and one it does not carry out answers 200 having run nothing at all.
-	// The card is back when the pod that holds it is gone.
-	return r.awaitRelease(ctx, plan.target, within)
+	if err := e.kc.deleteDeployment(target.namespace, target.model); err != nil {
+		return fmt.Errorf("evict %s in %s: %w", target.model, target.namespace, err)
+	}
+	// A delete the API accepted is not the card coming back: the pods go the way
+	// their owner's garbage collector takes them, and one still terminating still
+	// holds its VRAM. The card is back when the pod is gone.
+	return e.awaitRelease(ctx, target, within)
 }
 
-// awaitRelease waits out the stop the router started: the reclaimed model's pods
-// are gone, not merely terminating. A pod with a deletion timestamp still holds
-// its VRAM, and a job placed on it is a container waiting on a cudaMalloc that
-// cannot succeed - which is the difference between this wait and the busy-card
-// scan, and the reason the reclaim waits for the pod and not for the scan.
+// awaitRelease waits out the deletion the eviction started: the evicted model's pods
+// are gone, not merely terminating. A pod with a deletion timestamp still holds its
+// VRAM, and a job placed on it is a container waiting on a cudaMalloc that cannot
+// succeed - which is the difference between this wait and the busy-card scan, and
+// the reason the eviction waits for the pod and not for the scan.
 //
-// The cost is latency in one case: a stop that wedges while another card frees
+// The cost is latency in one case: a deletion that wedges while another card frees
 // itself is waited out for the window instead of taken. The next placement round
 // re-scans after this returns, so the wait is bounded by the window and the
 // card-wait budget, and the failure line says which one it was.
 //
-// A failed poll is the API, not the pod, so the loop keeps going: the rule
-// waitReady follows, for the reason it gives.
-func (r *reclaimer) awaitRelease(ctx context.Context, target reclaimCandidate, within time.Duration) error {
+// A failed poll is the API, not the pod, so the loop keeps going: the rule waitReady
+// follows, for the reason it gives.
+func (e *evictor) awaitRelease(ctx context.Context, target evictTarget, within time.Duration) error {
 	deadline := time.Now().Add(within)
 	var lastErr error
 	for {
-		pl, err := r.kc.pods(r.ns, map[string]string{componentLabel: componentModel, appNameLabel: target.model})
+		pl, err := e.kc.pods(target.namespace, map[string]string{componentLabel: componentModel, appNameLabel: target.model})
 		if err == nil && len(pl.Items) == 0 {
-			log.Printf("reclaim: gpu %s is free; %s sleeps and its next request wakes it", target.card, target.model)
+			log.Printf("evict: gpu %s is free; %s wakes on its next request", target.card, target.model)
 			return nil
 		}
 		lastErr = err
 		if !time.Now().Before(deadline) {
-			return r.unreleasedCardError(target, within, lastErr)
+			return e.unreleasedCardError(target, within, lastErr)
 		}
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-time.After(r.poll):
+		case <-time.After(e.poll):
 		}
 	}
 }
 
-// unreleasedCardError is the outcome a human has to hear about, so it says what
-// to do about it. llama-swap gives the stop command its own process group and the
-// escalation SIGKILLs only the serve group, so a cmdStop that outlives
-// unloadTimeout is never killed: the card is claimed by a stop that is not coming
-// back, with no process holding it. Taking it anyway would be this shim writing
-// .spec.replicas behind the router's back - the one field the spec ConfigMap
-// exists to keep from everyone else - so the claim reports it and keeps waiting.
-func (r *reclaimer) unreleasedCardError(target reclaimCandidate, within time.Duration, lastErr error) error {
-	msg := fmt.Sprintf("gpu %s is still held by %s after %s: the router took the unload and the pod is still there. "+
-		"A cmdStop that outlives llama-swap's unloadTimeout is never killed, so this card is claimed by a stop that is not coming back, and this claim will not take it by force. "+
-		"A human decides: kubectl -n %s scale deploy/%s --replicas=0 and delete the pod that will not die",
-		target.card, target.model, within, r.ns, target.model)
+// unreleasedCardError is the outcome a human has to hear about, so it says what to do
+// about it. The Deployment is gone by then, so nothing left in the cluster will
+// retry the deletion: the pod is a straggler its owner can no longer finish, and the
+// only thing that ends it is a forced delete. Placing anyway would put the render on
+// a card whose VRAM is still spoken for, so the claim reports it and keeps waiting.
+func (e *evictor) unreleasedCardError(target evictTarget, within time.Duration, lastErr error) error {
+	msg := fmt.Sprintf("gpu %s is still held by %s in %s after %s: the Deployment is deleted and the pod is still there. "+
+		"Nothing left owns that pod, so this claim will not place on the card and will not force the pod away either. "+
+		"A human decides: kubectl -n %s delete pod -l app=%s --force --grace-period=0",
+		target.card, target.model, target.namespace, within, target.namespace, target.model)
 	if lastErr != nil {
 		msg += fmt.Sprintf(" (the last look at the pod failed: %v)", lastErr)
 	}
 	return errors.New(msg)
 }
 
-// runningStates is the router's own answer about what is loaded and what each one
-// is doing. Idle here means what llama-swap reports, not what a ttl implies: a
-// model the router does not list is not running as far as the only process that
-// routes it is concerned, and it is not a card to reclaim.
-func (r *reclaimer) runningStates(ctx context.Context) (map[string]string, error) {
-	body, err := r.routerDo(ctx, http.MethodGet, "/running")
-	if err != nil {
-		return nil, err
-	}
-	var doc struct {
-		Models []struct {
-			Model string `json:"model"`
-			State string `json:"state"`
-		} `json:"models"`
-	}
-	if err := json.Unmarshal(body, &doc); err != nil {
-		return nil, fmt.Errorf("the router's running list is not the shape this shim reads: %w", err)
-	}
-	states := make(map[string]string, len(doc.Models))
-	for _, m := range doc.Models {
-		states[m.Model] = m.State
-	}
-	return states, nil
-}
-
-// requestUnload asks the router to stop one model. The response is not the
-// release; awaitRelease is what says the card came back.
-func (r *reclaimer) requestUnload(ctx context.Context, model string) error {
-	_, err := r.routerDo(ctx, http.MethodPost, "/api/models/unload/"+url.PathEscape(model))
-	return err
-}
-
-func (r *reclaimer) routerDo(ctx context.Context, method, path string) ([]byte, error) {
-	req, err := http.NewRequestWithContext(ctx, method, r.router+path, nil)
-	if err != nil {
-		return nil, err
-	}
-	resp, err := r.hc.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("%s %s: %w", method, path, err)
-	}
-	defer resp.Body.Close()
-	body, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("%s %s: %d %s", method, path, resp.StatusCode, brief(body))
-	}
-	return body, nil
-}
-
-// brief keeps an HTTP failure's body to something a log line can carry: the
-// router's own error text is the diagnosis, and everything after it is noise.
-func brief(body []byte) string {
-	text := strings.FieldsFunc(string(body), func(r rune) bool { return r == '\n' || r == '\r' || r == '\t' })
-	line := strings.Join(text, " ")
-	line = strings.Join(strings.Fields(line), " ")
-	runes := []rune(line)
-	if len(runes) > 200 {
-		return string(runes[:200]) + "…"
-	}
-	return line
-}
-
-// cmdClaim is how a job that is not a model gets a card: it takes the flock a
-// model wake takes, chooses a card the shared scan says is free, prints it, and
-// hands the pin to the command that creates the pod.
+// cmdClaim is how a job that is not a model gets a card: it takes the flock a model
+// wake takes, chooses a card the shared scan says is free, prints it, and hands the
+// pin to the command that creates the pod.
 //
-// When no card in the pool is free it also gets one reclaim attempt: the router is
-// asked to unload the idle model whose card costs least to bring back, and the
-// claim waits for that pod to go away before it places. That is reclaim and not
-// preemption — a model with a request in flight is never a candidate, whatever it
-// would cost to move it — and the details, including what a stop that never
-// finishes leaves behind, are the reclaimer's comment.
+// When no card in the pool is free it spends one eviction attempt: the model whose
+// card costs least to bring back has its Deployment deleted, and the claim waits for
+// that pod to go away before it places. Whatever that model was doing - warm,
+// loading, mid-request - is not a reason to leave the job without a card, and the
+// fleet's on-demand wake brings it back. The details, including what a pod that
+// never finishes dying leaves behind, are the evictor's comment.
 //
 // The other mechanism on the ticket was a Job the shim creates itself, from a
 // spec ConfigMap, the way a model Deployment is created. Rejected, on three
@@ -1968,8 +1942,8 @@ func cmdClaim(ctx context.Context, kc *client, o *options) error {
 		mode = "any"
 	}
 
-	chosen, err := claimCycle(ctx, o.cardLock, kc.scanCards(o.namespace), splitCards(pool), pool, mode, o.cardWait, o.poll,
-		newReclaimer(kc, o).try,
+	chosen, err := claimCycle(ctx, o.cardLock, kc.scanCards(cardNamespaces(o.namespace, o.fleetNamespace)), splitCards(pool), pool, mode, o.cardWait, o.poll,
+		newEvictor(kc, o).try,
 		func(card string, _ time.Time) error {
 			// stdout is the machine-readable answer (`card=$(swapk8s claim ...)`);
 			// every diagnostic goes to the log, which is stderr. The command inherits

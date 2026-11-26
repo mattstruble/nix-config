@@ -17,13 +17,22 @@ built rather than choices made here:
   - The placement flock is a file, and its default is inside the head-end pod's
     own emptyDir. nightly.claimer.cardLockPath is therefore the lock of every
     claim that mounts it, and of no other pod's — including the head-end's wakes.
-  - The busy-card scan lists pods in one namespace (--namespace, below), so a
-    gpu-job pod here is invisible to a model wake in `default` and the reverse.
-    A nightly and a wake can therefore choose the same card; the render loses it
-    to CUDA's own out-of-memory error rather than silently.
+  - The claim scans both namespaces (`--fleet-namespace`, below), so it sees the
+    card a model holds and can take it. The head-end's wake still scans only its
+    own namespace — its service account has no read on pods here, and closing that
+    is a grant in this namespace, not a flag — so a wake can still choose a card a
+    render is holding. The render loses it to CUDA's own out-of-memory error rather
+    than silently.
 
-Closing either needs the shim to take a shared lock path and a namespace list,
-not a chart that works around them.
+Closing either needs the shim to take a shared lock path and the head-end a pod
+list it is not granted, not a chart that works around them.
+
+What the claim does do is take a card rather than wait for one. When every card of
+the pool is held, it deletes the Deployment of the model whose card costs least to
+bring back and places on that card — whatever that model was doing, request in
+flight included. The fleet's on-demand wake brings the model back and its next
+request pays the cold start; the reasoning is the evictor's comment in
+src/swapk8s/main.go, and the grant that makes it possible is in the ai chart.
 */ -}}
 {{- $ns := include "forecats.namespace" . -}}
 {{- $nightlyName := include "forecats.nightlyName" . -}}
@@ -132,6 +141,7 @@ spec:
                   {{ $tools.swapHeadEnd }}/bin/swapk8s claim \
                     --job '{{ $nightlyName }}' \
                     --namespace '{{ $ns }}' \
+                    --fleet-namespace '{{ required "fleet.namespace: the namespace the model fleet runs in, from services.k3s.aiChart in nix/services/k3s.nix; a claim that cannot see the fleet cannot take a card from it" .Values.fleet.namespace }}' \
                     --gpu-pool '{{ required "gpu.pool: the card numbers a nightly may claim, from services.k3s.forecats.gpuPool" .Values.gpu.pool }}' \
                     --gpu-mode any \
                     --card-wait {{ $cardWait }}s \

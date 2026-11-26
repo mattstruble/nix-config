@@ -190,9 +190,18 @@ in
       # generation that produced it - and the one before it, which is what a
       # rollback needs - both keep it. Empty means this host builds no head-end,
       # and the chart renders none.
+      #
+      # `cardClaimer` is the identity a `swapk8s claim` runs as. The ai chart needs
+      # it because a claim takes a busy card by deleting the Deployment of the model
+      # that holds it, and that grant can only be made where the fleet lives: the
+      # fleet's namespace ends up with a Role bound to a service account in another
+      # one, and two charts cannot each hold their own copy of the name.
       headEndValuesText = ''
         headEnd:
           bundle: ${builtins.unsafeDiscardStringContext cfg.aiChart.headEndBundle}
+          cardClaimer:
+            namespace: ${forecatsNamespace}
+            serviceAccount: ${forecatsClaimerServiceAccount}
       '';
       # The wiki's numeric ids, volume size and host path exist once, here. The
       # chart reads them by --set, the host directories by tmpfiles below, and
@@ -352,6 +361,20 @@ in
           ''
             forecats: "${forecatsStorage.namespace}" is not a Kubernetes namespace name: a lowercase RFC 1123 label of at most 63 characters. The PVs generated in nix/services/k3s.nix are pre-bound by claimRef to it and the apply pass creates it with -n; a value that cannot name a namespace binds nothing, and the claim sits Pending with an event that names no file.''
           forecatsStorage.namespace;
+      # The namespace the ai chart is applied into - the fleet's, and the one the
+      # `default` apply pass below passes as -n. The forecats chart needs it to tell
+      # a claim which namespace to scan for card-holding models and evict from, and
+      # the ai chart needs the claimer's namespace for the Role it binds there; a
+      # copy of either name in a chart is a claim that scans a namespace nothing runs
+      # in and finds a fleet with no models on it.
+      modelNamespace = "default";
+      # The ServiceAccount a `swapk8s claim` runs as, in the one place it is named.
+      # The forecats chart creates it; the ai chart binds the fleet's namespace to it
+      # so the claim may delete a model's Deployment. Two charts agreeing on the name
+      # by coincidence is a nightly that 403s at 03:00 on a card it was allowed to
+      # name, and its namespace is `forecatsNamespace` above rather than a second
+      # copy of it here.
+      forecatsClaimerServiceAccount = "forecats-nightly";
       # One list for both files, so a claim can never ask for a mode its pre-bound
       # PV does not offer. The items carry their own indentation: an interpolated
       # value lands after the surrounding string's indentation has been stripped.
@@ -577,6 +600,13 @@ in
           envsubst: ${builtins.unsafeDiscardStringContext pkgs.envsubst}
         claim:
           podClaimWindowSeconds: ${toString forecatsPodClaimWindowSeconds}
+          serviceAccount: ${forecatsClaimerServiceAccount}
+        # The namespace the model fleet runs in. A claim scans card-owning pods in
+        # both namespaces and in neither on its own: the render's pod is in this
+        # chart's, the models it may take a card from are there, and a scan of one
+        # of the two answers "free" for a card the other already holds.
+        fleet:
+          namespace: ${modelNamespace}
         persistence:
           volumes:
         ${lib.concatMapStrings (name: let
@@ -1693,7 +1723,7 @@ in
                 && cat "$T/default-ai.json" "$T/default-litellm-keys.json" > "$T/default.yaml" \
                 && $KCTL apply --server-side --force-conflicts -f "$T/crds.json" \
                 && apply_pruned "$SEL_CLUSTER" "" "$T/cluster.yaml" \
-                && apply_pruned "$SEL_DEFAULT" "default" "$T/default.yaml" \
+                && apply_pruned "$SEL_DEFAULT" "${modelNamespace}" "$T/default.yaml" \
                 && apply_pruned "$SEL_MONITORING" "monitoring" "$T/monitoring.yaml" \
                 && apply_pruned "$SEL_GPU" "gpu" "$T/gpu-charts.json" \
                 && apply_pruned "$SEL_KUBE_SYSTEM" "kube-system" "$T/kube-system.yaml" \

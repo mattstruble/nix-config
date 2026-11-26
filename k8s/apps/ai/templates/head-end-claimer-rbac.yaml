@@ -1,0 +1,77 @@
+{{- if and .Values.headEnd.enable (not (empty .Values.headEnd.bundle)) }}
+{{- $claimer := required "headEnd.cardClaimer: the namespace and ServiceAccount a card claim runs as. nix supplies both from the same declaration the forecats chart reads, because a RoleBinding subject names a service account in another namespace from inside a string the apply pass cannot fix afterwards." .Values.headEnd.cardClaimer }}
+{{- $cn := required "headEnd.cardClaimer.namespace: the namespace a claim's own pod runs in" $claimer.namespace }}
+{{- $sa := required "headEnd.cardClaimer.serviceAccount: the ServiceAccount a claim's pod runs as" $claimer.serviceAccount }}
+{{- $models := fromYaml (include "ai.onDemandModels" .) }}
+{{- if not $models }}
+{{- fail "headEnd.cardClaimer is configured while no model declares lifecycle: on-demand. The claimer's Role pins resourceNames to the fleet's Deployments, and an empty resourceNames list is what RBAC reads as no name restriction at all: delete on every Deployment in this namespace. Either the fleet lost its on-demand models or the claimer should not be set." }}
+{{- end }}
+{{- /*
+The rules list below is the whole of what this Role grants, so it is the one place
+a removal has to be argued in. What the shim really calls is Go, in another
+directory, and no build of this chart reads it — and a Role that is one verb short
+denies the eviction after it has already chosen a victim, leaving a nightly that
+logs a 403 about a model it was allowed to name. So the two calls the eviction path
+performs are asserted against the list at render time: dropping either fails the
+build and names the call it breaks.
+*/ -}}
+{{- $rules := list
+      (dict "apiGroups" (list "apps") "resources" (list "deployments") "verbs" (list "delete") "resourceNames" $models)
+      (dict "apiGroups" (list "") "resources" (list "pods") "verbs" (list "get" "list"))
+-}}
+{{- $granted := dict -}}
+{{- range $rule := $rules -}}
+{{- range $resource := $rule.resources -}}
+{{- $granted = set $granted $resource (concat (default (list) (index $granted $resource)) $rule.verbs) -}}
+{{- end -}}
+{{- end -}}
+{{- if not (has "delete" (default (list) (index $granted "deployments"))) -}}
+{{- fail "the card claimer's Role does not grant \"delete\" on deployments. `swapk8s claim` takes a busy card by deleting the Deployment of the model that holds it (deleteDeployment in src/swapk8s/main.go) — deleting rather than scaling to zero because the head-end's serve process is what tells the router a model is gone, and a Deployment at zero with its serve process still looping is a model the router still believes it has, whose next request is a proxy to a dead pod and never a wake (cmdStop). Without the verb the nightly names a card, is refused, and waits out --card-wait. The names it may delete are the on-demand models, from ai.onDemandModels: the same filter the roster and the spec ConfigMap are generated from, so a model cannot be woken by a request without also being evictable by a claim, or the reverse." -}}
+{{- end -}}
+{{- $podVerbs := default (list) (index $granted "pods") -}}
+{{- range $verb := list "get" "list" -}}
+{{- if not (has $verb $podVerbs) -}}
+{{- fail (printf "the card claimer's Role does not grant %q on pods. The claim lists this namespace's pods to learn which model holds which card (cardOwnerPods in src/swapk8s/main.go): a model's Deployment carries the card pool, not the card placement resolved, so the pod is the only object that says who is on which card. Without it the claim sees a fleet with nothing on it and places a render on top of a loaded model." $verb) -}}
+{{- end -}}
+{{- end -}}
+# The privilege a card claim needs over the fleet, granted where the fleet is. A
+# Role is read only inside the namespace it lands in, and the Deployments a claim
+# deletes are here rather than in the claimer's own namespace — which is why this
+# is the ai chart's file and not the forecats chart's, and why the RoleBinding's
+# subject reaches across a namespace boundary the apply pass cannot repair.
+#
+# `resourceNames` is what keeps this off the rest of the namespace: the nightly may
+# delete the fleet's model Deployments, which the shim creates and re-creates from
+# the spec ConfigMap on every wake, and nothing else here. No cluster scope, no
+# pods/exec, no secrets, no create or patch on anything.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: swap-card-claimer
+  labels:
+    app.kubernetes.io/part-of: ai
+    app.kubernetes.io/component: model-swapper
+rules:
+  {{- toYaml $rules | nindent 2 }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: swap-card-claimer
+  labels:
+    app.kubernetes.io/part-of: ai
+    app.kubernetes.io/component: model-swapper
+subjects:
+  - kind: ServiceAccount
+    name: {{ $sa }}
+    # A RoleBinding subject is a namespaced reference written inside a string the
+    # apply pass cannot fix afterwards, and this one names a namespace other than
+    # the one this chart is applied into. It reads the value nix owns rather than
+    # anything derived from the release, which is `default` here.
+    namespace: {{ $cn }}
+roleRef:
+  kind: Role
+  name: swap-card-claimer
+  apiGroup: rbac.authorization.k8s.io
+---
+{{- end }}

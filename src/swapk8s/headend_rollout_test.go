@@ -50,6 +50,12 @@ func renderHeadEnd(t *testing.T, overrides ...string) string {
 		"--set", "global.hostDataRoot=/tmp",
 		"--set", "headEnd.bundle=/nix/store/00000000000000000000000000-swap-head-end",
 		"--set", "strataBundle=/nix/store/00000000000000000000000000-strata",
+		// The identity a card claim runs as. The head-end templates `required` it
+		// because the fleet's namespace carries a Role bound to it, and this render
+		// supplies the same two store paths nix supplies rather than letting a chart
+		// that needs a claimer render without one.
+		"--set", "headEnd.cardClaimer.namespace=forecats",
+		"--set", "headEnd.cardClaimer.serviceAccount=forecats-nightly",
 	}
 	for _, v := range values {
 		args = append(args, "-f", v)

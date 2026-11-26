@@ -33,26 +33,26 @@
 #               whose load reaches the deadline it wakes inside.
 #   ttlSeconds: idle time before a summoned model goes back to sleep; falls back
 #               to headEnd.ttlSeconds.
-#   reclaimCostSeconds: a recorded measurement of what reclaiming this model's
-#               card costs whoever loses it - measured cold start plus the
-#               re-prefill of the session the eviction destroys, because the
-#               prompt cache dies with the pod. The shim consumes it: a job
-#               waiting for a card takes the idle one with the lowest figure,
-#               and a model with no figure is never reclaimed. It reaches the
-#               shim as the ai.mestruble.dev/reclaim-cost-seconds label on the
-#               rendered spec, the same channel `gpu` travels on; the line in
-#               config.yaml stays inert, because the pinned llama-swap (v264)
-#               has no such field and its decoder ignores unknown keys. The
-#               figure is a cost and never a ceiling - no job is refused for
-#               outliving it - and it never buys an interruption: only a model
-#               the router itself reports idle is ever taken. Declare it only
-#               from a measurement taken on this host: absent is not zero, and an
-#               invented figure would be indistinguishable from a measured one.
-#               It may not exceed the model's own idle budget, because
-#               reclaiming past that costs more than waiting the ttl out. A
-#               green render claims only that the chart emitted what the host
-#               wrote down - it re-runs no measurement, so a stale figure
-#               renders green.
+#   reclaimCostSeconds: a recorded measurement of what taking this model's card
+#               costs whoever takes it - measured cold start plus the re-prefill of
+#               the session the eviction destroys, because the prompt cache dies
+#               with the pod. The shim consumes it: a job whose pool is full takes
+#               the held card with the lowest figure, and a model with no figure is
+#               taken last rather than never - refusing an unmeasured card would put
+#               the render behind a number nobody wrote down. It reaches the shim as
+#               the ai.mestruble.dev/reclaim-cost-seconds label on the rendered
+#               spec, the same channel `gpu` travels on; the line in config.yaml
+#               stays inert, because the pinned llama-swap (v264) has no such field
+#               and its decoder ignores unknown keys. The figure is a cost and never
+#               a ceiling, and never a permission: no job is refused for outliving
+#               it, and no card is refused for lacking one. What a claim asks before
+#               it takes a card is which model holds it, not what that model is
+#               doing. Declare it only from a measurement taken on this host: absent
+#               is not zero, and an invented figure would be indistinguishable from
+#               a measured one. It may not exceed the model's own idle budget,
+#               because taking a card past that costs more than waiting the ttl out.
+#               A green render claims only that the chart emitted what the host wrote
+#               down - it re-runs no measurement, so a stale figure renders green.
 #
 # NOTE on fork binary paths: the store hash is pinned to the current build
 # (qwen4exp @0384f5c, turboq @8f2b243). If the fork is rebuilt, update the
@@ -100,6 +100,16 @@ headEnd:
   podClaimWindowSeconds: 60
   # Defaults a model can override per entry.
   ttlSeconds: 900
+  # The card claimer: the ServiceAccount a `swapk8s claim` runs as, and the
+  # namespace that pod runs in. Empty in git and supplied by the nix render from the
+  # same declaration the forecats chart reads, because the claimer's Role has to be
+  # granted in the fleet's namespace and a RoleBinding subject names a namespace the
+  # apply pass cannot fix afterwards. A host with no nightly render leaves it empty
+  # and renders no claimer Role; a host with one gets the grant from the fleet list
+  # rather than from a name written down twice.
+  cardClaimer:
+    namespace: ""
+    serviceAccount: ""
   # The load budget for a model that declares no coldStartSeconds of its own -
   # and the only slack in healthCheckTimeout, which is this plus the two waits.
   # The render refuses a roster whose slowest model reaches it, so a measured

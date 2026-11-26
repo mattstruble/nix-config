@@ -232,20 +232,28 @@ type podSpec struct {
 	component string  // app.kubernetes.io/component
 	model     string  // app label and pod name: what names the model holding a card
 	pool      string  // ai.mestruble.dev/gpu-pool label
+	ns        string  // metadata.namespace; "" omits the field
 	env       *string // NVIDIA_VISIBLE_DEVICES; nil omits the variable entirely
 	phase     string  // status.phase; "" omits the field, which is a pod that has not finished
 	deleting  bool
 }
 
+// in sets the namespace a pod's JSON reports. An eviction writes its delete to the
+// namespace the pod named, so a scenario about taking a card from the fleet has to
+// say where the fleet is.
+func (s podSpec) in(ns string) podSpec { s.ns = ns; return s }
+
 func model(gpu *string) podSpec  { return podSpec{component: componentModel, env: gpu} }
 func gpuJob(gpu *string) podSpec { return podSpec{component: componentGpuJob, env: gpu} }
 
 // loaded is a model pod holding a card, named the way the chart names one: the
-// model ID is both its app label and its Deployment's selector, and it is what a
-// reclaim reads to name the model it is taking the card from.
+// model ID is both its app label and its Deployment's selector, and it is what an
+// eviction reads to name the model whose card it is taking - and the name of the
+// Deployment it deletes. The fleet lives in `default` in every scenario here, which
+// is what makes a claim running in its own namespace a different namespace.
 func loaded(id, gpu string) podSpec {
 	card := gpu
-	return podSpec{component: componentModel, model: id, env: &card}
+	return podSpec{component: componentModel, model: id, ns: "default", env: &card}
 }
 
 func sref(s string) *string { return &s }
@@ -279,8 +287,12 @@ func (s podSpec) json() string {
 	if s.model != "" {
 		name = s.model + "-pod"
 	}
-	return fmt.Sprintf(`{"metadata":{"name":%q,"labels":{%s},"deletionTimestamp":%s},`+
-		`"spec":{"containers":[{%s}]},"status":{%s}}`, name, strings.Join(labels, ","), dt, env, phase)
+	ns := ""
+	if s.ns != "" {
+		ns = fmt.Sprintf(`"namespace":%q,`, s.ns)
+	}
+	return fmt.Sprintf(`{"metadata":{%s"name":%q,"labels":{%s},"deletionTimestamp":%s},`+
+		`"spec":{"containers":[{%s}]},"status":{%s}}`, ns, name, strings.Join(labels, ","), dt, env, phase)
 }
 
 func pods(specs ...podSpec) string {
@@ -311,7 +323,7 @@ func TestBusyCardsSendsTheCardOwnerSelector(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	if _, err := testClient(srv).busyCards(context.Background(), "ai"); err != nil {
+	if _, err := testClient(srv).busyCards(context.Background(), []string{"ai"}); err != nil {
 		t.Fatalf("busyCards: %v", err)
 	}
 	const want = "app.kubernetes.io/component in (model,gpu-job)"
@@ -360,7 +372,7 @@ func TestBusyCardsSeparatesAnEmptyListFromAFailedScan(t *testing.T) {
 			}))
 			defer srv.Close()
 
-			busy, err := testClient(srv).busyCards(context.Background(), "ai")
+			busy, err := testClient(srv).busyCards(context.Background(), []string{"ai"})
 			if !tc.wantErr {
 				if err != nil {
 					t.Fatalf("a namespace with no card holders must scan clean, got %v", err)
@@ -388,7 +400,7 @@ func TestClaimRefusesWhenTheBusyScanFails(t *testing.T) {
 	defer srv.Close()
 
 	claimed := false
-	card, err := claimJob(t, t.TempDir()+"/cards.lock", testClient(srv).scanCards("ai"), "1", "any",
+	card, err := claimJob(t, t.TempDir()+"/cards.lock", testClient(srv).scanCards([]string{"ai"}), "1", "any",
 		func(string) error { claimed = true; return nil })
 	if err == nil {
 		t.Fatalf("a claim whose scan failed reported card %q", card)
@@ -1046,7 +1058,7 @@ func (f *fakeWake) scale(ns, name string, replicas int) (bool, error) {
 
 // scanCards sees an empty namespace: the card the wake's pool names is free, so
 // these tests say nothing about placement and everything about what follows it.
-func (f *fakeWake) scanCards(ns string) busyScan {
+func (f *fakeWake) scanCards(namespaces []string) busyScan {
 	return func(context.Context) (map[string]bool, error) { return map[string]bool{}, nil }
 }
 
@@ -1295,7 +1307,7 @@ func TestClaimReleasesTheCardWhenNoPodAppearedWithinTheBudget(t *testing.T) {
 	}
 }
 
-// ---- reclaiming a card from an idle model ----------------------------------
+// ---- what a card costs to take back ----------------------------------
 
 // specCost writes <name>.json the way the chart renders it into the head-end's
 // spec ConfigMap: the reclaim cost as a quoted label value on the Deployment's own
@@ -1389,141 +1401,105 @@ func TestAnUnreadableSpecDropsItsModelNotTheRead(t *testing.T) {
 	}
 }
 
-// A model that is never reclaimed is a state an operator has to be able to
-// explain, and the ways a cost goes missing are not one condition: a spec that
-// declares nothing is a host's choice, a spec that cannot be read is a render
-// that broke, and a model no spec names is a pod outliving its Deployment. All
-// three refuse the card, and the refusal says which one it is looking at.
-func TestTheRefusalSaysWhichKindOfUnmeasured(t *testing.T) {
-	dir := t.TempDir()
-	specCost(t, dir, "qwen3-6-35b-iq4xs", "")
-	corruptSpec(t, dir, "gemma-4-26b-a4b")
-	// swift-qwen3-8-27b has a pod on gpu 2 and no spec file at all.
+// ---- taking a card from the model that holds it ----------------------------
 
-	costs, err := reclaimCosts(dir)
-	if err != nil {
-		t.Fatalf("reclaimCosts: %v", err)
+// costTable is the spec dir planEvict reads: `measured` is what each model stated
+// in seconds, `unmeasured` names the models whose spec states a reason instead, and
+// a model in neither has no spec file at all.
+func costTable(measured map[string]int64, unmeasured map[string]string) map[string]reclaimCost {
+	out := map[string]reclaimCost{}
+	for name, seconds := range measured {
+		out[name] = reclaimCost{seconds: seconds}
 	}
-	plan := planReclaim([]string{"0", "1", "2"},
-		map[string]string{"0": "qwen3-6-35b-iq4xs", "1": "gemma-4-26b-a4b", "2": "swift-qwen3-8-27b"},
-		map[string]string{"qwen3-6-35b-iq4xs": stateIdle, "gemma-4-26b-a4b": stateIdle, "swift-qwen3-8-27b": stateIdle},
-		costs)
-	if plan.ok {
-		t.Fatalf("planned to take gpu %s from %s; no card here has a readable cost", plan.target.card, plan.target.model)
+	for name, reason := range unmeasured {
+		out[name] = reclaimCost{reason: reason}
 	}
-	reasons := plan.refused
-	for _, want := range []struct{ card, model, reason string }{
-		{"0", "qwen3-6-35b-iq4xs", "spec qwen3-6-35b-iq4xs.json declares no reclaim cost"},
-		{"1", "gemma-4-26b-a4b", "spec gemma-4-26b-a4b.json is not valid JSON"},
-		{"2", "swift-qwen3-8-27b", "no spec file names it"},
-	} {
-		refusal := ""
-		for _, r := range reasons {
-			if strings.HasPrefix(r, "gpu "+want.card+":") {
-				refusal = r
-			}
-		}
-		if !strings.Contains(refusal, want.model) || !strings.Contains(refusal, want.reason) {
-			t.Errorf("gpu %s refused as %q, want it to name %s and say %q: %v",
-				want.card, refusal, want.model, want.reason, reasons)
-		}
-	}
+	return out
 }
 
-// measured is a spec dir in which every one of these models declared its cost as
-// a number of seconds. A case about a model whose spec is missing or unusable
-// builds the map itself, because that is the condition it is about.
-func measured(seconds map[string]int64) map[string]reclaimCost {
-	costs := make(map[string]reclaimCost, len(seconds))
-	for name, s := range seconds {
-		costs[name] = reclaimCost{seconds: s}
+// heldBy is a holders map for the plan tests: each entry names the model holding
+// that card, in the fleet's namespace.
+func heldBy(entries map[string]string) map[string]cardHolder {
+	out := map[string]cardHolder{}
+	for card, model := range entries {
+		out[card] = cardHolder{namespace: "default", model: model}
 	}
-	return costs
+	return out
 }
 
-// The reclaim decision, without a cluster or a router: the cheapest idle card is
-// taken, and the two refusals hold whatever a card would cost.
-func TestPlanReclaim(t *testing.T) {
+// The eviction decision, without a cluster. What is not in this table is the whole
+// point of the reversal: no column asks what the model is doing. A card one named
+// model holds is a candidate warm, loading, or mid-request, and the only thing that
+// orders the candidates is what bringing each one back costs.
+func TestPlanEvict(t *testing.T) {
 	cases := []struct {
 		name                string
 		holders             map[string]string
-		states              map[string]string
-		costs               map[string]int64
+		costs               map[string]reclaimCost
 		wantModel, wantCard string
+		wantReason          string
 		wantRefused         string
 	}{
 		{
-			name:      "the idle card that costs least to bring back wins",
+			name:      "the card that costs least to bring back is taken",
 			holders:   map[string]string{"0": "swift-qwen3-8-27b", "1": "gemma-4-26b-a4b"},
-			states:    map[string]string{"swift-qwen3-8-27b": "idle", "gemma-4-26b-a4b": "idle"},
-			costs:     map[string]int64{"swift-qwen3-8-27b": 270, "gemma-4-26b-a4b": 110},
+			costs:     costTable(map[string]int64{"swift-qwen3-8-27b": 270, "gemma-4-26b-a4b": 110}, nil),
 			wantModel: "gemma-4-26b-a4b", wantCard: "1",
 		},
 		{
-			name:      "a model in decode is refused whatever it costs",
-			holders:   map[string]string{"0": "swift-qwen3-8-27b", "1": "gemma-4-26b-a4b"},
-			states:    map[string]string{"swift-qwen3-8-27b": "idle", "gemma-4-26b-a4b": "decode"},
-			costs:     map[string]int64{"swift-qwen3-8-27b": 270, "gemma-4-26b-a4b": 110},
-			wantModel: "swift-qwen3-8-27b", wantCard: "0",
+			// The case the last design refused: the model is serving a request, and
+			// the render takes the card anyway. Nothing here reads a router, because
+			// nothing here needs one.
+			name:      "a model holding a card is a candidate whatever it is doing",
+			holders:   map[string]string{"0": "gemma-4-26b-a4b"},
+			costs:     costTable(map[string]int64{"gemma-4-26b-a4b": 110}, nil),
+			wantModel: "gemma-4-26b-a4b", wantCard: "0",
 		},
 		{
-			name:        "a model in prefill is refused",
-			holders:     map[string]string{"0": "gemma-4-26b-a4b"},
-			states:      map[string]string{"gemma-4-26b-a4b": "prefill"},
-			costs:       map[string]int64{"gemma-4-26b-a4b": 110},
-			wantRefused: "is prefill",
+			// An unmeasured card is not an un-takeable card. Refusing it would put
+			// the render behind a figure nobody wrote down.
+			name:      "a model with no measured cost is taken, and says why it has none",
+			holders:   map[string]string{"1": "qwen3-6-35b-iq4xs"},
+			costs:     costTable(nil, map[string]string{"qwen3-6-35b-iq4xs": "spec qwen3-6-35b-iq4xs.json declares no reclaim cost"}),
+			wantModel: "qwen3-6-35b-iq4xs", wantCard: "1",
+			wantReason: "declares no reclaim cost",
 		},
 		{
-			name:        "a model still loading is refused",
-			holders:     map[string]string{"0": "gemma-4-26b-a4b"},
-			states:      map[string]string{"gemma-4-26b-a4b": "loading"},
-			costs:       map[string]int64{"gemma-4-26b-a4b": 110},
-			wantRefused: "is loading",
+			name:      "a measured card goes before an unmeasured one held earlier in the pool",
+			holders:   map[string]string{"0": "qwen3-6-35b-iq4xs", "1": "gemma-4-26b-a4b"},
+			costs:     costTable(map[string]int64{"gemma-4-26b-a4b": 900}, map[string]string{"qwen3-6-35b-iq4xs": "no spec file names it"}),
+			wantModel: "gemma-4-26b-a4b", wantCard: "1",
 		},
 		{
-			// Idle means what the router reports, not what a ttl implies: a model
-			// with a pod and no place in the running list is not idle to the one
-			// process that routes it.
-			name:        "a model the router does not report is refused",
-			holders:     map[string]string{"0": "gemma-4-26b-a4b"},
-			states:      map[string]string{},
-			costs:       map[string]int64{"gemma-4-26b-a4b": 110},
-			wantRefused: "not in the router's running list",
-		},
-		{
-			// The spec dir is the only place a cost exists, and this model is not
-			// in it: a pod with no spec file behind it is never reclaimed.
-			name:        "a model no spec file names is refused",
-			holders:     map[string]string{"1": "qwen3-6-35b-iq4xs"},
-			states:      map[string]string{"qwen3-6-35b-iq4xs": "idle"},
-			costs:       map[string]int64{},
-			wantRefused: "no spec file names it",
-		},
-		{
-			name:        "a card a job holds is not a model to unload",
-			holders:     map[string]string{"1": ""},
-			states:      map[string]string{},
-			costs:       map[string]int64{"some-render": 1},
-			wantRefused: "not a named model",
-		},
-		{
-			name:        "a free card is not a reclaim",
-			holders:     map[string]string{},
-			states:      map[string]string{},
-			costs:       map[string]int64{"gemma-4-26b-a4b": 110},
-			wantRefused: "gpu 1 is free",
+			name:      "two unmeasured cards go to the earlier one of the pool",
+			holders:   map[string]string{"0": "qwen3-6-35b-iq4xs", "1": "gemma-4-26b-a4b"},
+			costs:     costTable(nil, map[string]string{"qwen3-6-35b-iq4xs": "declares nothing", "gemma-4-26b-a4b": "unreadable spec"}),
+			wantModel: "qwen3-6-35b-iq4xs", wantCard: "0",
 		},
 		{
 			name:      "a tie goes to the earlier card of the pool",
 			holders:   map[string]string{"0": "gemma-4-26b-a4b", "1": "swift-qwen3-8-27b"},
-			states:    map[string]string{"gemma-4-26b-a4b": "idle", "swift-qwen3-8-27b": "idle"},
-			costs:     map[string]int64{"gemma-4-26b-a4b": 110, "swift-qwen3-8-27b": 110},
+			costs:     costTable(map[string]int64{"gemma-4-26b-a4b": 110, "swift-qwen3-8-27b": 110}, nil),
 			wantModel: "gemma-4-26b-a4b", wantCard: "0",
+		},
+		{
+			// A claim evicting a claim is two renders killing each other until one
+			// of them stops; a model is the only thing a claim takes a card from.
+			name:        "a card a job holds is not a model to evict",
+			holders:     map[string]string{"1": ""},
+			costs:       costTable(map[string]int64{"some-render": 1}, nil),
+			wantRefused: "not one named model",
+		},
+		{
+			name:        "a free card is not an eviction",
+			holders:     map[string]string{},
+			costs:       costTable(map[string]int64{"gemma-4-26b-a4b": 110}, nil),
+			wantRefused: "gpu 1 is free",
 		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			plan := planReclaim([]string{"0", "1"}, tc.holders, tc.states, measured(tc.costs))
+			plan := planEvict([]string{"0", "1"}, heldBy(tc.holders), tc.costs)
 			if tc.wantModel == "" {
 				if plan.ok {
 					t.Fatalf("planned to take gpu %s from %s; want no candidate", plan.target.card, plan.target.model)
@@ -1534,47 +1510,64 @@ func TestPlanReclaim(t *testing.T) {
 				return
 			}
 			if !plan.ok {
-				t.Fatalf("no candidate (%v); want gpu %s from %s", plan.refused, tc.wantCard, tc.wantModel)
+				t.Fatalf("no card taken (%v); want gpu %s from %s", plan.refused, tc.wantCard, tc.wantModel)
 			}
 			if plan.target.model != tc.wantModel || plan.target.card != tc.wantCard {
 				t.Errorf("want gpu %s from %s, got gpu %s from %s",
 					tc.wantCard, tc.wantModel, plan.target.card, plan.target.model)
 			}
+			if !strings.Contains(plan.target.reason, tc.wantReason) {
+				t.Errorf("reason = %q, want it to say %q", plan.target.reason, tc.wantReason)
+			}
 		})
 	}
 }
 
-// Which model a card belongs to is read off the pod that holds it, and only a
-// single named model is a card that can be given back: a job's card is not a
-// model to unload, and two pods on one card have no single owner to ask.
-func TestReclaimHoldersNamesOneModelPerCard(t *testing.T) {
+// Which model a card belongs to, and which namespace to take it back in, are both
+// read off the pod that holds it: the Deployment carries the pool, not the resolved
+// card. And only a single named model is a card that can be given back - a job's own
+// card is not a model to remove, and two pods on one card have no single owner.
+func TestEvictHoldersNamesOneModelPerCard(t *testing.T) {
 	cases := []struct {
 		name string
 		in   []podSpec
-		want map[string]string
+		want map[string]cardHolder
 	}{
-		{"a model pod names its model", []podSpec{loaded("gemma-4-26b-a4b", "1")}, map[string]string{"1": "gemma-4-26b-a4b"}},
-		{"a gpu-job holds a card and names no model", []podSpec{gpuJob(sref("1"))}, map[string]string{"1": ""}},
+		{"a model pod names its model and its namespace",
+			[]podSpec{loaded("gemma-4-26b-a4b", "1")},
+			map[string]cardHolder{"1": {namespace: "default", model: "gemma-4-26b-a4b"}}},
+		{"a gpu-job holds a card and names no model",
+			[]podSpec{gpuJob(sref("1")).in("forecats")},
+			map[string]cardHolder{"1": {namespace: "forecats"}}},
 		{
-			// A model pod with no app label is a card the reclaim cannot name a model
-			// for, and it is refused as "not a named model" rather than guessed at
-			// from the pod's generated name.
+			// A model pod with no app label is a card the eviction cannot name a
+			// model for, and it is refused rather than guessed at from the pod's
+			// generated name.
 			name: "a model pod carrying no app label names no model",
 			in:   []podSpec{model(sref("1"))},
-			want: map[string]string{"1": ""},
+			want: map[string]cardHolder{"1": {}},
 		},
 		{"a card two model pods hold has no single owner",
-			[]podSpec{loaded("gemma-4-26b-a4b", "1"), loaded("swift-qwen3-8-27b", "1")}, map[string]string{"1": ""}},
+			[]podSpec{loaded("gemma-4-26b-a4b", "1"), loaded("swift-qwen3-8-27b", "1")},
+			map[string]cardHolder{"1": {}}},
 		{
-			// A finished pod is out of the accounting the same way the busy-card scan
-			// puts it out: the card is free, not held by nobody.
+			// The same model's two pods - a rollout mid-flight - is still one
+			// model, and deleting its Deployment ends both.
+			name: "two pods of one model name one model",
+			in:   []podSpec{loaded("gemma-4-26b-a4b", "1"), loaded("gemma-4-26b-a4b", "1")},
+			want: map[string]cardHolder{"1": {namespace: "default", model: "gemma-4-26b-a4b"}},
+		},
+		{
+			// A finished pod is out of the accounting the same way the busy-card
+			// scan puts it out: the card is free, not held by nobody.
 			name: "a finished pod gives its card up",
-			in:   []podSpec{podSpec{component: componentModel, model: "gemma-4-26b-a4b", phase: "Succeeded", env: sref("1")}},
-			want: map[string]string{},
+			in:   []podSpec{podSpec{component: componentModel, ns: "default", model: "gemma-4-26b-a4b", phase: "Succeeded", env: sref("1")}},
+			want: map[string]cardHolder{},
 		},
 		{"a spanning model pod owns every card it holds",
 			[]podSpec{loaded("flash-next-strata-iq4xs-2gpu", "0,1")},
-			map[string]string{"0": "flash-next-strata-iq4xs-2gpu", "1": "flash-next-strata-iq4xs-2gpu"}},
+			map[string]cardHolder{"0": {namespace: "default", model: "flash-next-strata-iq4xs-2gpu"},
+				"1": {namespace: "default", model: "flash-next-strata-iq4xs-2gpu"}}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1582,32 +1575,93 @@ func TestReclaimHoldersNamesOneModelPerCard(t *testing.T) {
 			if err := json.Unmarshal([]byte(pods(tc.in...)), pl); err != nil {
 				t.Fatal(err)
 			}
-			if got := reclaimHolders(pl); !maps.Equal(got, tc.want) {
+			if got := evictHolders(pl); !maps.Equal(got, tc.want) {
 				t.Errorf("holders = %v, want %v", got, tc.want)
 			}
 		})
 	}
 }
 
-// fakeFleet is the kube API a reclaim reads. The card-owner scan answers from
-// `scans` and the "has that model's pod finished dying yet" poll from `remaining`,
-// each once per look with the last entry repeating. Every non-GET is recorded:
-// a reclaim that scaled a Deployment or deleted a pod itself, instead of asking
-// the router, is exactly what that catches.
+// ---- the namespaces one placement spans -----------------------------------
+
+// cardNamespaces is the whole of what a placement sees, so both halves of it are
+// asserted here: its own namespace always, every fleet namespace once, and its own
+// namespace not twice because the chart named it in both places.
+func TestCardNamespacesIsOwnPlusTheFleetOnceEach(t *testing.T) {
+	cases := []struct {
+		own, fleet string
+		want       []string
+	}{
+		{"forecats", "", []string{"forecats"}},
+		{"forecats", "default", []string{"forecats", "default"}},
+		{"forecats", "default,forecats", []string{"forecats", "default"}},
+		{"default", "forecats,gpu", []string{"default", "forecats", "gpu"}},
+	}
+	for _, tc := range cases {
+		if got := cardNamespaces(tc.own, tc.fleet); !slices.Equal(got, tc.want) {
+			t.Errorf("cardNamespaces(%q, %q) = %v, want %v", tc.own, tc.fleet, got, tc.want)
+		}
+	}
+}
+
+// A scan of one namespace is what let a model and a render take the same card: the
+// scan answered "free" for a card a pod in the other namespace already owned, and an
+// eviction that cannot see the fleet has nothing to evict. Both namespaces are
+// listed, and one namespace the API refused is an error rather than a fleet with no
+// models in it.
+func TestCardOwnerPodsListsEveryNamespaceAndFailsOnOne(t *testing.T) {
+	var paths []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.URL.Path)
+		if strings.Contains(r.URL.Path, "/gpu/") {
+			w.WriteHeader(http.StatusForbidden)
+			fmt.Fprint(w, `{"kind":"Status","status":"Failure","message":"forbidden"}`)
+			return
+		}
+		fmt.Fprint(w, pods())
+	}))
+	defer srv.Close()
+	c := testClient(srv)
+
+	if _, err := c.cardOwnerPods([]string{"forecats", "default"}); err != nil {
+		t.Fatalf("cardOwnerPods: %v", err)
+	}
+	if want := []string{"/api/v1/namespaces/forecats/pods", "/api/v1/namespaces/default/pods"}; !slices.Equal(paths, want) {
+		t.Errorf("listed %v, want %v", paths, want)
+	}
+
+	if _, err := c.cardOwnerPods([]string{"forecats", "gpu"}); err == nil {
+		t.Error("a namespace whose list was refused read as a namespace with no card holders")
+	} else if !strings.Contains(err.Error(), "gpu") {
+		t.Errorf("the failure does not name the namespace that failed: %v", err)
+	}
+}
+
+// ---- the evicting claim ----------------------------------------------------
+
+// fakeFleet is the kube API an eviction reads and writes. The card-owner scan
+// answers from `scans` and the "has that model's pod finished dying yet" poll from
+// `remaining`, each once per look with the last entry repeating. Every write is
+// recorded in full and every read path is kept: the delete is the whole of what the
+// eviction does, so a claim that wrote somewhere else - scaled a Deployment, deleted
+// a pod in the claim's own namespace, asked some third process for a card - is what
+// these assertions catch.
 type fakeFleet struct {
 	scans     []string
 	remaining []int
 	looks     int
 	polls     int
+	reads     []string
 	writes    []string
 }
 
 func (f *fakeFleet) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		f.writes = append(f.writes, r.Method+" "+r.URL.Path)
-		w.WriteHeader(http.StatusMethodNotAllowed)
+		w.WriteHeader(http.StatusOK)
 		return
 	}
+	f.reads = append(f.reads, r.URL.Path)
 	// The two queries share a path: the set-form selector is the card-owner scan,
 	// the equality pair is the poll for one model's pods.
 	if strings.Contains(r.URL.Query().Get("labelSelector"), " in (") {
@@ -1628,49 +1682,19 @@ func podsStillThere(n int) string {
 	return `{"items":[` + strings.TrimSuffix(strings.Repeat(item+",", n), ",") + `]}`
 }
 
-// fakeRouter is llama-swap's API: the running list a reclaim reads and the unload
-// it asks for. The unload answers the way the pinned router does — 200 the moment
-// it is asked, with the stop it started still running — which is why a reclaim
-// confirms against the cluster and never against this response.
-type fakeRouter struct {
-	states   map[string]string
-	status   int
-	unloaded []string
+// evictOptions is the flag set an eviction test runs with: the spec dir a head-end
+// pod has, the namespaces a claim spans, and budgets short enough that a timeout is
+// a test result and not a wait.
+func evictOptions(dir, fleet string, window time.Duration) *options {
+	return &options{namespace: "forecats", fleetNamespace: fleet, specDir: dir,
+		poll: time.Millisecond, evictDeadline: window, gpuPool: "0,1", gpuMode: "any"}
 }
 
-func (f *fakeRouter) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	switch {
-	case r.Method == http.MethodGet && r.URL.Path == "/running":
-		models := make([]string, 0, len(f.states))
-		for name, state := range f.states {
-			models = append(models, fmt.Sprintf(`{"model":%q,"state":%q}`, name, state))
-		}
-		fmt.Fprintf(w, `{"models":[%s],"total":%d}`, strings.Join(models, ","), len(models))
-	case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/api/models/unload/"):
-		f.unloaded = append(f.unloaded, strings.TrimPrefix(r.URL.Path, "/api/models/unload/"))
-		if f.status != 0 {
-			w.WriteHeader(f.status)
-			return
-		}
-		fmt.Fprint(w, `{"message":"unloading"}`)
-	default:
-		w.WriteHeader(http.StatusMethodNotAllowed)
-	}
-}
-
-// reclaimOptions is the flag set a reclaim test runs with: the router address and
-// the spec dir a head-end pod has, and budgets short enough that a timeout is a
-// test result and not a wait.
-func reclaimOptions(dir, routerURL string, window time.Duration) *options {
-	return &options{namespace: "ai", specDir: dir, poll: time.Millisecond,
-		reclaimDeadline: window, gpuPool: "0,1", gpuMode: "any", routerURL: routerURL}
-}
-
-// Two cards, both full, one request in flight: the job takes the card whose model
-// would be cheapest to bring back, and asks the router for it. The cheaper card is
-// the one that is decoding, and decode is not idle — that is the whole difference
-// between reclaim and preemption, so it is the first thing this checks.
-func TestReclaimTakesTheCheapestIdleCardThroughTheRouter(t *testing.T) {
+// Two cards, both full, one of them serving a request: the job takes the card whose
+// model would be cheapest to bring back, and there is nobody else to ask. This is
+// the case the last design waited out forever - it asked a router whether the model
+// was idle, and a model with a request in flight is never idle.
+func TestEvictTakesTheCheapestCardAndWritesOnlyTheDelete(t *testing.T) {
 	dir := t.TempDir()
 	specCost(t, dir, "gemma-4-26b-a4b", `"110"`)
 	specCost(t, dir, "swift-qwen3-8-27b", `"270"`)
@@ -1679,133 +1703,103 @@ func TestReclaimTakesTheCheapestIdleCardThroughTheRouter(t *testing.T) {
 		scans:     []string{pods(loaded("gemma-4-26b-a4b", "0"), loaded("swift-qwen3-8-27b", "1"))},
 		remaining: []int{1, 0},
 	}
-	router := &fakeRouter{states: map[string]string{
-		"gemma-4-26b-a4b":   "decode",
-		"swift-qwen3-8-27b": "idle",
-	}}
-	fleetSrv, routerSrv := httptest.NewServer(fleet), httptest.NewServer(router)
-	defer fleetSrv.Close()
-	defer routerSrv.Close()
+	srv := httptest.NewServer(fleet)
+	defer srv.Close()
 
-	err := newReclaimer(testClient(fleetSrv), reclaimOptions(dir, routerSrv.URL, time.Minute)).
+	err := newEvictor(testClient(srv), evictOptions(dir, "default", time.Minute)).
 		try(context.Background(), time.Minute)
 	if err != nil {
-		t.Fatalf("reclaim: %v", err)
+		t.Fatalf("evict: %v", err)
 	}
-	if !slices.Equal(router.unloaded, []string{"swift-qwen3-8-27b"}) {
-		t.Errorf("the router was asked to unload %v, want only the idle card", router.unloaded)
-	}
-	// The reclaimed model keeps its place in the roster because the shim wrote
-	// nothing anywhere: its next request goes through the ordinary wake path and
-	// the client sees the loading stream, not an error.
-	if len(fleet.writes) != 0 {
-		t.Errorf("the reclaim wrote to the cluster instead of asking the router: %v", fleet.writes)
+	// Exactly one card is taken: the fleet runs two models on two cards and the
+	// render needs one, so one Deployment dies and it is the cheap one, in the
+	// namespace the pod reported rather than the claim's own.
+	want := []string{"DELETE /apis/apps/v1/namespaces/default/deployments/gemma-4-26b-a4b"}
+	if !slices.Equal(fleet.writes, want) {
+		t.Errorf("the cluster was written %v, want %v", fleet.writes, want)
 	}
 }
 
-// A model that is idle and unmeasured keeps its card, and the router is not asked
-// at all: the cost is the gate, not a tie-breaker.
-func TestReclaimNeverAsksForACardWithNoMeasuredCost(t *testing.T) {
+// A card another job holds is refused, and the model beside it is left alone: a
+// claim that evicted a claim is two renders killing each other until one stops.
+func TestEvictTakesTheModelBesideAJobAndNeverTheJob(t *testing.T) {
 	dir := t.TempDir()
-	specCost(t, dir, "qwen3-6-35b-iq4xs", "")
-
-	fleet := &fakeFleet{scans: []string{pods(loaded("qwen3-6-35b-iq4xs", "1"))}, remaining: []int{1}}
-	router := &fakeRouter{states: map[string]string{"qwen3-6-35b-iq4xs": "idle"}}
-	fleetSrv, routerSrv := httptest.NewServer(fleet), httptest.NewServer(router)
-	defer fleetSrv.Close()
-	defer routerSrv.Close()
-
-	err := newReclaimer(testClient(fleetSrv), reclaimOptions(dir, routerSrv.URL, time.Minute)).
-		try(context.Background(), time.Minute)
-	if err == nil || !strings.Contains(err.Error(), "declares no reclaim cost") {
-		t.Fatalf("want the refusal that names the missing cost, got %v", err)
-	}
-	if len(router.unloaded) != 0 {
-		t.Errorf("the router was asked to unload an unmeasured model: %v", router.unloaded)
-	}
-}
-
-// A corrupt spec is one model that is not reclaimable, not a reclaim that does
-// not run: the file will still be corrupt on the next attempt, so an attempt that
-// failed over it would leave every card in the pool un-reclaimable forever. The
-// specs that do read are still ranked, and a card still changes hands.
-func TestReclaimStillTakesACardBesideACorruptSpec(t *testing.T) {
-	dir := t.TempDir()
-	corruptSpec(t, dir, "gemma-4-26b-a4b")         // idle on gpu 0, and out of the running
-	specCost(t, dir, "swift-qwen3-8-27b", `"270"`) // idle on gpu 1, the only card that can be taken
-	specCost(t, dir, "qwen3-6-35b-iq4xs", `"110"`) // the cheaper figure, but it holds no card
+	specCost(t, dir, "gemma-4-26b-a4b", `"110"`)
 
 	fleet := &fakeFleet{
-		scans:     []string{pods(loaded("gemma-4-26b-a4b", "0"), loaded("swift-qwen3-8-27b", "1"))},
-		remaining: []int{1, 0},
+		scans:     []string{pods(gpuJob(sref("0")).in("forecats"), loaded("gemma-4-26b-a4b", "1"))},
+		remaining: []int{0},
 	}
-	router := &fakeRouter{states: map[string]string{"gemma-4-26b-a4b": "idle", "swift-qwen3-8-27b": "idle"}}
-	fleetSrv, routerSrv := httptest.NewServer(fleet), httptest.NewServer(router)
-	defer fleetSrv.Close()
-	defer routerSrv.Close()
+	srv := httptest.NewServer(fleet)
+	defer srv.Close()
 
-	err := newReclaimer(testClient(fleetSrv), reclaimOptions(dir, routerSrv.URL, time.Minute)).
+	err := newEvictor(testClient(srv), evictOptions(dir, "default", time.Minute)).
 		try(context.Background(), time.Minute)
 	if err != nil {
-		t.Fatalf("reclaim: %v", err)
+		t.Fatalf("evict: %v", err)
 	}
-	if !slices.Equal(router.unloaded, []string{"swift-qwen3-8-27b"}) {
-		t.Errorf("the router was asked to unload %v, want the one idle card whose cost could be read", router.unloaded)
+	want := []string{"DELETE /apis/apps/v1/namespaces/default/deployments/gemma-4-26b-a4b"}
+	if !slices.Equal(fleet.writes, want) {
+		t.Errorf("the cluster was written %v, want %v", fleet.writes, want)
 	}
 }
 
-// A spec dir in which nothing can be read is a claim that waits, exactly as it
-// waited before reclaim existed: the attempt is a log line, the flock goes back,
-// and no model is put to sleep on the strength of a file nobody could read. A
-// corrupt ConfigMap key is a static condition, so this is the state a fleet sits
-// in every night until a human fixes it, and a wait is survivable.
-func TestEverySpecUnreadableIsAWaitNotAFailure(t *testing.T) {
+// Every card held by a job is a claim that waits. Nothing is deleted, and the
+// refusal says so - the alternative is a nightly that takes the card out from under
+// the only other render on the host.
+func TestEvictRefusesToChooseBetweenTwoJobs(t *testing.T) {
 	dir := t.TempDir()
-	corruptSpec(t, dir, "gemma-4-26b-a4b")
-	corruptSpec(t, dir, "swift-qwen3-8-27b")
-	lock := dir + "/cards.lock"
+	specCost(t, dir, "gemma-4-26b-a4b", `"110"`)
 
 	fleet := &fakeFleet{
-		scans:     []string{pods(loaded("gemma-4-26b-a4b", "0"), loaded("swift-qwen3-8-27b", "1"))},
+		scans:     []string{pods(gpuJob(sref("0")).in("forecats"), gpuJob(sref("1")).in("forecats"))},
 		remaining: []int{1},
 	}
-	router := &fakeRouter{states: map[string]string{"gemma-4-26b-a4b": "idle", "swift-qwen3-8-27b": "idle"}}
-	fleetSrv, routerSrv := httptest.NewServer(fleet), httptest.NewServer(router)
-	defer fleetSrv.Close()
-	defer routerSrv.Close()
+	srv := httptest.NewServer(fleet)
+	defer srv.Close()
 
-	claimed := false
-	_, err := claimCycle(context.Background(), lock,
-		scanOf(loaded("gemma-4-26b-a4b", "0"), loaded("swift-qwen3-8-27b", "1")),
-		[]string{"0", "1"}, "0,1", "any", refusalBudget, 5*time.Millisecond,
-		newReclaimer(testClient(fleetSrv), reclaimOptions(dir, routerSrv.URL, time.Minute)).try,
-		func(string, time.Time) error { claimed = true; return nil })
-
-	if err == nil || !strings.Contains(err.Error(), `no free card in pool "0,1"`) {
-		t.Fatalf("claim = %v, want the ordinary refusal to wait for a card", err)
+	err := newEvictor(testClient(srv), evictOptions(dir, "default", time.Minute)).
+		try(context.Background(), time.Minute)
+	if err == nil || !strings.Contains(err.Error(), "not one named model") {
+		t.Fatalf("want the refusal that names the job's card, got %v", err)
 	}
-	if claimed {
-		t.Error("the command was handed a card nobody released")
-	}
-	if len(router.unloaded) != 0 {
-		t.Errorf("the reclaim asked the router to unload %v on the strength of a spec it could not read", router.unloaded)
-	}
-	// The reclaim got as far as looking at the cards, so the wait above is the
-	// outcome of a decision and not of an attempt that never ran.
-	if fleet.looks == 0 {
-		t.Error("the reclaim never scanned the card owners")
-	}
-	if !flockIsFree(t, lock) {
-		t.Error("the placement lock is still held")
+	if len(fleet.writes) != 0 {
+		t.Errorf("the eviction wrote %v to a fleet holding no model", fleet.writes)
 	}
 }
 
-// A 200 is the router taking the request, not the card coming back: it hands the
-// stop command to a goroutine the response never waits for, and a cmdStop that
-// outlives unloadTimeout is never killed. So the reclaim confirms against the pod,
-// and when the pod never goes it says who has to decide about the card — a human,
-// not a claim that waited two minutes and is not feeling forceful.
-func TestReclaimDoesNotTakeACardOnTheUnloadResponseAlone(t *testing.T) {
+// A spec dir in which nothing can be read is a claim that still takes a card. The
+// file will still be corrupt on the next attempt, so an attempt that failed over it
+// would leave every card in the pool un-takeable forever, and a corrupt ConfigMap
+// key is a static condition a fleet sits in every night until a human fixes it.
+func TestEvictStillTakesACardBesideACorruptSpec(t *testing.T) {
+	dir := t.TempDir()
+	corruptSpec(t, dir, "gemma-4-26b-a4b")    // holds gpu 0, no readable figure
+	specCost(t, dir, "qwen3-6-35b-iq4xs", "") // holds gpu 1, declares nothing
+
+	fleet := &fakeFleet{
+		scans:     []string{pods(loaded("gemma-4-26b-a4b", "0"), loaded("qwen3-6-35b-iq4xs", "1"))},
+		remaining: []int{1, 0},
+	}
+	srv := httptest.NewServer(fleet)
+	defer srv.Close()
+
+	err := newEvictor(testClient(srv), evictOptions(dir, "default", time.Minute)).
+		try(context.Background(), time.Minute)
+	if err != nil {
+		t.Fatalf("evict: %v", err)
+	}
+	if len(fleet.writes) != 1 {
+		t.Fatalf("the cluster was written %v; want exactly one delete", fleet.writes)
+	}
+}
+
+// A delete the API accepted is not the card coming back: the pods go the way their
+// owner's garbage collector takes them, and one still terminating still holds its
+// VRAM. So the eviction confirms against the pod, and when the pod never goes it
+// says who has to decide about the card - a human, not a claim that waited two
+// minutes and is not feeling forceful.
+func TestEvictDoesNotTakeACardOnTheDeleteResponseAlone(t *testing.T) {
 	dir := t.TempDir()
 	specCost(t, dir, "gemma-4-26b-a4b", `"110"`)
 
@@ -1813,29 +1807,51 @@ func TestReclaimDoesNotTakeACardOnTheUnloadResponseAlone(t *testing.T) {
 		scans:     []string{pods(loaded("gemma-4-26b-a4b", "0"))},
 		remaining: []int{1}, // still there on every look
 	}
-	router := &fakeRouter{states: map[string]string{"gemma-4-26b-a4b": "idle"}}
-	fleetSrv, routerSrv := httptest.NewServer(fleet), httptest.NewServer(router)
-	defer fleetSrv.Close()
-	defer routerSrv.Close()
+	srv := httptest.NewServer(fleet)
+	defer srv.Close()
 
-	err := newReclaimer(testClient(fleetSrv), reclaimOptions(dir, routerSrv.URL, 20*time.Millisecond)).
+	err := newEvictor(testClient(srv), evictOptions(dir, "default", 20*time.Millisecond)).
 		try(context.Background(), time.Minute)
 	if err == nil {
-		t.Fatal("the reclaim reported a card the pod never gave up")
+		t.Fatal("the eviction reported a card the pod never gave up")
 	}
-	for _, want := range []string{"gemma-4-26b-a4b", "gpu 0", "scale deploy/gemma-4-26b-a4b"} {
+	for _, want := range []string{"gemma-4-26b-a4b", "gpu 0", "delete pod", "--force"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("the failure does not say %s: %v", want, err)
 		}
 	}
-	if len(router.unloaded) != 1 {
-		t.Errorf("the router was asked %d times to unload one model; one ask is the bound", len(router.unloaded))
+	if len(fleet.writes) != 1 {
+		t.Errorf("the cluster was written %d times; one delete is the bound: %v", len(fleet.writes), fleet.writes)
 	}
 }
 
-// A reclaim that frees a card is followed by the claim that takes it: the cycle
+// A spanning claim wants every card of its pool at once. Evicting one model gets it
+// no closer, and evicting several to race for the pool is not one decision, so the
+// attempt is not made and nothing is written.
+func TestEvictNeverUnloadsAFleetForASpanningClaim(t *testing.T) {
+	dir := t.TempDir()
+	specCost(t, dir, "gemma-4-26b-a4b", `"110"`)
+
+	fleet := &fakeFleet{scans: []string{pods(loaded("gemma-4-26b-a4b", "0"))}, remaining: []int{1}}
+	srv := httptest.NewServer(fleet)
+	defer srv.Close()
+
+	o := evictOptions(dir, "default", time.Minute)
+	o.gpuMode = "all"
+	err := newEvictor(testClient(srv), o).try(context.Background(), time.Minute)
+	if err == nil || !strings.Contains(err.Error(), "spanning") {
+		t.Fatalf("want the refusal for a spanning claim, got %v", err)
+	}
+	if len(fleet.writes) != 0 {
+		t.Errorf("the eviction wrote %v without a card to take", fleet.writes)
+	}
+}
+
+// ---- the claim around the eviction -----------------------------------------
+
+// An eviction that frees a card is followed by the claim that takes it: the cycle
 // re-scans after the attempt instead of going back to sleep on the poll.
-func TestClaimCycleClaimsTheCardAReclaimFreed(t *testing.T) {
+func TestClaimCycleClaimsTheCardAnEvictionFreed(t *testing.T) {
 	looks := 0
 	scan := func(context.Context) (map[string]bool, error) {
 		looks++
@@ -1853,25 +1869,49 @@ func TestClaimCycleClaimsTheCardAReclaimFreed(t *testing.T) {
 		t.Fatalf("claim: %v", err)
 	}
 	if card != "1" || claimed != "1" {
-		t.Errorf("claim = %q, the command was told %q; want the reclaimed card 1", card, claimed)
+		t.Errorf("claim = %q, the command was told %q; want the evicted card 1", card, claimed)
 	}
 }
 
-// A reclaim that frees nothing is neither a failure nor a force: the claim waits
-// under the flock and the card-wait budget exactly as it did before reclaim
-// existed, and it asks once rather than working down the fleet.
-func TestClaimCycleWaitsWhenTheReclaimFreesNothing(t *testing.T) {
+// A card that is already free is claimed without asking anyone to give anything up:
+// the eviction belongs to the round that found nothing, and a claim that evicted on
+// the way to a free card would put a model to sleep for a card it never needed.
+func TestClaimCycleNeverEvictsWhenACardIsAlreadyFree(t *testing.T) {
+	evictions := 0
+	claimed := ""
+	card, err := claimCycle(context.Background(), t.TempDir()+"/cards.lock", scanOf(),
+		[]string{"0", "1"}, "0,1", "any", refusalBudget, time.Millisecond,
+		func(context.Context, time.Duration) error {
+			evictions++
+			return nil
+		},
+		func(card string, _ time.Time) error { claimed = card; return nil })
+	if err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+	if card != "0" || claimed != "0" {
+		t.Errorf("claim = %q, the command was told %q; want the free card 0", card, claimed)
+	}
+	if evictions != 0 {
+		t.Errorf("evictions = %d, want 0: a free card is claimed, not taken from a model", evictions)
+	}
+}
+
+// An eviction that takes nothing is neither a failure nor a second attempt: the
+// claim waits under the flock and the card-wait budget exactly as it did before
+// eviction existed, and it asks once rather than working down the fleet.
+func TestClaimCycleWaitsWhenTheEvictionTakesNothing(t *testing.T) {
 	attempts := 0
 	claimed := false
 	_, err := claimCycle(context.Background(), t.TempDir()+"/cards.lock", scanOf(model(sref("1"))),
 		[]string{"1"}, "1", "any", refusalBudget, 5*time.Millisecond,
-		func(context.Context, time.Duration) error { attempts++; return errors.New("nothing idle") },
+		func(context.Context, time.Duration) error { attempts++; return errors.New("nothing to take") },
 		func(string, time.Time) error { claimed = true; return nil })
 	if err == nil || !strings.Contains(err.Error(), `no free card in pool "1"`) {
 		t.Fatalf("want the ordinary refusal to wait, got %v", err)
 	}
 	if attempts != 1 {
-		t.Errorf("the reclaim was offered %d times; a second attempt is a second model put to sleep for one card", attempts)
+		t.Errorf("the eviction was attempted %d times; a second attempt is a second model put to sleep for one card", attempts)
 	}
 	if claimed {
 		t.Error("the command was handed a card nobody released")

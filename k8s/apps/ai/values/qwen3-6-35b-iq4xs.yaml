@@ -24,7 +24,8 @@ models:
     # No reclaimCostSeconds, and not an oversight: nothing has measured what a
     # restore of this model costs, and a figure nobody took would be recorded
     # beside the measured ones as if it were one. An undeclared model is the one
-    # nobody has priced, not a free one.
+    # nobody has priced, not a free one: a claim with every card held ranks it
+    # behind every priced card, and takes it anyway when nothing priced is held.
     memoryRequest: 8Gi
     memoryLimit: 40Gi
     image: ghcr.io/ggml-org/llama.cpp:server-cuda12-b10603@sha256:41ebf873c2e085dcc3186dc4717ce8112bf8011aabd98038b6bb2b1fe66c86b9

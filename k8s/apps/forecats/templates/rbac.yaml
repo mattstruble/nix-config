@@ -8,9 +8,15 @@ The rules list below is the whole of what this Role grants, so it is the one pla
 a removal has to be argued in. What the shim really calls is Go, in another
 directory, and no build of this chart reads it — and a Role that is one verb short
 denies the claim before it has chosen a card, leaving a Job whose failure names a
-403 and no file. So the two verbs the claim path performs are asserted against the
-list at render time: dropping either fails the build and names the call it breaks.
+403 and no file. So the verbs the claim path performs here are asserted against the
+list at render time: dropping one fails the build and names the call it breaks.
+
+What is NOT here is the eviction. A claim takes a busy card by deleting the model
+Deployment that holds it, and that Deployment is in the fleet's namespace, where a
+Role of this chart could never reach — the grant lives beside the fleet, in
+templates/head-end-claimer-rbac.yaml of the ai chart, and is asserted there.
 */ -}}
+{{- $sa := required "claim.serviceAccount: the ServiceAccount a claim runs as. nix supplies it from the same declaration the ai chart reads to bind the fleet's namespace to it, because a claimer whose Role and its subject disagree on a name is a nightly that 403s on a card it was allowed to name." .Values.claim.serviceAccount -}}
 {{- $rules := list
       (dict "apiGroups" (list "batch") "resources" (list "jobs") "verbs" (list "create" "get"))
       (dict "apiGroups" (list "") "resources" (list "pods") "verbs" (list "get" "list"))
@@ -24,13 +30,13 @@ list at render time: dropping either fails the build and names the call it break
 {{- $podVerbs := default (list) (index $granted "pods") -}}
 {{- range $verb := list "get" "list" -}}
 {{- if not (has $verb $podVerbs) -}}
-{{- fail (printf "the forecats-nightly Role does not grant %q on pods. `swapk8s claim` reads the pod list twice: the busy-card scan before it chooses a card, and awaitJobPod after the Job it creates has been accepted, while the flock is still held. Without both the claim dies on a 403 having chosen nothing, and the render never happens. templates/head-end-rbac.yaml in the ai chart grants the same two verbs for the same call." $verb) -}}
+{{- fail (printf "the %s Role does not grant %q on pods. `swapk8s claim` reads this namespace's pod list twice: the busy-card scan before it chooses a card, and awaitJobPod after the Job it creates has been accepted, while the flock is still held. Without both the claim dies on a 403 having chosen nothing, and the render never happens. templates/head-end-rbac.yaml in the ai chart grants the same two verbs for the same call, in the fleet's namespace." $sa $verb) -}}
 {{- end -}}
 {{- end -}}
 apiVersion: v1
 kind: ServiceAccount
 metadata:
-  name: forecats-nightly
+  name: {{ $sa }}
   labels:
     {{- include "forecats.labels" . | nindent 4 }}
     app.kubernetes.io/component: nightly
@@ -38,27 +44,27 @@ metadata:
 # false`; nothing it does needs an identity. Only the claimer mounts one.
 automountServiceAccountToken: true
 ---
-# The claimer's privilege: create the render Job, and read the pod list a claim is
-# made of.
+# The claimer's privilege, in this namespace: create the render Job, and read the
+# pod list a claim is made of.
 #
-# `swapk8s claim` reads the API twice around the one thing it writes. The busy-card
-# scan GETs the pod list of the namespace to learn which cards are taken
-# (cardOwnerPods in src/swapk8s/main.go), and after the command it runs has created
-# the Job, awaitJobPod lists the pods again under the flock to confirm a gpu-job pod
-# carrying the card appeared — until that pod exists the card reads as free to the
-# next shim, so the second read is not a convenience. Both are a GET on a collection
-# with a label selector, which the API authorises as `list` on `pods`; the head-end
-# makes the same call for the same reason and its Role grants the same two verbs
+# `swapk8s claim` reads the API twice around the one thing it writes here. The
+# busy-card scan GETs the pod list to learn which cards are taken (cardOwnerPods in
+# src/swapk8s/main.go), and after the command it runs has created the Job,
+# awaitJobPod lists the pods again under the flock to confirm a gpu-job pod carrying
+# the card appeared — until that pod exists the card reads as free to the next shim,
+# so the second read is not a convenience. Both are a GET on a collection with a
+# label selector, which the API authorises as `list` on `pods`; the head-end makes
+# the same call for the same reason and its Role grants the same two verbs
 # (templates/head-end-rbac.yaml in the ai chart).
 #
-# No delete: the render Jobs expire on their own TTL, and a nightly that could
-# delete is a nightly that could delete something else. No pods/exec, no secrets, no
-# cluster scope, and no deployments/scale — the reclaim path that would need them is
-# not reached with --router-url unset.
+# No delete and no deployments/scale here: the render's own Jobs expire on their own
+# TTL, a nightly that could delete is a nightly that could delete something else,
+# and the one object a claim does delete is a model Deployment, which is not in this
+# namespace and is granted where it is.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
-  name: forecats-nightly
+  name: {{ $sa }}
   labels:
     {{- include "forecats.labels" . | nindent 4 }}
     app.kubernetes.io/component: nightly
@@ -68,13 +74,13 @@ rules:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
-  name: forecats-nightly
+  name: {{ $sa }}
   labels:
     {{- include "forecats.labels" . | nindent 4 }}
     app.kubernetes.io/component: nightly
 subjects:
   - kind: ServiceAccount
-    name: forecats-nightly
+    name: {{ $sa }}
     # A RoleBinding subject is a namespaced reference written inside a string the
     # apply pass cannot fix afterwards: the render runs with no --namespace, so
     # this reads the value nix owns rather than .Release.Namespace, which would
@@ -82,6 +88,6 @@ subjects:
     namespace: {{ include "forecats.namespace" . }}
 roleRef:
   kind: Role
-  name: forecats-nightly
+  name: {{ $sa }}
   apiGroup: rbac.authorization.k8s.io
 ---

@@ -1,4 +1,29 @@
 {{/*
+The models the shim owns the lifecycle of: enabled, and `lifecycle: on-demand`.
+
+The llama-swap roster, the spec ConfigMap and the card claimer's Role are all
+generated from this one filter. A model joins the fleet by declaring
+`lifecycle: on-demand` in values and appears in all three; a list of model names
+written next to any of them is a model the other two do not know about, and in the
+Role's case the thing it misses is the one name the nightly is allowed to delete.
+
+Usage: {{- $summonable := (fromYaml (include "ai.onDemandModels" .)).models }}
+
+The list is wrapped in a key because sprig's `fromYaml` decodes into a map: a
+helper that emitted a bare YAML list fails the render with "cannot unmarshal array
+into map[string]interface{}" instead of answering with no models.
+*/}}
+{{- define "ai.onDemandModels" -}}
+{{- $out := list -}}
+{{- range $name, $m := .Values.models -}}
+{{- if and $m.enable (eq ($m.lifecycle | default "static") "on-demand") -}}
+{{- $out = append $out $name -}}
+{{- end -}}
+{{- end -}}
+models: {{ toYaml $out | nindent 2 }}
+{{- end -}}
+
+{{/*
 The Strata bundle's /nix/store path.
 
 Injected by the nix render through .Values.strataBundle (fed by
