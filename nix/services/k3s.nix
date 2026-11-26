@@ -554,6 +554,13 @@ in
             window in the forecats chart would be a deadline term no render can see.'';
         in
         lib.throwIfNot (builtins.length lines == 1) reason (builtins.fromJSON (builtins.head (builtins.match pattern (builtins.head lines))));
+      # The zone the nightly's CronJob is scheduled in. `time.timeZone` is nullable
+      # and null means "UTC, set imperatively"; a nightly scheduled in a zone nobody
+      # named is exactly what the explicit `spec.timeZone` exists to prevent, so the
+      # evaluation refuses rather than rendering "UTC" into the manifest.
+      forecatsScheduleTimeZone = lib.throwIf (config.time.timeZone == null)
+        ''forecats: the nightly CronJob's spec.timeZone is read from time.timeZone and this host leaves it null, which means UTC and a schedule read in a zone nobody chose. Set time.timeZone (nix/system/nix-settings.nix sets it for every host) rather than letting the nightly be scheduled by the control plane's clock.''
+        config.time.timeZone;
       forecatsValuesText = ''
         # The namespace the apply pass creates and applies into. A template that
         # names a namespace inside a string it emits reads this: the render runs
@@ -568,6 +575,16 @@ in
         pod:
           uid: ${toString forecatsStorage.uid}
           gid: ${toString forecatsStorage.gid}
+        # The zone the nightly's schedule is evaluated in. A CronJob with no
+        # spec.timeZone is scheduled in the control plane's own zone, which is a fact
+        # about where the server happens to be; this is the value that decides when
+        # 03:00 is. It is the host's own `time.timeZone` — the zone the node's clock
+        # runs on, and the zone the Secret's `place-timezone` names — because a
+        # hand-written copy in the chart is a schedule that drifts from the host it
+        # runs on, and the Secret cannot be read at render time (sops materialises it
+        # on the node, and the schedule is evaluated by kube-controller-manager).
+        nightly:
+          timeZone: "${forecatsScheduleTimeZone}"
         render:
           # The nightly's own command, as a store path the store volume mounts
           # read-only. The font the overlay stage opens is fixed inside this

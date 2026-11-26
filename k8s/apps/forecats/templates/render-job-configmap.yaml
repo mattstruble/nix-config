@@ -9,8 +9,11 @@ the result to the API.
 
 Two consequences of that, both deliberate:
 
-  - `generateName` and no `name`: every run creates its own Job, and nothing has
-    to invent a unique name in a shell.
+  - `generateName` and no `name`: every attempt creates its own Job, and nothing
+    has to invent a unique name in a shell. The claimer reads that generated name
+    back off the create (`-o name`) because the verdict of the attempt is this
+    Job's `Complete` or `Failed` condition, and the run that retries is waiting on
+    it by name.
   - These Jobs are not in the apply pass's file, so the prune pass does not own
     them and does not delete them. They expire through
     `ttlSecondsAfterFinished`, which is the only cleanup that can outlive a

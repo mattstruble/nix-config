@@ -33,6 +33,12 @@ templates/head-end-claimer-rbac.yaml of the ai chart, and is asserted there.
 {{- fail (printf "the %s Role does not grant %q on pods. `swapk8s claim` reads this namespace's pod list twice: the busy-card scan before it chooses a card, and awaitJobPod after the Job it creates has been accepted, while the flock is still held. Without both the claim dies on a 403 having chosen nothing, and the render never happens. templates/head-end-rbac.yaml in the ai chart grants the same two verbs for the same call, in the fleet's namespace." $sa $verb) -}}
 {{- end -}}
 {{- end -}}
+{{- $jobVerbs := default (list) (index $granted "jobs") -}}
+{{- range $verb := list "create" "get" -}}
+{{- if not (has $verb $jobVerbs) -}}
+{{- fail (printf "the %s Role does not grant %q on jobs. `create` is the claim putting the render Job's pod spec on the API server; `get` is the run script reading that Job back by name until it carries a terminal condition, which is how a run knows its own render failed and can claim again. Without `get` the retry has no verdict to retry on and waits out an attempt it was not allowed to start." $sa $verb) -}}
+{{- end -}}
+{{- end -}}
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -44,8 +50,8 @@ metadata:
 # false`; nothing it does needs an identity. Only the claimer mounts one.
 automountServiceAccountToken: true
 ---
-# The claimer's privilege, in this namespace: create the render Job, and read the
-# pod list a claim is made of.
+# The claimer's privilege, in this namespace: create the render Job, read it back
+# until it says how it ended, and read the pod list a claim is made of.
 #
 # `swapk8s claim` reads the API twice around the one thing it writes here. The
 # busy-card scan GETs the pod list to learn which cards are taken (cardOwnerPods in

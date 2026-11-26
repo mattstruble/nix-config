@@ -3,19 +3,20 @@
 # `namespace`, `pod.*`, `prometheus.ruleReleaseLabel`, everything under `render:`
 # except the flags below, `gpu.pool`, `fleet.namespace`, everything under `claim:`
 # (the window the router's wake deadline is summed from, and the identity a claim
-# runs as), everything
+# runs as), `nightly.timeZone`, everything
 # under `persistence:` — including each volume's owner and mode, which is what the
 # uid under `pod:` is tested against — `secret.*` and `report.address` are
 # deliberately absent: nix
 # supplies them at render (`forecatsStorage`, `forecatsSecret`,
-# `services.k3s.forecats.*` and the ai chart's `headEnd.podClaimWindowSeconds` in
+# `services.k3s.forecats.*`, the host's own `time.timeZone`, and the ai chart's
+# `headEnd.podClaimWindowSeconds` in
 # nix/services/k3s.nix), because the namespace the apply pass creates, the release
 # whose Prometheus CR loads the alert rules, the uid the writable volume is owned
 # by, the claim names the pre-bound PVs are matched by, the Secret's key list, the
 # card pool the shim may place onto, the namespace the fleet it takes cards from
 # lives in, the service account that fleet's namespace is bound to for exactly that,
-# and the claim window the router's wake deadline is summed from are the same facts
-# read by other software.
+# the zone the host's clock runs on, and the claim window the router's wake deadline
+# is summed from are the same facts read by other software.
 # `just k8s-render` and the CI preview pass the same file; a bare `helm template`
 # fails the `required` guards rather than rendering defaults.
 #
@@ -47,14 +48,60 @@ nightly:
   # run stays visible.
   successfulJobsHistoryLimit: 3
   failedJobsHistoryLimit: 3
-  # Shorter than a day on purpose. A night can fail for reasons that clear
-  # themselves — every card busy, a feed down, a photo not yet staged — and the
-  # panel is named by date, so the first run that gets a card publishes the day
-  # and every later run finds it already published and exits 0. That is the whole
-  # retry story, and it is why the cadence is not `0 3 * * *`: a single 03:00 run
-  # that found the fleet awake would leave yesterday's panel on the wall until
-  # the next morning.
-  schedule: "*/20 * * * *"
+  # One line a night. Recovery used to be the cadence: a claim that got no card
+  # was retried by the next line, and a render that failed was left failed
+  # because the next line would try again. Both moved inside the run
+  # (`run:` below, executed by templates/nightly-run-configmap.yaml), because at
+  # one line a day "the next line" is tomorrow and a transient failure at 03:00
+  # would leave the wall showing yesterday's picture for a day.
+  #
+  # Nothing restates the interval this implies. templates/_helpers.tpl reads it
+  # back out of this string, and the missed-start bound and the
+  # ForecatsPanelNotDrawn threshold are asserted against it, so a schedule that
+  # stops being one fixed minute of one fixed hour fails the render instead of
+  # silently moving the goalposts of an alert.
+  schedule: "0 3 * * *"
+  # The zone that 03:00 is in; nix supplies it and a bare `helm template` fails
+  # the `required` in templates/nightly-cronjob.yaml rather than rendering one.
+  # Not decoration: with no `timeZone` the schedule is read in the control plane's
+  # own zone, which is a fact about where the server happens to be rather than
+  # about the household whose wall this draws on.
+  #
+  # nix takes it from `config.time.timeZone` (nix/services/k3s.nix) — the zone the
+  # host's clock is set to, and the zone the Secret's `place-timezone` names. The
+  # two cannot be joined at render: the Secret is mounted only inside the pods and
+  # the schedule is evaluated by kube-controller-manager, which reads no Secret.
+  # What CI here cannot see is that kube-controller-manager resolves the name with
+  # Go's `time.LoadLocation`, which on this host reads the `/etc/zoneinfo` the same
+  # `time.timeZone` creates; a name it cannot resolve makes it record an event and
+  # create no Job at all, which is ForecatsPanelNotDrawn's to catch.
+  #
+  # The interval between two lines is 86400 s whatever this says: a zone moves the
+  # hour the panel is drawn at, not how often the line comes.
+
+  # How late a line may start and still be worth starting. The controller skips a
+  # scheduled line entirely once this passes, and with one line a day a skipped
+  # line is a day without a panel — so this is generous where a twenty-minute
+  # cadence could afford to be strict. templates/nightly-cronjob.yaml refuses a
+  # render where this plus the run deadline overruns a day, because
+  # `concurrencyPolicy: Forbid` would then turn a late run into a skipped night.
+  startingDeadlineSeconds: 21600
+  run:
+    # The wall-clock bound on one run: every attempt plus every gap between them.
+    # The claimer refuses to start an attempt it cannot finish inside what is
+    # left, so this is also "how late can today's panel be drawn" — 05:00 at the
+    # latest, with 03:00 as the normal answer.
+    #
+    # It must hold two attempts and a gap (asserted in templates/_helpers.tpl,
+    # where an attempt is added up from the card wait, the pod-claim window and
+    # the render's deadline), and ForecatsPanelNotDrawn's threshold must clear a
+    # whole day plus this (asserted in templates/nightly-alerts.yaml).
+    deadlineSeconds: 7200
+    # What the run waits after an attempt that got no card or drew nothing, before
+    # claiming again. Every attempt runs the claimer, and the claimer spends one
+    # eviction of its own when it finds no free card, so this gap is also how long
+    # an evicted model gets to come back before the next attempt may evict again.
+    attemptGapSeconds: 300
   # The claimer holds no card and runs no CUDA; it runs the shim and the API
   # client that create the pod which does both. Both are nix store binaries, so
   # the base only has to be a shell — the same pin the ai chart's tools container
@@ -67,18 +114,23 @@ nightly:
     # claims that mount this path, and against nothing else. See the note in
     # templates/nightly-cronjob.yaml.
     cardLockPath: /tmp/swapk8s-cards.lock
-    # How long a nightly waits for a free card before it gives up and leaves the
-    # next scheduled run to try. This is not headEnd.cardWaitSeconds: that one
-    # bounds a client's request and is a term of the router's wake deadline, and
-    # nobody is waiting on a nightly.
+    # How long one attempt waits for a card. This is not headEnd.cardWaitSeconds:
+    # that one bounds a client's request and is a term of the router's wake
+    # deadline, and nobody is waiting on a nightly.
     #
-    # It is generous because a claim no longer waits for a card to fall idle. When
+    # It is a per-attempt budget, not the night's: the run claims again after
+    # `run.attemptGapSeconds`, so losing the card race costs a gap rather than a
+    # day, and the sum of the two plus the render's deadline is what the run
+    # deadline has to hold (templates/_helpers.tpl).
+    #
+    # It can be short because a claim no longer waits for a card to fall idle. When
     # every card of the pool is held it takes one from the model whose card costs
     # least to bring back, whatever that model is doing, and the wait is only for
     # the flock another placement is holding and for the evicted model's pod to
-    # finish dying. The night this runs out on is the one whose cards are held by
-    # things a claim will not evict — another render.
-    cardWaitSeconds: 3600
+    # finish dying. The claim spends that eviction once per invocation, so every
+    # attempt may cost the fleet one cold start — the reason the gap is not zero
+    # and the deadline is not an hour.
+    cardWaitSeconds: 900
     resources:
       requests:
         cpu: 10m
@@ -90,10 +142,13 @@ nightly:
     # same pin the fleet's models serve on: the diffusion CLI is a nix store
     # binary mounted into it, and glibc comes from the store alongside.
     image: ghcr.io/ggml-org/llama.cpp:server-cuda12-b11151@sha256:014f721265464f38ccb247c1338d07d852c4bae7509a4b4734d07a2bbadc765c
-    # A render is a seed, a caption and four weight files: a retry would draw the
-    # same picture, so a failed one is left failed and the next scheduled run is
-    # the retry. `backoffLimit: 0` also keeps a card from being claimed again
-    # under a pod that is crashlooping on a bad weight volume.
+    # A render is a seed, a caption and four weight files, so a retry would draw
+    # the same picture — but the retry is the run's, not this Job's. The claimer
+    # waits for this Job's terminal condition and claims again when it is Failed
+    # (templates/nightly-run-configmap.yaml). A pod the Job controller restarted by
+    # itself would keep this Job's spec, and with it the card the claim substituted
+    # into it: a second render on a card nothing has claimed since, and possibly one
+    # a model has taken back.
     backoffLimit: 0
     # Measured on the render host at 14.86 s for the GPU phase; the gather stages
     # in front of it are HTTP. This is the bound on a hung feed or a wedged
@@ -159,5 +214,12 @@ notice:
   generator: MiniMax H3
   personalUse: Generated images are licensed to the household that made them and are restricted to personal use.
   # The freshness artefact is what makes a stopped nightly visible; a panel with
-  # no age beside it is a panel that cannot be trusted to be today's.
+  # no age beside it is a panel that cannot be trusted to be today's. It is also
+  # the threshold ForecatsPanelNotDrawn alerts on, so one number decides when the
+  # page says "the nightly is not running" and when a human is told so.
+  #
+  # It must clear a whole schedule interval plus a whole run — a healthy night is
+  # silent for exactly that long, and a threshold inside it fires every morning,
+  # which is the same silence as an alert that never fires. The render refuses the
+  # smaller number (templates/nightly-alerts.yaml).
   staleAfterHours: 30

@@ -1,0 +1,175 @@
+{{- /*
+The nightly's loop, as the script the claimer pod runs.
+
+It is a ConfigMap and not an inline `args:` block because the loop is the part of
+the nightly a person has to read in order to change it, and shell inside a YAML
+block scalar inside a `jobTemplate:` is shell nobody reads. The claimer runs it
+with `/bin/sh`, so nothing here is a bashism.
+
+Why the loop is here at all: the schedule is one line a night, so nothing may
+depend on another line arriving. An attempt is one claim, the render Job that
+claim creates, and the wait for that Job's terminal condition; a failed attempt is
+followed by a gap and another one, and the run refuses to start an attempt it
+cannot finish inside what is left of its deadline. The budgets are added and
+asserted in templates/_helpers.tpl, and the numbers below are rendered from them
+rather than repeated here.
+
+What the loop does not do is hold the card between attempts. The shim releases it
+when its process exits, and the render pod is what holds it while it runs.
+Attempts are sequential because the loop waits for one to end before starting the
+next, and each one runs the claimer again — and each claimer spends one eviction of
+its own when it finds every card held. That is the cost the gap and the deadline
+bound, and it is why the card wait is a per-attempt budget.
+
+What the loop does not do is delete or rewrite a published panel, and it could not
+if it tried: this pod mounts the published directory read-only, and the only thing
+that has ever written a published file is the pipeline's publish step, which moves
+the panel into place last, after its provenance sidecar and the freshness artefact.
+A run that exhausts its deadline therefore leaves the previous day's panel served,
+with the day and the instant it was drawn still named by the freshness artefact
+beside it — which is how a bad night degrades to yesterday's picture rather than to
+a blank page.
+*/ -}}
+{{- $ns := include "forecats.namespace" . -}}
+{{- $nightlyName := include "forecats.nightlyName" . -}}
+{{- $panels := (fromYaml (include "forecats.volumeFor" (dict "ctx" $ "name" "panels"))) -}}
+{{- $window := int (required "claim.podClaimWindowSeconds: nix renders this from headEnd.podClaimWindowSeconds in the ai chart, because the router's wake deadline is summed from the same number" .Values.claim.podClaimWindowSeconds) -}}
+{{- $cardWait := int (required "nightly.claimer.cardWaitSeconds: the card budget one attempt gets" .Values.nightly.claimer.cardWaitSeconds) -}}
+{{- $attempt := int (include "forecats.nightlyAttemptSeconds" .) -}}
+{{- $runDeadline := int (include "forecats.nightlyRunDeadlineSeconds" .) -}}
+{{- $gap := int (required "nightly.run.attemptGapSeconds: what the run waits after an attempt that got no card or drew nothing" .Values.nightly.run.attemptGapSeconds) -}}
+{{- $tools := required "tools: nix supplies the shim, the API client and the substitution the claim runs" .Values.tools -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: forecats-nightly-run
+  labels:
+    {{- include "forecats.labels" . | nindent 4 }}
+    app.kubernetes.io/component: nightly
+data:
+  # The claimer's whole command. This file is never piped through `envsubst`, which
+  # is the reason the manifest that is lives in a ConfigMap of its own: a `$` in the
+  # text envsubst reads is a refusal rather than an empty string, and a shell script
+  # is made of them.
+  nightly.sh: |
+    #!/bin/sh
+    set -eu
+
+    panels_dir='{{ $panels.mountPath }}'
+    render_ref=/tmp/render-job.ref
+    deadline=$(( $(date +%s) + {{ $runDeadline }} ))
+
+    # The date test below is the only thing between this run and a claimed card on
+    # a day that already has a panel. A published directory this pod cannot search
+    # has exactly one answer for it — "not published" — and that answer claims a
+    # card, so refuse: one failed claimer is one alert, where a claim that cannot
+    # ask spends a card, and possibly a model's warm slot, to say nothing.
+    if [ ! -x "$panels_dir" ]; then
+      echo "forecats-nightly: $panels_dir is absent or not searchable by this pod's uid; cannot look for a panel" >&2
+      exit 1
+    fi
+
+    # The substitution names one variable on purpose. The manifest it reads also
+    # carries `$FORECATS_PLACE_LATITUDE` and friends, which are for the render pod's
+    # own shell to expand at run time; a bare `envsubst` would substitute them here,
+    # from an environment that is not the render pod's. `-no-unset -no-empty` is the
+    # pair the activation script uses for the Secret document: a placeholder with no
+    # value behind it is an error, not an empty pin, and an empty pin is a render pod
+    # with no card that says nothing.
+    #
+    # CARD_PATTERN is passed through the environment rather than written in place
+    # because the command below is already inside the single quotes of the shell the
+    # shim runs, and the pattern has to arrive at envsubst as the literal text
+    # `$SWAPK8S_CARD`. RENDER_REF is exported for the same reason: the file the
+    # created Job's name lands in is read by this script, outside those quotes.
+    export CARD_PATTERN='$SWAPK8S_CARD'
+    export RENDER_REF="$render_ref"
+
+    attempt=0
+    while :; do
+      # The day the pipeline would render, from the place's own timezone, because
+      # the panel is named by that date and a second render of a date would
+      # overwrite the only panel it has. Asking again per attempt rather than once
+      # is what keeps a run that starts at the end of a day from drawing the wrong
+      # one. A claimer whose image has no zone database falls back to UTC, which
+      # makes this test miss for a few hours around midnight and never makes it
+      # wrong: the render pod then finds the panel and exits 0, the same answer one
+      # attempt later.
+      day=$(TZ="$FORECATS_PLACE_TIMEZONE" date +%Y-%m-%d)
+      if [ -e "$panels_dir/panel-$day.png" ]; then
+        echo "forecats-nightly: panel-$day.png is already published; no card claimed"
+        exit 0
+      fi
+
+      # Never start an attempt that cannot finish: an attempt killed by the Job's
+      # own deadline mid-render is a card taken, a model evicted, and a night that
+      # still has no panel.
+      if [ $(( $(date +%s) + {{ $attempt }} )) -gt "$deadline" ]; then
+        echo "forecats-nightly: the run's deadline leaves less than one attempt ({{ $attempt }}s) for $day; the wall keeps the panel it has and freshness.json still names the day it was drawn for" >&2
+        exit 1
+      fi
+
+      attempt=$(( attempt + 1 ))
+      attempt_start=$(date +%s)
+      echo "forecats-nightly: attempt $attempt for $day: claiming a card (up to {{ $cardWait }}s)"
+      rm -f "$render_ref"
+
+      # The card goes from the shim's environment, through the substitution, into
+      # the Job's pod spec — the only place the runtime hook will read it. The
+      # created Job's name, and nothing else, is what the claim leaves in $RENDER_REF:
+      # `-o name` prints it and the shim's own answer (the card, on stdout) stays in
+      # the pod's log.
+      verdict=no-card
+      if ! {{ $tools.swapHeadEnd }}/bin/swapk8s claim \
+          --job '{{ $nightlyName }}' \
+          --namespace '{{ $ns }}' \
+          --fleet-namespace '{{ required "fleet.namespace: the namespace the model fleet runs in, from services.k3s.aiChart in nix/services/k3s.nix; a claim that cannot see the fleet cannot take a card from it" .Values.fleet.namespace }}' \
+          --gpu-pool '{{ required "gpu.pool: the card numbers a nightly may claim, from services.k3s.forecats.gpuPool" .Values.gpu.pool }}' \
+          --gpu-mode any \
+          --card-wait {{ $cardWait }}s \
+          --pod-claim-window {{ $window }}s \
+          --card-lock '{{ required "nightly.claimer.cardLockPath" .Values.nightly.claimer.cardLockPath }}' \
+          -- /bin/sh -c '{{ $tools.envsubst }}/bin/envsubst -no-unset -no-empty "$CARD_PATTERN" < /etc/forecats/render/render-job.yaml | {{ $tools.k3s }}/bin/k3s kubectl create -f - -o name > "$RENDER_REF"'; then
+        echo "forecats-nightly: attempt $attempt got no card" >&2
+      else
+        ref=$(cat "$render_ref" 2>/dev/null || true)
+        verdict=no-render-job
+        if [ -n "$ref" ]; then
+          # The Job's terminal condition is the verdict, and only the Job's. A claim
+          # that exits 0 has created a Job, not drawn a panel: the render is the
+          # thing that can fail on a bad weight file, a feed that answered 500, or a
+          # driver that wedged. `Complete` and `Failed` are the two conditions a Job
+          # ends on; the intermediate ones (`SuccessCriteriaMet`, `FailureTarget`)
+          # are matched around spaces so a substring cannot stand in for either.
+          verdict=render-failed
+          render_deadline=$(( attempt_start + {{ $attempt }} ))
+          while :; do
+            conditions=$({{ $tools.k3s }}/bin/k3s kubectl get "$ref" -o jsonpath="{.status.conditions[*].type}" 2>/dev/null || true)
+            case " $conditions " in
+              *" Complete "*) verdict=rendered; break ;;
+              *" Failed "*) verdict=render-failed; break ;;
+            esac
+            if [ "$(date +%s)" -ge "$render_deadline" ]; then
+              verdict=render-timeout
+              break
+            fi
+            # A Job's conditions change twice a night; this poll is only how quickly
+            # the run notices, and the render's own deadline is what bounds it.
+            sleep 30
+          done
+        fi
+      fi
+
+      if [ "$verdict" = rendered ]; then
+        echo "forecats-nightly: attempt $attempt published panel-$day.png"
+        exit 0
+      fi
+      echo "forecats-nightly: attempt $attempt ended $verdict" >&2
+
+      if [ $(( $(date +%s) + {{ $attempt }} )) -gt "$deadline" ]; then
+        echo "forecats-nightly: no room for another attempt before the run's deadline; the wall keeps the panel it has and freshness.json still names the day it was drawn for" >&2
+        exit 1
+      fi
+      echo "forecats-nightly: backing off {{ $gap }}s before the next attempt"
+      sleep {{ $gap }}
+    done

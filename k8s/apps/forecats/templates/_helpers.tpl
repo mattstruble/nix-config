@@ -60,6 +60,79 @@ shapes rather than trusting it to have been written correctly.
 {{- end -}}
 
 {{- /*
+The nightly's budgets, added in one place.
+
+Four numbers decide whether a night draws: the interval between two schedule
+lines, the card wait one attempt gets, the render pod's own deadline, and the
+deadline the run inside the claimer stops at. They are not independent and the
+relations are what break when one of them moves alone, so each relation is
+asserted here, at the addition, and every template that needs a derived number
+reads it from here rather than re-adding it:
+
+  - one attempt = the card wait + the pod-claim window + the render's deadline.
+    The window is a term because the claimer holds the placement flock for it
+    after its command exits, confirming a gpu-job pod carrying the card appeared;
+    the render's deadline is a term because the run waits for the Job it created.
+  - the run deadline must hold two attempts and the gap between them, or the run
+    is a nightly with no retry, and the retry inside the run is the whole reason
+    the schedule is one line a day.
+  - the missed-start bound plus the run deadline must fit inside the interval,
+    or a run that starts late is still running when the next line is due,
+    `concurrencyPolicy: Forbid` skips that line, and a skipped line is a day
+    without a panel. Asserted by templates/nightly-cronjob.yaml, which owns the
+    policy.
+  - the ForecatsPanelNotDrawn threshold must clear a whole interval plus a whole
+    run, because that is how long a healthy night is silent. Asserted by
+    templates/nightly-alerts.yaml, which owns the threshold.
+*/ -}}
+{{- define "forecats.nightlyAttemptSeconds" -}}
+{{- $cardWait := int (required "nightly.claimer.cardWaitSeconds: the card budget one attempt gets" .Values.nightly.claimer.cardWaitSeconds) -}}
+{{- $window := int (required "claim.podClaimWindowSeconds: nix renders this from headEnd.podClaimWindowSeconds in the ai chart, because the router's wake deadline is summed from the same number" .Values.claim.podClaimWindowSeconds) -}}
+{{- $render := int (required "nightly.render.activeDeadlineSeconds: the render pod's own deadline, and a term of one attempt because the run waits for the Job it created" .Values.nightly.render.activeDeadlineSeconds) -}}
+{{- add $cardWait (add $window $render) -}}
+{{- end -}}
+
+{{- define "forecats.nightlyRunDeadlineSeconds" -}}
+{{- $deadline := int (required "nightly.run.deadlineSeconds: the wall-clock bound on one run, inside which every attempt and every gap between them has to fit" .Values.nightly.run.deadlineSeconds) -}}
+{{- $attempt := int (include "forecats.nightlyAttemptSeconds" .) -}}
+{{- $gap := int (required "nightly.run.attemptGapSeconds: what the run waits after an attempt that got no card or drew nothing" .Values.nightly.run.attemptGapSeconds) -}}
+{{- $twoAttempts := add (mul 2 $attempt) $gap -}}
+{{- if lt $deadline $twoAttempts -}}
+{{- fail (printf "nightly.run.deadlineSeconds is %d, and one attempt costs %d — the card wait, the pod-claim window and the render's deadline, added in templates/_helpers.tpl. Two attempts and the gap between them need %d, so this deadline admits one try and is therefore a nightly with no retry. The retry lives inside the run because the schedule is one line a day; raise the deadline or lower nightly.claimer.cardWaitSeconds." $deadline $attempt $twoAttempts) -}}
+{{- end -}}
+{{- $deadline -}}
+{{- end -}}
+
+{{- /*
+The seconds between two lines of `nightly.schedule`, or a refusal.
+
+The interval is what the alert threshold and the missed-start bound are measured
+against, and a fifth number hand-written next to the schedule to state it is a
+number nothing checks. Reading it back out of the schedule is only honest for the
+shapes this chart can price: one fixed minute of one fixed hour, every day. A
+schedule with a step, a list, a range or a day restriction has an interval this
+helper does not compute, and the honest answer for it is a render that names the
+file — the alternative is a threshold derived from a guess, which is the alert
+that fires every morning, or never.
+*/ -}}
+{{- define "forecats.nightlyScheduleIntervalSeconds" -}}
+{{- $schedule := trim (required "nightly.schedule" .Values.nightly.schedule) -}}
+{{- $fields := regexFindAll "[^[:space:]]+" $schedule -1 -}}
+{{- if ne (len $fields) 5 -}}
+{{- fail (printf "nightly.schedule %q is not five whitespace-separated fields, so its interval cannot be read. The alert threshold that watches this schedule is derived from that interval; refusing the render is cheaper than deriving it from a guess." $schedule) -}}
+{{- end -}}
+{{- $minute := index $fields 0 -}}
+{{- $hour := index $fields 1 -}}
+{{- if or (not (regexMatch "^[0-9]+$" $minute)) (not (regexMatch "^[0-9]+$" $hour)) (ne (index $fields 2) "*") (ne (index $fields 3) "*") (ne (index $fields 4) "*") -}}
+{{- fail (printf "nightly.schedule %q is not one fixed minute of one fixed hour every day. The interval between two lines is 86400 s only for that shape, and the run deadline, the missed-start bound and the ForecatsPanelNotDrawn threshold are all budgeted against a day. A schedule that runs more or less often means re-deriving those three in this helper's own file and in the two templates that call it — not editing the threshold." $schedule) -}}
+{{- end -}}
+{{- if or (gt (int $minute) 59) (gt (int $hour) 23) -}}
+{{- fail (printf "nightly.schedule %q names a minute or an hour outside a day. The CronJob controller would reject the object and no line would ever run, which no alert below can tell from a namespace that was paused." $schedule) -}}
+{{- end -}}
+86400
+{{- end -}}
+
+{{- /*
 One volume from the list nix generates from `forecatsStorage.volumes`, by the
 attribute name it was declared under. A chart that named a claim here could name
 one that binds nothing; a chart that reads the list cannot, and moving a volume

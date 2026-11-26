@@ -30,6 +30,18 @@ same name the activation script renders the chart with, and a bare
 {{- $successfulHistory := int (required "nightly.successfulJobsHistoryLimit" .Values.nightly.successfulJobsHistoryLimit) -}}
 {{- $failedHistory := int (required "nightly.failedJobsHistoryLimit" .Values.nightly.failedJobsHistoryLimit) -}}
 {{- /*
+How long a healthy night is silent, in the open: the interval between two lines of
+the schedule, plus the whole run the line starts. Both are read from the values
+that produce them rather than restated here — the interval out of the schedule
+string itself, the run out of the same addition the claimer's loop and its Job
+deadline are built from — because this threshold and those two numbers are one
+fact seen twice, and the day they disagree is the day this alert fires on the
+schedule.
+*/ -}}
+{{- $interval := int (include "forecats.nightlyScheduleIntervalSeconds" .) -}}
+{{- $runDeadline := int (include "forecats.nightlyRunDeadlineSeconds" .) -}}
+{{- $silentFor := add $interval $runDeadline -}}
+{{- /*
 The panel's own record, and the only address it has: the viewer answers
 /freshness.json and the ingress is the way to it. tlsSecret is empty for this
 host today, which is the whole reason the scheme below is http.
@@ -55,7 +67,7 @@ ConfigMap are built from, and then tested against the names Kubernetes actually
 generates: `-<unix schedule time>` behind a CronJob's Job, five characters behind
 a `generateName`. A selector hand-edited away from those two names, or loose
 enough to select a Job this chart does not create, fails the render here instead
-of selecting nothing at 03:20.
+of selecting nothing at 03:00.
 */ -}}
 {{- $claimJob := printf "%s-1764000000" $cronjob -}}
 {{- $renderJob := printf "%sx7k2q" $renderPrefix -}}
@@ -81,8 +93,18 @@ the hyphen at its end. */ -}}
 {{- if or (lt $successfulHistory 1) (lt $failedHistory 1) -}}
 {{- fail "nightly.successfulJobsHistoryLimit and nightly.failedJobsHistoryLimit must each keep at least one Job. kube_job_status_failed is a series over Job objects, so garbage-collecting the Job takes the evidence with it and the failure alert resolves on the deletion of its own proof, which reads as a recovery." -}}
 {{- end -}}
-{{- if lt $staleAfterHours 24 -}}
-{{- fail "notice.staleAfterHours below 24 pages once a day: the panel is drawn once a day, so its age passes any smaller threshold before the next nightly is due. The viewer and this alert read the same number, so lowering it for one lowers it for the other." -}}
+{{- /*
+The one inequality that keeps this alert honest, and the reason the threshold is
+not simply `24`: a night that is working is silent from the moment its panel is
+published until the next one is, and that is the interval plus however long the
+run that draws it took. A threshold at or inside that is crossed on the schedule,
+morning after morning — and an alert that fires every morning is as silent as one
+that never fires, while training the exact reflex a never-ran alert exists to
+avoid. The viewer prints this same number beside the panel, so raising it moves
+the page's wording too.
+*/ -}}
+{{- if le (mul $staleAfterHours 3600) $silentFor -}}
+{{- fail (printf "notice.staleAfterHours is %d h, which does not clear the interval between two schedule lines (%d s) plus one whole run (%d s) = %d s. A healthy night is silent for up to that long, so the threshold is crossed on the schedule and ForecatsPanelNotDrawn fires every morning. Raise notice.staleAfterHours above %d s, or shorten nightly.run.deadlineSeconds — and note the viewer reads the same number." $staleAfterHours $interval $runDeadline $silentFor $silentFor) -}}
 {{- end -}}
 apiVersion: monitoring.coreos.com/v1
 kind: PrometheusRule
@@ -106,9 +128,10 @@ spec:
           expr: |
             kube_job_status_failed{namespace="{{ $ns }}",job_name=~"{{ $failedJobs }}"} == 1
           labels:
-            # Not `critical`: the nightly is retried by the next schedule line and
-            # the day's panel is published by the first run that gets a card, so a
-            # failure is a thing that happened, not yet a thing that is missing.
+            # Not `critical`: one failed Job is not a failed night. The run retries
+            # inside itself and the panel is named by date, so the first attempt that
+            # gets a card publishes the day. This is a thing that happened; whether a
+            # thing is missing is the alert below.
             severity: warning
           annotations:
             summary: "a forecats nightly run failed"
@@ -117,42 +140,53 @@ spec:
               {{`{{ $labels.namespace }}`}} reported a failure,
               {{`{{ if $labels.reason }}with kube-state-metrics' reason {{ $labels.reason | printf "%q" }}.{{ else }}with no reason on the Job's failure condition.{{ end }}`}}
               {{`{{ with query (printf "kube_job_status_start_time{namespace=\"%s\",job_name=\"%s\"}" $labels.namespace $labels.job_name) }}The run started {{ (index . 0).Value | humanizeTimestamp }}.{{ end }}`}}
-              The next scheduled run is the retry, and the panel is named by date,
-              so a later run that gets a card publishes the day and this failure
-              stops being the reason the wall is empty. What the panel would have
-              been drawn from is the freshness artefact at {{ $freshnessUrl }}; the
-              day it would have been drawn for is the day ForecatsPanelNotDrawn
-              names, and that is the alert for a panel that is actually missing.
+              A Job named for the CronJob is a run that gave up on the night. A Job
+              named for the render prefix is one attempt inside a run that may still
+              have drawn the day, because the run claims again after a gap; the panel
+              is named by date, so the first attempt that gets a card publishes it and
+              this series is the record of an attempt, visible until the Job's own TTL
+              takes it. Whether the wall is showing an old picture is what
+              ForecatsPanelNotDrawn answers, and the day this run would have drawn is
+              the day in the freshness artefact at {{ $freshnessUrl }}.
 
         - alert: ForecatsPanelNotDrawn
           # The nightly's last success going stale, rather than a failure. This is
           # the one that catches a suspended schedule, a paused namespace, a
           # CronJob renamed out from under a selector and a nightly deleted
           # outright: none of them makes a failed Job, and the last three make no
-          # series either, which is what `or vector(0)` is for — an absent series
-          # is treated as a panel that has not been drawn in a very long time,
-          # because to whoever looks at the wall that is the same fact. It costs
-          # no scrape target: the series is the one above.
+          # series either, which is what the two fallbacks below are for. It costs no
+          # scrape target: every series is the collector's that the one above is.
           #
-          # `or` matches on label sets, so the fallback only replaces the metric
-          # when both sides carry the same ones: `max` without a `by` drops every
-          # label and leaves one unlabeled element, which is the only thing
-          # `vector(0)` can match. Aggregated by `namespace` instead the two
-          # elements never match, both survive, and `time() - 0` pages a healthy
-          # nightly every day — the alert that never stops firing is the same
-          # silence as the alert that never fires, one notification later.
+          # The first fallback is a CronJob that exists and has never completed. It is
+          # measured from its own creation, so a first install is not paged before its
+          # first run has had its turn. The second is a CronJob that is not there at
+          # all — deleted, or renamed out of this selector — and that is treated as a
+          # panel not drawn in a very long time, because to whoever looks at the wall
+          # that is the same fact.
+          #
+          # `or` matches on label sets, so a fallback only stands in when everything
+          # left of it is empty: `max` without a `by` drops every label and leaves one
+          # unlabeled element, which is the only thing `vector(0)` can match. Aggregated
+          # by `namespace` instead the elements never match, both survive, and `time() -
+          # 0` pages a healthy nightly every day — the alert that never stops firing is
+          # the same silence as the alert that never fires, one notification later. The
+          # order is the same argument again: a nightly that has ever succeeded is
+          # measured from its last success whatever `kube_cronjob_created` does, so if
+          # that series ever stopped being emitted the cost is one page on an install
+          # rather than a page a morning.
           expr: |
             (
               time()
               - (
                   max(kube_cronjob_status_last_successful_time{namespace="{{ $ns }}",cronjob_name="{{ $cronjob }}"})
+                  or max(kube_cronjob_created{namespace="{{ $ns }}",cronjob_name="{{ $cronjob }}"})
                   or vector(0)
                 )
             ) > {{ mul $staleAfterHours 3600 }}
-          # Longer than the schedule interval, so a first install is not paged
-          # before the first run has had its turn: a CronJob that has never
-          # completed has no last successful time at all, and reads as stale from
-          # the moment it is created.
+          # 30m of debounce, and nothing more is asked of it now that a never-run
+          # CronJob is measured from its creation: the threshold above is what has to
+          # clear a day plus a run, and the first line of a fresh install comes due
+          # inside that.
           for: 30m
           labels:
             # The panel is the only thing this system puts on a wall, and this is
@@ -174,15 +208,19 @@ spec:
             # page that went blank right there would be the silence again.
             description: >-
               The last successful run of the {{ $cronjob }} CronJob was
-              {{`{{ $last := query "`}}{{ $lastSuccessQuery }}{{`" }}{{ if $last }}{{ (index $last 0).Value | humanizeTimestamp }}{{ else }}more than `}}{{ $staleAfterHours }}h{{` ago, and kube-state-metrics has no record of it at all{{ end }}`}}
+              {{`{{ $last := query "`}}{{ $lastSuccessQuery }}{{`" }}{{ if $last }}{{ (index $last 0).Value | humanizeTimestamp }}{{ else }}more than `}}{{ $staleAfterHours }}h{{` ago, and kube-state-metrics has no record of a successful run of it at all{{ end }}`}}
               — that is the day the panel on the wall is for. It has been
               {{`{{ $value | humanizeDuration }}`}} since, against a threshold of
               {{ $staleAfterHours }}h, which is the number the viewer prints beside
-              the picture.
-              Check in this order: the schedule (suspend), the namespace (a pause
-              or a delete takes the CronJob's series with it), the CronJob's name
-              (a rename moves it out of this selector and out of the alert), and
-              only then kube-state-metrics itself.
+              the picture and is set to clear one schedule interval ({{ $interval }}s)
+              plus one whole run ({{ $runDeadline }}s) so that a night which is working
+              is never the thing that pages.
+              Check in this order: the schedule (suspend), the timeZone (a zone name
+              kube-controller-manager cannot resolve records an event and creates no
+              Job, which is indistinguishable from a schedule that never came due),
+              the namespace (a pause or a delete takes the CronJob's series with it),
+              the CronJob's name (a rename moves it out of this selector and out of
+              the alert), and only then kube-state-metrics itself.
               The freshness artefact — the day the panel was drawn for, and the
               instant it was drawn, as the pipeline wrote them — is at
               {{ $freshnessUrl }}. It is not in this message and cannot be: the

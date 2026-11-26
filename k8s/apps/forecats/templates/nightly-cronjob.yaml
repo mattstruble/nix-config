@@ -5,7 +5,8 @@ A card can only be pinned at the moment a container is created: the nvidia
 runtime hook reads NVIDIA_VISIBLE_DEVICES then, and pinning a process already
 inside a container "changes nothing the runtime can see" (runClaimed in
 src/swapk8s/main.go). So the pod that makes the claim cannot be the pod that
-holds the card. This one runs `swapk8s claim`, and the command the claim runs
+holds the card. This one runs `swapk8s claim` — once per attempt, from the script
+in templates/nightly-run-configmap.yaml — and the command the claim runs
 creates the render Job from templates/render-job-configmap.yaml with the card the
 shim chose substituted into it. When that command exits the shim holds the flock
 for claim.podClaimWindowSeconds to confirm a gpu-job pod carrying the card
@@ -33,13 +34,29 @@ bring back and places on that card — whatever that model was doing, request in
 flight included. The fleet's on-demand wake brings the model back and its next
 request pays the cold start; the reasoning is the evictor's comment in
 src/swapk8s/main.go, and the grant that makes it possible is in the ai chart.
+
+The retry is not in this file. One line a night means the schedule cannot be the
+retry, so the claimer pod loops — claim, wait for the render Job's verdict, back
+off, claim again — until the panel is published or the run's deadline passes, and
+that loop is templates/nightly-run-configmap.yaml. What this file owns is the
+schedule, and the bound that keeps one run from overlapping the next line the
+policy below forbids.
 */ -}}
-{{- $ns := include "forecats.namespace" . -}}
 {{- $nightlyName := include "forecats.nightlyName" . -}}
-{{- $panels := (fromYaml (include "forecats.volumeFor" (dict "ctx" $ "name" "panels"))) -}}
-{{- $window := required "claim.podClaimWindowSeconds: nix renders this from headEnd.podClaimWindowSeconds in the ai chart, because the router's wake deadline is summed from the same number" .Values.claim.podClaimWindowSeconds -}}
-{{- $cardWait := int .Values.nightly.claimer.cardWaitSeconds -}}
-{{- $tools := required "tools: nix supplies the shim, the API client and the substitution the claim runs" .Values.tools -}}
+{{- $runDeadline := int (include "forecats.nightlyRunDeadlineSeconds" .) -}}
+{{- $interval := int (include "forecats.nightlyScheduleIntervalSeconds" .) -}}
+{{- $starting := int (required "nightly.startingDeadlineSeconds: how late a line may start and still be started" .Values.nightly.startingDeadlineSeconds) -}}
+{{- /*
+One run must finish before the next line is due. `concurrencyPolicy: Forbid` makes
+a line that comes due during a run a skip rather than a queue, and with one line a
+day a skip is a day without a panel — the failure this whole file is arranged to
+avoid, caused by the run having been allowed to start too late. The bound is the
+latest legal start plus the longest a run can take, against the interval the
+schedule itself states.
+*/ -}}
+{{- if lt $interval (add $starting $runDeadline) -}}
+{{- fail (printf "nightly.startingDeadlineSeconds (%d) plus nightly.run.deadlineSeconds (%d) is %d, and the schedule only comes round every %d. concurrencyPolicy: Forbid would then skip the next line rather than queue it, and one skipped line is a day with no panel. Lower the missed-start bound or the run deadline." $starting $runDeadline (add $starting $runDeadline) $interval) -}}
+{{- end -}}
 apiVersion: batch/v1
 kind: CronJob
 metadata:
@@ -49,24 +66,36 @@ metadata:
     app.kubernetes.io/component: nightly
 spec:
   schedule: {{ required "nightly.schedule" .Values.nightly.schedule | quote }}
+  # The zone 03:00 is in, named rather than inherited: with no timeZone the
+  # schedule is read in the control plane's own zone, which is a fact about where
+  # the server happens to be and not about the household whose wall this draws on.
+  timeZone: {{ required "nightly.timeZone: the zone the schedule is evaluated in; nix supplies it from config.time.timeZone in nix/services/k3s.nix, because a CronJob with no timeZone is scheduled in the control plane's own zone and that is not the household's" .Values.nightly.timeZone | quote }}
   # Two claimers would take two cards for one night, and the second would find
   # the panel the first published and exit 0 having held a card for nothing.
   concurrencyPolicy: Forbid
-  # A node that was down through a scheduled time should not start a render for
-  # a minute nobody meant; the next slot is twenty minutes away.
-  startingDeadlineSeconds: 300
+  # Generous, because there is no second line today: a node that was down at the
+  # scheduled hour should still draw today's panel when it comes back, and the
+  # panel is named by date so a late one is still today's. The assertion above is
+  # what keeps this from running into tomorrow's line.
+  startingDeadlineSeconds: {{ $starting }}
   # Read from values, and asserted by templates/nightly-alerts.yaml: a limit of 0
   # deletes the Job whose failure the alert is about, and the alert resolves.
   successfulJobsHistoryLimit: {{ required "nightly.successfulJobsHistoryLimit" .Values.nightly.successfulJobsHistoryLimit }}
   failedJobsHistoryLimit: {{ required "nightly.failedJobsHistoryLimit" .Values.nightly.failedJobsHistoryLimit }}
   jobTemplate:
     spec:
-      # A claim that failed to get a card is retried by the next schedule line,
-      # not by a Job that would re-claim under it.
+      # One Job per line, and one pod per Job: the retry is the loop inside the pod
+      # (templates/nightly-run-configmap.yaml). A pod the Job controller restarted by
+      # itself would start a second loop that knows nothing about the first, and each
+      # loop would keep its own run deadline — which is the bound this Job's
+      # activeDeadlineSeconds below is derived from, and the one thing worth keeping
+      # a bound.
       backoffLimit: 0
       ttlSecondsAfterFinished: {{ .Values.nightly.render.ttlSecondsAfterFinished }}
-      # The card wait is the long part, and the pod it creates outlives this one.
-      activeDeadlineSeconds: {{ add $cardWait 120 }}
+      # The loop stops itself a whole attempt before this; this is the backstop for
+      # a loop that is not looping — an API call that never returns — and the slack
+      # is the pod's termination grace plus the poll it was sleeping in.
+      activeDeadlineSeconds: {{ add $runDeadline 120 }}
       template:
         metadata:
           labels:
@@ -85,69 +114,12 @@ spec:
           containers:
             - name: claim
               image: {{ required "nightly.claimer.image" .Values.nightly.claimer.image }}
-              # The card goes from the shim's environment, through the
-              # substitution, into the Job's pod spec — the only place the runtime
-              # hook will read it.
-              #
-              # The substitution names one variable on purpose. The manifest also
-              # carries `$FORECATS_PLACE_LATITUDE` and friends, which are for the
-              # render pod's own shell to expand at run time; a bare `envsubst`
-              # would substitute them here, from an environment that is not the
-              # render pod's. `-no-unset -no-empty` is the pair the activation script
-              # uses for the Secret document: a placeholder with no value behind it
-              # is an error, not an empty pin, and an empty pin is a render pod with
-              # no card that says nothing.
-              #
-              # CARD_PATTERN is passed through the environment rather than quoted in
-              # place because the command below is already inside the single quotes
-              # of the shell the shim runs, and the pattern has to arrive at envsubst
-              # as the literal text `$SWAPK8S_CARD`.
-              command: ["/bin/sh", "-c"]
-              args:
-                - |
-                  set -eu
-                  # The day the pipeline would render, from the place's own
-                  # timezone, because the panel is named by that date and a second
-                  # render of a date would overwrite the only panel it has. Asking
-                  # here rather than after the claim is what keeps a night that is
-                  # already published from taking a card for the four seconds it
-                  # takes to discover that, forty-eight times a day. The timezone
-                  # comes from the Secret for the same reason the pipeline reads it
-                  # from there: it is the household's, not this host's clock.
-                  #
-                  # A claimer whose image has no zone database falls back to UTC,
-                  # which makes this test miss for a few hours around midnight and
-                  # never makes it wrong: the render pod then finds the panel and
-                  # exits 0, which is the same answer one claim later.
-                  day=$(TZ="$FORECATS_PLACE_TIMEZONE" date +%Y-%m-%d)
-                  panels_dir='{{ $panels.mountPath }}'
-                  # The test below is the only thing between this CronJob and a
-                  # claimed card every twenty minutes on a day that already has a
-                  # panel. A published directory this pod cannot search has exactly
-                  # one answer for it — "not published" — and that answer claims a
-                  # card, so refuse: one failed claimer is one alert, where a claim
-                  # that cannot ask spends a card every twenty minutes to say
-                  # nothing.
-                  if [ ! -x "$panels_dir" ]; then
-                    echo "forecats-nightly: $panels_dir is absent or not searchable by this pod's uid; cannot look for panel-$day.png" >&2
-                    exit 1
-                  fi
-                  if [ -e "$panels_dir/panel-$day.png" ]; then
-                    echo "forecats-nightly: panel-$day.png is already published; no card claimed"
-                    exit 0
-                  fi
-                  CARD_PATTERN='$SWAPK8S_CARD'
-                  export CARD_PATTERN
-                  {{ $tools.swapHeadEnd }}/bin/swapk8s claim \
-                    --job '{{ $nightlyName }}' \
-                    --namespace '{{ $ns }}' \
-                    --fleet-namespace '{{ required "fleet.namespace: the namespace the model fleet runs in, from services.k3s.aiChart in nix/services/k3s.nix; a claim that cannot see the fleet cannot take a card from it" .Values.fleet.namespace }}' \
-                    --gpu-pool '{{ required "gpu.pool: the card numbers a nightly may claim, from services.k3s.forecats.gpuPool" .Values.gpu.pool }}' \
-                    --gpu-mode any \
-                    --card-wait {{ $cardWait }}s \
-                    --pod-claim-window {{ $window }}s \
-                    --card-lock '{{ required "nightly.claimer.cardLockPath" .Values.nightly.claimer.cardLockPath }}' \
-                    -- /bin/sh -c '{{ $tools.envsubst }}/bin/envsubst -no-unset -no-empty "$CARD_PATTERN" < /etc/forecats/render-job.yaml | {{ $tools.k3s }}/bin/k3s kubectl create -f -'
+              # The whole command is a script the chart ships, because the retry
+              # loop is the part of the nightly a person has to read: what it does,
+              # what a failed attempt costs the fleet, and which budget stops it, are
+              # all in templates/nightly-run-configmap.yaml. The base image stays a
+              # shell — the loop calls only the store binaries nix supplies.
+              command: ["/bin/sh", "/etc/forecats/run/nightly.sh"]
               env:
                 # This pod is an API client the same way the shim in it is: the
                 # service-account token, the CA bundle and KUBERNETES_SERVICE_HOST
@@ -158,8 +130,9 @@ spec:
                 - name: HOME
                   value: /tmp
               envFrom:
-                # Only for the timezone the date test above needs; the claim itself
-                # reads no secret, and the render pod is the one that gets the rest.
+                # Only for the timezone the run script's date test needs; the claim
+                # itself reads no secret, and the render pod is the one that gets the
+                # rest.
                 - secretRef:
                     name: {{ required "secret.name: the Secret nix builds from forecatsSecret.keys" .Values.secret.name }}
               securityContext:
@@ -168,11 +141,22 @@ spec:
                 {{- toYaml .Values.nightly.claimer.resources | nindent 16 }}
               volumeMounts:
                 {{- include "forecats.volumeMounts" (dict "ctx" $ "names" (list "nix-store" "panels") "readOnly" true) | nindent 16 }}
+                # Two ConfigMaps, in two sibling directories: the script the claimer
+                # runs, and the manifest the claim substitutes the card into. The
+                # manifest is read by `envsubst` and the script is not, which is the
+                # only reason they cannot be one ConfigMap — a `$` in the file that
+                # gets substituted is a refusal, and a shell script is made of them.
+                - name: run-script
+                  mountPath: /etc/forecats/run
+                  readOnly: true
                 - name: render-job
-                  mountPath: /etc/forecats
+                  mountPath: /etc/forecats/render
                   readOnly: true
           volumes:
             {{- include "forecats.volumes" . | nindent 12 }}
+            - name: run-script
+              configMap:
+                name: forecats-nightly-run
             - name: render-job
               configMap:
                 name: forecats-render-job
