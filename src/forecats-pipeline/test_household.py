@@ -30,12 +30,23 @@ def test_the_shipped_household_loads_and_keeps_both_brothers_distinct():
     assert "tuxedo" not in joined and "grey" not in joined
 
 
+@pytest.mark.skipif(
+    PHOTO_DIRECTORY_ENV not in os.environ,
+    reason=(
+        f"{PHOTO_DIRECTORY_ENV} is exported by the render wrapper, not by a checkout, so "
+        "there is no photo volume for the household file to agree with here. Set it to "
+        "the directory the storage declaration creates to run this assertion."
+    ),
+)
 def test_the_shipped_photos_are_the_ones_the_photo_volume_carries():
     """A photo path outside the mounted directory is a pet no pod can render.
 
     The directory is the one the storage declaration creates and the wrapper
     exports; the household file is the third thing that has to name it, so it is
-    checked against that export rather than against a copy of the path here.
+    checked against that export rather than against a copy of the path here. It
+    skips when that export is absent rather than failing, because a suite that is
+    red in a clean checkout is a suite that gets ignored, and nothing in CI runs
+    this suite to tell anyone it went red.
     """
     household = load_household(REPO / "src/forecats-pipeline/household.yaml")
     photo_directory = os.environ[PHOTO_DIRECTORY_ENV]
