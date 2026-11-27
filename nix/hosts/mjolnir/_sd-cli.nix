@@ -30,6 +30,16 @@ let
     rev = "eeda9ec48fc84a3df0bb9dcc19ae9053075a2539"; # pragma: allowlist secret (git commit id, not a secret)
     hash = "sha256-AHhLPIidPDj+CThJ1AkOdrKTMySE+SBtFuTaXSq+woM="; # pragma: allowlist secret
   };
+  # CUTLASS at the version the validated checkout pins (v3.9.2): the CUDA build
+  # configures it unconditionally and refuses to configure without the headers
+  # (cmake/cutlass.cmake:14), and the prototype carried it, so disabling it
+  # would be building something the panel was not validated against.
+  cutlass = fetchFromGitHub {
+    owner = "NVIDIA";
+    repo = "cutlass";
+    rev = "ad7b2f5e84fcfa124cb02b91d5bd26d238c0459e"; # pragma: allowlist secret (v3.9.2 git commit id)
+    hash = "sha256-teziPNA9csYvhkG5t2ht8W8x5+1YGGbHm8VKx4JoxgI="; # pragma: allowlist secret
+  };
 
 in
 cudaPackages.backendStdenv.mkDerivation (finalAttrs: {
@@ -63,6 +73,9 @@ cudaPackages.backendStdenv.mkDerivation (finalAttrs: {
     rmdir $sourceRoot/ggml
     cp -r ${ggml} $sourceRoot/ggml
     chmod -R u+w $sourceRoot/ggml
+    rmdir $sourceRoot/thirdparty/cutlass
+    cp -r ${cutlass} $sourceRoot/thirdparty/cutlass
+    chmod -R u+w $sourceRoot/thirdparty/cutlass
   '';
 
   cmakeFlags = [
