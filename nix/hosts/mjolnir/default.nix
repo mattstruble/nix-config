@@ -151,7 +151,34 @@
       system.build.swapHeadEnd = pkgs.callPackage ./_swapk8s.nix { };
       services.k3s.aiChart.headEndBundle = toString config.system.build.swapHeadEnd;
 
+      # Both bundles travel to the pod as a store path embedded in the k8s
+      # manifest with its string context discarded (nix/services/k3s.nix does the
+      # discarding, because a context-carrying string in the values text makes the
+      # flake's eval realise a dynamic derivation it refuses to). A path that is
+      # only mentioned is not a dependency of anything, so deploy-rs — which
+      # builds and copies the toplevel closure — never learns of it, and the first
+      # deploy after either bundle's source changes points a pod at a store path
+      # that exists on no machine. That is not a hypothetical: the 2026-11-27
+      # swapk8s eviction change produced a new derivation hash, the deploy shipped
+      # a manifest naming a path that was on neither the build machine nor the
+      # host, and the head-end pod crash-looped on `llama-swap: not found` until
+      # the bundle was built on the host by hand. extraDependencies is what makes
+      # the lie of the discarded context harmless: the toplevel now cannot be
+      # built without building both bundles, so a deploy that succeeds has also
+      # shipped them.
+      system.extraDependencies = [
+        config.system.build.strata
+        config.system.build.swapHeadEnd
+      ];
+
+      # kubectl is on the host PATH because the forecats claimer mounts it from
+      # the store volume the same way it mounts the bundles above: a store path
+      # embedded in the manifest. Being in systemPackages is what puts it in the
+      # toplevel closure, so a deploy that succeeds has also copied the exact
+      # kubectl the manifest names — same reason as the extraDependencies above,
+      # and the same failure if it were left out.
       environment.systemPackages = with pkgs; [
+        kubectl
         pciutils
         nvtopPackages.nvidia
         nvidia-vaapi-driver

@@ -694,11 +694,12 @@ in
       # `nix eval .#...appChartValues.ai` work at all: a string carrying a store
       # path's context makes nix realise that derivation, and the swap head-end is
       # a dynamic derivation, so the eval dies on `dynamic-derivations is
-      # disabled`. Dropping the context costs nothing for retention: the bundles
-      # are held in the generation by `system.build.strata` and
-      # `system.build.swapHeadEnd` (the toplevel closure), not by the path
-      # appearing in this text — a store path in a derivation's output is not a GC
-      # reference.
+      # disabled`. Dropping the context would otherwise cost retention — the
+      # bundles would not be dependencies of anything the deploy ships — except
+      # that `system.extraDependencies` in nix/hosts/mjolnir/default.nix puts
+      # `system.build.strata` and `system.build.swapHeadEnd` into the toplevel
+      # closure directly, which is the one mechanism deploy-rs honours: it builds
+      # and copies what the toplevel needs, mention is not enough.
       chartBuildValuesText = {
         # The strata bundle is BUILT here, not pinned in a values file: this is
         # what links config.system.build.strata into the pod. See
