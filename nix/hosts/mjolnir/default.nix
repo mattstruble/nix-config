@@ -4,12 +4,14 @@
 
   # Files prefixed with _ are excluded from import-tree auto-discovery
   flake.modules.nixos.mjolnir =
-    {
-      pkgs,
-      config,
-      lib,
-      ...
-    }:
+    { pkgs, config, lib, ... }@args:
+    let
+      # The CUDA diffusion CLI the nightly renders with, pinned at the upstream
+      # commit that detects the image-pruned H3 GGUF (nixpkgs' build does not —
+      # see _sd-cli.nix). One binding, referenced by both the deploy closure and
+      # the chart render, so there is exactly one derivation for it.
+      sd-cli = pkgs.callPackage ./_sd-cli.nix { };
+    in
     {
       imports =
         (with inputs.self.modules.nixos; [
@@ -169,14 +171,14 @@
       system.extraDependencies = [
         config.system.build.strata
         config.system.build.swapHeadEnd
-        # The CUDA diffusion CLI the nightly renders with. Named here because
-        # the nixpkgs build is the only one that both evaluates on this host and
-        # actually renders on a card; left empty the render would resolve
-        # `sd-cli` from a container PATH that has no such thing.
-        pkgs.stable-diffusion-cpp
+        # The CUDA diffusion CLI the nightly renders with. nixpkgs'
+        # stable-diffusion-cpp refuses the image-pruned H3 GGUF (its version
+        # detector wants the audio tensors the pruned file does not carry), so
+        # the build is pinned at the upstream commit the prototype validated.
+        sd-cli
       ];
 
-      services.k3s.forecats.sdCliBinary = "${pkgs.stable-diffusion-cpp}/bin/sd-cli";
+      services.k3s.forecats.sdCliBinary = "${sd-cli}/bin/sd-cli";
 
       # kubectl is on the host PATH because the forecats claimer mounts it from
       # the store volume the same way it mounts the bundles above: a store path
