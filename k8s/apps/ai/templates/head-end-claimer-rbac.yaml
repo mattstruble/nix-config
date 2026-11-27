@@ -2,8 +2,12 @@
 {{- $claimer := required "headEnd.cardClaimer: the namespace and ServiceAccount a card claim runs as. nix supplies both from the same declaration the forecats chart reads, because a RoleBinding subject names a service account in another namespace from inside a string the apply pass cannot fix afterwards." .Values.headEnd.cardClaimer }}
 {{- $cn := required "headEnd.cardClaimer.namespace: the namespace a claim's own pod runs in" $claimer.namespace }}
 {{- $sa := required "headEnd.cardClaimer.serviceAccount: the ServiceAccount a claim's pod runs as" $claimer.serviceAccount }}
-{{- $models := fromYaml (include "ai.onDemandModels" .) }}
-{{- if not $models }}
+{{- $models := (fromYaml (include "ai.onDemandModels" .)).models }}
+{{- if not (kindIs "slice" $models) }}
+{{- fail "ai.onDemandModels decodes to a map keyed models, because sprig's fromYaml cannot decode a bare list; the list this Role needs is the value under that key. Passing the map itself renders resourceNames as a mapping, which the API rejects with 'cannot unmarshal object into Go struct field PolicyRule.rules.resourceNames of type []string' - and it rejects it at apply time, on the host, inside an activation that has already stopped the old generation. Read the key."
+}}
+{{- end }}
+{{- if empty $models }}
 {{- fail "headEnd.cardClaimer is configured while no model declares lifecycle: on-demand. The claimer's Role pins resourceNames to the fleet's Deployments, and an empty resourceNames list is what RBAC reads as no name restriction at all: delete on every Deployment in this namespace. Either the fleet lost its on-demand models or the claimer should not be set." }}
 {{- end }}
 {{- /*
