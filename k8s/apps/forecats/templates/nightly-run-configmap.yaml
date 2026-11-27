@@ -79,10 +79,13 @@ data:
     #
     # CARD_PATTERN is passed through the environment rather than written in place
     # because the command below is already inside the single quotes of the shell the
-    # shim runs, and the pattern has to arrive at envsubst as the literal text
-    # `$SWAPK8S_CARD`. RENDER_REF is exported for the same reason: the file the
-    # created Job's name lands in is read by this script, outside those quotes.
-    export CARD_PATTERN='$SWAPK8S_CARD'
+    # shim runs, and the pattern has to arrive at envsubst as literal text. The card
+    # the shim exports is `NVIDIA_VISIBLE_DEVICES` — the pin, the same variable the
+    # runtime class reads — and `SWAPK8S_CARD` beside it carries the job name for
+    # the shim's own attribution, which the pod spec also wants. RENDER_REF is
+    # exported for the same reason: the file the created Job's name lands in is
+    # read by this script, outside those quotes.
+    export CARD_PATTERN='$NVIDIA_VISIBLE_DEVICES $SWAPK8S_CARD'
     export RENDER_REF="$render_ref"
 
     attempt=0

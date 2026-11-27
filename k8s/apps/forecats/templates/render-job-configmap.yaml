@@ -3,9 +3,9 @@ The pod spec the claim turns into a Job, as text with one hole in it.
 
 This is a ConfigMap and not a Job because the card is not known when the chart is
 rendered: it is chosen at claim time, and the pod has to carry it in its spec.
-The claim substitutes ${SWAPK8S_CARD} — the shim exports it beside the pin itself
-precisely for "the caller that names the card in a field of its own" — and pipes
-the result to the API.
+The claim substitutes ${NVIDIA_VISIBLE_DEVICES} — the shim exports the pin itself
+in its own variable, and exports SWAPK8S_CARD beside it as the job name for the
+shim's own attribution — and pipes the result to the API.
 
 Two consequences of that, both deliberate:
 
@@ -101,13 +101,16 @@ data:
                     --draw-forecast-plate{{ end }}{{ with .Values.render.sdCliBinary }} \
                     --sd-cli-binary '{{ . }}'{{ end }}
               env:
-                # The card the claim chose. This is the pin: the runtime hook reads
-                # it when the container is created, which is the whole reason the
-                # pod is created after the claim rather than before it.
+                # The card the claim chose, in the pin the nvidia runtime class
+                # reads when the container is created — which is the whole reason
+                # the pod is created after the claim rather than before it. The
+                # shim exports it under its own name because that is the name the
+                # pin already travels under; SWAPK8S_CARD beside it is the job
+                # name the shim attributes the card to, not the card.
                 - name: NVIDIA_VISIBLE_DEVICES
-                  value: "${SWAPK8S_CARD}"
+                  value: "${NVIDIA_VISIBLE_DEVICES}"
                 - name: SWAPK8S_CARD
-                  value: "${SWAPK8S_CARD}"
+                  value: "${NVIDIA_VISIBLE_DEVICES}"
                 - name: HOME
                   value: /tmp
                 # The grant's report address, beside the picture it is about. The
