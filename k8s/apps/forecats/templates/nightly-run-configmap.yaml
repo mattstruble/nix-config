@@ -129,7 +129,7 @@ data:
           --card-wait {{ $cardWait }}s \
           --pod-claim-window {{ $window }}s \
           --card-lock '{{ required "nightly.claimer.cardLockPath" .Values.nightly.claimer.cardLockPath }}' \
-          -- /bin/sh -c '{{ $tools.envsubst }}/bin/envsubst -no-unset -no-empty "$CARD_PATTERN" < /etc/forecats/render/render-job.yaml | {{ $tools.k3s }}/bin/k3s kubectl create -f - -o name > "$RENDER_REF"'; then
+          -- /bin/sh -c '{{ $tools.envsubst }}/bin/envsubst -no-unset -no-empty "$CARD_PATTERN" < /etc/forecats/render/render-job.yaml | {{ $tools.kubectl }}/bin/kubectl create -f - -o name > "$RENDER_REF"'; then
         echo "forecats-nightly: attempt $attempt got no card" >&2
       else
         ref=$(cat "$render_ref" 2>/dev/null || true)
@@ -144,7 +144,7 @@ data:
           verdict=render-failed
           render_deadline=$(( attempt_start + {{ $attempt }} ))
           while :; do
-            conditions=$({{ $tools.k3s }}/bin/k3s kubectl get "$ref" -o jsonpath="{.status.conditions[*].type}" 2>/dev/null || true)
+            conditions=$({{ $tools.kubectl }}/bin/kubectl get "$ref" -o jsonpath="{.status.conditions[*].type}" 2>/dev/null || true)
             case " $conditions " in
               *" Complete "*) verdict=rendered; break ;;
               *" Failed "*) verdict=render-failed; break ;;

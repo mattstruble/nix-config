@@ -603,7 +603,7 @@ in
         # name that lives here.
         prometheus:
           ruleReleaseLabel: "${kpsRelease}"
-        # The three binaries a claim is made of, as store paths the store volume
+        # The four binaries a claim is made of, as store paths the store volume
         # mounts read-only: the shim that chooses the card, the API client that
         # creates the pod carrying it, and the substitution that puts the chosen
         # card into that pod's spec. Each is already in this system's closure for a
@@ -613,8 +613,15 @@ in
         # the host runs instead of a tag someone moved.
         tools:
           swapHeadEnd: ${builtins.unsafeDiscardStringContext cfg.aiChart.headEndBundle}
-          k3s: ${builtins.unsafeDiscardStringContext pkgs.k3s}
+          kubectl: ${builtins.unsafeDiscardStringContext pkgs.kubectl}
           envsubst: ${builtins.unsafeDiscardStringContext pkgs.envsubst}
+          # k3s is deliberately absent from this list. `k3s kubectl` inside a pod
+          # finds no /etc/rancher/k3s/k3s.yaml (the host's own file is not mounted)
+          # and no KUBECONFIG, and k3s responds to a missing config by bootstrapping
+          # its data dir in /tmp and unpacking its embedded binaries, which OOMs the
+          # 128Mi claimer before the kubectl help text renders. kubectl from nixpkgs
+          # reads the in-cluster ServiceAccount config natively, which is the only
+          # config a pod has.
         claim:
           podClaimWindowSeconds: ${toString forecatsPodClaimWindowSeconds}
           serviceAccount: ${forecatsClaimerServiceAccount}
