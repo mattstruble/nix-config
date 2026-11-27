@@ -176,7 +176,7 @@
         pkgs.stable-diffusion-cpp
       ];
 
-      services.k3s.forecats.sdCliBinary = toString pkgs.stable-diffusion-cpp;
+      services.k3s.forecats.sdCliBinary = "${pkgs.stable-diffusion-cpp}/bin/sd-cli";
 
       # kubectl is on the host PATH because the forecats claimer mounts it from
       # the store volume the same way it mounts the bundles above: a store path
