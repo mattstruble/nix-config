@@ -592,8 +592,13 @@ in
           # package's wrapper, so nothing below names a font.
           pipeline: ${builtins.unsafeDiscardStringContext cfg.forecats.pipelinePackage}
           # Empty means the host has not named a CUDA diffusion CLI; the render
-          # then resolves `sd-cli` from PATH. See the option.
-          sdCliBinary: "${cfg.forecats.sdCliBinary}"
+          # then resolves `sd-cli` from PATH, which inside a pod is a container
+          # PATH and never has it — so a host that wants to render names the
+          # binary here. The context is discarded for the same reason as the
+          # bundles above: keeping it makes the chart render derive from the
+          # CUDA build, which the macOS deploy machine cannot run, and the path
+          # stays in the deploy closure through system.extraDependencies.
+          sdCliBinary: "${builtins.unsafeDiscardStringContext cfg.forecats.sdCliBinary}"
         gpu:
           pool: "${cfg.forecats.gpuPool}"
         # The release whose Prometheus CR selects the rules this chart ships.

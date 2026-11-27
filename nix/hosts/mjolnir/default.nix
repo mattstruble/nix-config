@@ -169,7 +169,14 @@
       system.extraDependencies = [
         config.system.build.strata
         config.system.build.swapHeadEnd
+        # The CUDA diffusion CLI the nightly renders with. Named here because
+        # the nixpkgs build is the only one that both evaluates on this host and
+        # actually renders on a card; left empty the render would resolve
+        # `sd-cli` from a container PATH that has no such thing.
+        pkgs.stable-diffusion-cpp
       ];
+
+      services.k3s.forecats.sdCliBinary = toString pkgs.stable-diffusion-cpp;
 
       # kubectl is on the host PATH because the forecats claimer mounts it from
       # the store volume the same way it mounts the bundles above: a store path
