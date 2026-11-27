@@ -61,6 +61,13 @@ data:
           automountServiceAccountToken: false
           restartPolicy: Never
           terminationGracePeriodSeconds: 30
+          # The card is pinned by NVIDIA_VISIBLE_DEVICES, but the driver library
+          # is not something the image carries: libcuda.so.1 comes from the host
+          # driver, injected by the nvidia container runtime for pods that opt in
+          # through this class — the same opt-in every model pod makes. Without
+          # it the first CUDA call dies on `libcuda.so.1: cannot open shared
+          # object file` before the render draws anything.
+          runtimeClassName: nvidia
           securityContext:
             # The ids the helper gives every pod in this chart: the owner of the
             # panels volume's host directory, which is what lets the render write
