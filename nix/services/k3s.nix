@@ -33,6 +33,7 @@ let
     name = "forecats-secrets";
     keys = [
       "calendar-feeds"
+      "gateway-key"
       "place-latitude"
       "place-longitude"
       "place-timezone"
@@ -1086,11 +1087,16 @@ in
           "services/forecats/calendar-feeds" = {
             sopsFile = ./homelab/homelab-forecats-secrets.yaml;
           };
-          # The pipeline's `--latitude`/`--longitude`/`--timezone`. The values are
-          # placeholders until the owner clears their use: the position was picked
-          # up as a side effect of a privacy check and has not been consented to
-          # for this, so nothing in this repository holds the real numbers and the
-          # chart passes only the Secret key name to the render.
+          # The gateway key the occasion researcher sends with every request.
+          # Minted with `just mint-key forecats`, which stores the same value in
+          # the gateway's own database — this copy exists so the render pod gets
+          # it through the same Secret as the place and feeds rather than a
+          # second credential path.
+          "services/forecats/gateway-key" = {
+            sopsFile = ./homelab/homelab-forecats-secrets.yaml;
+          };
+          # The pipeline's `--latitude`/`--longitude`/`--timezone`, filled by the
+          # owner on 2026-11-27.
           "services/forecats/place-latitude" = {
             sopsFile = ./homelab/homelab-forecats-secrets.yaml;
           };

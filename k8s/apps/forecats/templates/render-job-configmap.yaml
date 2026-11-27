@@ -108,6 +108,15 @@ data:
                 # panel's provenance sidecar.
                 - name: FORECATS_REPORT_ADDRESS
                   value: {{ $report | quote }}
+                # The occasion researcher asks the gateway for festival props; a
+                # panel that names the day plainly is the honest answer when the
+                # key is absent, so the envFrom below does not carry this and the
+                # name the pipeline reads is spelled out once here.
+                - name: LITELLM_API_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: {{ $secretName }}
+                      key: FORECATS_GATEWAY_KEY
               envFrom:
                 # The calendar address and the place, by name. envFrom gives the pod
                 # no way to rename a key, which is why the Secret's keys are the
