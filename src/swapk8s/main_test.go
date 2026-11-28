@@ -1307,99 +1307,6 @@ func TestClaimReleasesTheCardWhenNoPodAppearedWithinTheBudget(t *testing.T) {
 	}
 }
 
-// ---- what a card costs to take back ----------------------------------
-
-// specCost writes <name>.json the way the chart renders it into the head-end's
-// spec ConfigMap: the reclaim cost as a quoted label value on the Deployment's own
-// metadata. An empty raw writes a spec with no cost at all, which is what a model
-// nobody measured renders.
-func specCost(t *testing.T, dir, name, raw string) {
-	t.Helper()
-	label := ""
-	if raw != "" {
-		label = fmt.Sprintf(`,%q:%s`, reclaimCostLabel, raw)
-	}
-	spec := fmt.Sprintf(`{"apiVersion":"apps/v1","kind":"Deployment","metadata":{"name":%q,"labels":{%q:"0,1"%s}},`+
-		`"spec":{"template":{"spec":{"containers":[{"name":"llama-server","env":[{"name":%q,"value":"0,1"}]}]}}}}`,
-		name, gpuPoolLabel, label, gpuEnv)
-	if err := os.WriteFile(filepath.Join(dir, name+".json"), []byte(spec), 0o644); err != nil {
-		t.Fatal(err)
-	}
-}
-
-// corruptSpec writes a <name>.json no reader can use — the shape a spec ConfigMap
-// key has when the write that produced it stopped halfway.
-func corruptSpec(t *testing.T, dir, name string) {
-	t.Helper()
-	if err := os.WriteFile(filepath.Join(dir, name+".json"), []byte(`{"apiVersion":"apps/v1","metadata":{"labels":{`), 0o644); err != nil {
-		t.Fatal(err)
-	}
-}
-
-// The cost reaches the shim the way the card pool does — a label on the rendered
-// spec — and a figure that is not a positive whole number of seconds is not a cost.
-// A model that declares nothing keeps its card; so does one whose figure is a zero,
-// a negative or a word, because each of those would otherwise rank the card among
-// the measured ones. None of them is a zero in the map, and each carries the
-// reason it is not reclaimable.
-func TestReclaimCostsComeFromTheRenderedSpecs(t *testing.T) {
-	dir := t.TempDir()
-	specCost(t, dir, "gemma-4-26b-a4b", `"110"`)
-	specCost(t, dir, "swift-qwen3-8-27b", `"270"`)
-	specCost(t, dir, "qwen3-6-35b-iq4xs", "")
-	specCost(t, dir, "flash-next-strata-iq4xs", `"0"`)
-	specCost(t, dir, "gemma-4-26b-a4b-think", `"-5"`)
-	specCost(t, dir, "strata-ud-iq4-xs", `"abc"`)
-
-	costs, err := reclaimCosts(dir)
-	if err != nil {
-		t.Fatalf("reclaimCosts: %v", err)
-	}
-	want := map[string]int64{"gemma-4-26b-a4b": 110, "swift-qwen3-8-27b": 270}
-	for name, seconds := range want {
-		if got := costs[name]; got.seconds != seconds || got.reason != "" {
-			t.Errorf("cost of %s = %+v, want %d seconds and no reason", name, got, seconds)
-		}
-	}
-	for _, name := range []string{"qwen3-6-35b-iq4xs", "flash-next-strata-iq4xs", "gemma-4-26b-a4b-think", "strata-ud-iq4-xs"} {
-		if got := costs[name]; got.reason == "" {
-			t.Errorf("%s is reclaimable at %d seconds; want it refused with a reason", name, got.seconds)
-		}
-	}
-}
-
-// A spec this shim cannot read or parse is that one model's bad day, not the
-// fleet's: the read returns every other spec and records why this model has no
-// cost, naming the file an operator has to go and look at. Failing the whole read
-// instead is a reclaim switched off by one half-written key, on an attempt that
-// will fail the same way forever.
-func TestAnUnreadableSpecDropsItsModelNotTheRead(t *testing.T) {
-	dir := t.TempDir()
-	specCost(t, dir, "swift-qwen3-8-27b", `"270"`)
-	corruptSpec(t, dir, "gemma-4-26b-a4b")
-	// A spec that is listed and cannot be read at all. A dangling symlink fails
-	// for every user, where a chmod-0 file would read fine for the root a head-end
-	// container runs as.
-	if err := os.Symlink(filepath.Join(dir, "no-such-key"), filepath.Join(dir, "qwen3-6-35b-iq4xs.json")); err != nil {
-		t.Fatal(err)
-	}
-
-	costs, err := reclaimCosts(dir)
-	if err != nil {
-		t.Fatalf("reclaimCosts: %v", err)
-	}
-	if got := costs["swift-qwen3-8-27b"]; got.seconds != 270 || got.reason != "" {
-		t.Errorf("the spec that read is %+v, want 270 seconds and no reason", got)
-	}
-	for _, want := range []struct{ name, reason string }{
-		{"gemma-4-26b-a4b", "gemma-4-26b-a4b.json is not valid JSON"},
-		{"qwen3-6-35b-iq4xs", "qwen3-6-35b-iq4xs.json cannot be read"},
-	} {
-		if reason := costs[want.name].reason; !strings.Contains(reason, want.reason) {
-			t.Errorf("reason for %s = %q, want it to say %q", want.name, reason, want.reason)
-		}
-	}
-}
 
 // ---- taking a card from the model that holds it ----------------------------
 
@@ -1653,6 +1560,10 @@ type fakeFleet struct {
 	polls     int
 	reads     []string
 	writes    []string
+	// deploymentLabels is the eviction's cost source: the labels on the
+	// Deployment each model's delete is about to touch. A model the map does not
+	// name reads as a 404, which is a deployment that is already gone.
+	deploymentLabels map[string]string
 }
 
 func (f *fakeFleet) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -1669,6 +1580,18 @@ func (f *fakeFleet) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprint(w, f.scans[min(f.looks, len(f.scans)-1)])
 		return
 	}
+	// A bare deployment read is the eviction's cost lookup: the label the ai chart
+	// renders onto the Deployment the delete is about to touch.
+	if name, found := strings.CutPrefix(r.URL.Path, "/apis/apps/v1/namespaces/default/deployments/"); found && !strings.Contains(r.URL.RawQuery, "labelSelector") {
+		labels, ok := f.deploymentLabels[name]
+		if !ok {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		_ = found
+		fmt.Fprintf(w, `{"metadata":{"name":%q,"labels":%s},"spec":{"selector":{"matchLabels":{}},"replicas":1},"status":{}}`, name, labels)
+		return
+	}
 	defer func() { f.polls++ }()
 	fmt.Fprint(w, podsStillThere(f.remaining[min(f.polls, len(f.remaining)-1)]))
 }
@@ -1682,11 +1605,11 @@ func podsStillThere(n int) string {
 	return `{"items":[` + strings.TrimSuffix(strings.Repeat(item+",", n), ",") + `]}`
 }
 
-// evictOptions is the flag set an eviction test runs with: the spec dir a head-end
-// pod has, the namespaces a claim spans, and budgets short enough that a timeout is
-// a test result and not a wait.
-func evictOptions(dir, fleet string, window time.Duration) *options {
-	return &options{namespace: "forecats", fleetNamespace: fleet, specDir: dir,
+// evictOptions is the flag set an eviction test runs with: the namespaces a claim
+// spans and budgets short enough that a timeout is a test result and not a wait.
+// The spec dir is gone from the eviction: the cost is the label on the Deployment.
+func evictOptions(fleet string, window time.Duration) *options {
+	return &options{namespace: "forecats", fleetNamespace: fleet,
 		poll: time.Millisecond, evictDeadline: window, gpuPool: "0,1", gpuMode: "any"}
 }
 
@@ -1695,18 +1618,18 @@ func evictOptions(dir, fleet string, window time.Duration) *options {
 // the case the last design waited out forever - it asked a router whether the model
 // was idle, and a model with a request in flight is never idle.
 func TestEvictTakesTheCheapestCardAndWritesOnlyTheDelete(t *testing.T) {
-	dir := t.TempDir()
-	specCost(t, dir, "gemma-4-26b-a4b", `"110"`)
-	specCost(t, dir, "swift-qwen3-8-27b", `"270"`)
-
 	fleet := &fakeFleet{
 		scans:     []string{pods(loaded("gemma-4-26b-a4b", "0"), loaded("swift-qwen3-8-27b", "1"))},
 		remaining: []int{1, 0},
+		deploymentLabels: map[string]string{
+			"gemma-4-26b-a4b":    `{"ai.mestruble.dev/reclaim-cost-seconds":"110"}`,
+			"swift-qwen3-8-27b": `{"ai.mestruble.dev/reclaim-cost-seconds":"270"}`,
+		},
 	}
 	srv := httptest.NewServer(fleet)
 	defer srv.Close()
 
-	err := newEvictor(testClient(srv), evictOptions(dir, "default", time.Minute)).
+	err := newEvictor(testClient(srv), evictOptions("default", time.Minute)).
 		try(context.Background(), time.Minute)
 	if err != nil {
 		t.Fatalf("evict: %v", err)
@@ -1723,17 +1646,17 @@ func TestEvictTakesTheCheapestCardAndWritesOnlyTheDelete(t *testing.T) {
 // A card another job holds is refused, and the model beside it is left alone: a
 // claim that evicted a claim is two renders killing each other until one stops.
 func TestEvictTakesTheModelBesideAJobAndNeverTheJob(t *testing.T) {
-	dir := t.TempDir()
-	specCost(t, dir, "gemma-4-26b-a4b", `"110"`)
-
 	fleet := &fakeFleet{
+		deploymentLabels: map[string]string{
+			"gemma-4-26b-a4b": `{"ai.mestruble.dev/reclaim-cost-seconds":"110"}`,
+		},
 		scans:     []string{pods(gpuJob(sref("0")).in("forecats"), loaded("gemma-4-26b-a4b", "1"))},
 		remaining: []int{0},
 	}
 	srv := httptest.NewServer(fleet)
 	defer srv.Close()
 
-	err := newEvictor(testClient(srv), evictOptions(dir, "default", time.Minute)).
+	err := newEvictor(testClient(srv), evictOptions("default", time.Minute)).
 		try(context.Background(), time.Minute)
 	if err != nil {
 		t.Fatalf("evict: %v", err)
@@ -1748,8 +1671,6 @@ func TestEvictTakesTheModelBesideAJobAndNeverTheJob(t *testing.T) {
 // refusal says so - the alternative is a nightly that takes the card out from under
 // the only other render on the host.
 func TestEvictRefusesToChooseBetweenTwoJobs(t *testing.T) {
-	dir := t.TempDir()
-	specCost(t, dir, "gemma-4-26b-a4b", `"110"`)
 
 	fleet := &fakeFleet{
 		scans:     []string{pods(gpuJob(sref("0")).in("forecats"), gpuJob(sref("1")).in("forecats"))},
@@ -1758,7 +1679,7 @@ func TestEvictRefusesToChooseBetweenTwoJobs(t *testing.T) {
 	srv := httptest.NewServer(fleet)
 	defer srv.Close()
 
-	err := newEvictor(testClient(srv), evictOptions(dir, "default", time.Minute)).
+	err := newEvictor(testClient(srv), evictOptions("default", time.Minute)).
 		try(context.Background(), time.Minute)
 	if err == nil || !strings.Contains(err.Error(), "not one named model") {
 		t.Fatalf("want the refusal that names the job's card, got %v", err)
@@ -1772,19 +1693,20 @@ func TestEvictRefusesToChooseBetweenTwoJobs(t *testing.T) {
 // file will still be corrupt on the next attempt, so an attempt that failed over it
 // would leave every card in the pool un-takeable forever, and a corrupt ConfigMap
 // key is a static condition a fleet sits in every night until a human fixes it.
-func TestEvictStillTakesACardBesideACorruptSpec(t *testing.T) {
-	dir := t.TempDir()
-	corruptSpec(t, dir, "gemma-4-26b-a4b")    // holds gpu 0, no readable figure
-	specCost(t, dir, "qwen3-6-35b-iq4xs", "") // holds gpu 1, declares nothing
-
+func TestEvictStillTakesACardBesideACorruptCostLabel(t *testing.T) {
 	fleet := &fakeFleet{
 		scans:     []string{pods(loaded("gemma-4-26b-a4b", "0"), loaded("qwen3-6-35b-iq4xs", "1"))},
 		remaining: []int{1, 0},
+		deploymentLabels: map[string]string{
+			// A figure that is not a number: unmeasured, taken last, not refused.
+			"gemma-4-26b-a4b":    `{"ai.mestruble.dev/reclaim-cost-seconds":"soon"}`,
+			"qwen3-6-35b-iq4xs": `{"ai.mestruble.dev/reclaim-cost-seconds":"230"}`,
+		},
 	}
 	srv := httptest.NewServer(fleet)
 	defer srv.Close()
 
-	err := newEvictor(testClient(srv), evictOptions(dir, "default", time.Minute)).
+	err := newEvictor(testClient(srv), evictOptions("default", time.Minute)).
 		try(context.Background(), time.Minute)
 	if err != nil {
 		t.Fatalf("evict: %v", err)
@@ -1800,17 +1722,17 @@ func TestEvictStillTakesACardBesideACorruptSpec(t *testing.T) {
 // says who has to decide about the card - a human, not a claim that waited two
 // minutes and is not feeling forceful.
 func TestEvictDoesNotTakeACardOnTheDeleteResponseAlone(t *testing.T) {
-	dir := t.TempDir()
-	specCost(t, dir, "gemma-4-26b-a4b", `"110"`)
-
 	fleet := &fakeFleet{
 		scans:     []string{pods(loaded("gemma-4-26b-a4b", "0"))},
 		remaining: []int{1}, // still there on every look
+		deploymentLabels: map[string]string{
+			"gemma-4-26b-a4b": `{"ai.mestruble.dev/reclaim-cost-seconds":"110"}`,
+		},
 	}
 	srv := httptest.NewServer(fleet)
 	defer srv.Close()
 
-	err := newEvictor(testClient(srv), evictOptions(dir, "default", 20*time.Millisecond)).
+	err := newEvictor(testClient(srv), evictOptions("default", 20*time.Millisecond)).
 		try(context.Background(), time.Minute)
 	if err == nil {
 		t.Fatal("the eviction reported a card the pod never gave up")
@@ -1829,14 +1751,12 @@ func TestEvictDoesNotTakeACardOnTheDeleteResponseAlone(t *testing.T) {
 // no closer, and evicting several to race for the pool is not one decision, so the
 // attempt is not made and nothing is written.
 func TestEvictNeverUnloadsAFleetForASpanningClaim(t *testing.T) {
-	dir := t.TempDir()
-	specCost(t, dir, "gemma-4-26b-a4b", `"110"`)
 
 	fleet := &fakeFleet{scans: []string{pods(loaded("gemma-4-26b-a4b", "0"))}, remaining: []int{1}}
 	srv := httptest.NewServer(fleet)
 	defer srv.Close()
 
-	o := evictOptions(dir, "default", time.Minute)
+	o := evictOptions("default", time.Minute)
 	o.gpuMode = "all"
 	err := newEvictor(testClient(srv), o).try(context.Background(), time.Minute)
 	if err == nil || !strings.Contains(err.Error(), "spanning") {

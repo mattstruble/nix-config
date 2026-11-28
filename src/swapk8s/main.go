@@ -43,7 +43,6 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
-	"path/filepath"
 	"slices"
 	"sort"
 	"strconv"
@@ -222,6 +221,7 @@ type deployment struct {
 	ReadyRep   int
 	Selector   map[string]string
 	Generation int64
+	Labels     map[string]string
 }
 
 func (c *client) getDeployment(ns, name string) (*deployment, error) {
@@ -234,8 +234,9 @@ func (c *client) getDeployment(ns, name string) (*deployment, error) {
 	}
 	var obj struct {
 		Metadata struct {
-			Name       string `json:"name"`
-			Generation int64  `json:"generation"`
+			Name       string            `json:"name"`
+			Generation int64             `json:"generation"`
+			Labels     map[string]string `json:"labels"`
 		} `json:"metadata"`
 		Spec struct {
 			Replicas *int `json:"replicas"`
@@ -251,7 +252,7 @@ func (c *client) getDeployment(ns, name string) (*deployment, error) {
 		return nil, fmt.Errorf("decode deployment %s: %w", name, err)
 	}
 	d := &deployment{Name: obj.Metadata.Name, Selector: obj.Spec.Selector.MatchLabels,
-		ReadyRep: obj.Status.ReadyReplicas, Generation: obj.Metadata.Generation}
+		ReadyRep: obj.Status.ReadyReplicas, Generation: obj.Metadata.Generation, Labels: obj.Metadata.Labels}
 	if obj.Spec.Replicas != nil {
 		d.Replicas = *obj.Spec.Replicas
 	} else {
@@ -1669,83 +1670,6 @@ func cmdStop(kc *client, o *options) error {
 
 // ---- the evicting claim --------------------------------------------------
 
-// reclaimCosts reads what each model this head-end can render costs to bring back,
-// off the chart-rendered specs - the same files a wake reads its card pool from, and
-// the only place the cost exists once the shim consumes the label.
-//
-// A model whose cost is not a measured figure is in the map carrying the reason it
-// is not, never absent and never zero: an unmeasured card must never rank among the
-// measured ones, and a model with no figure for a reason nobody recorded is a model
-// no operator can explain.
-//
-// Only the directory itself failing is an error. A spec this shim cannot read is one
-// model that ranks last and nothing more, and a broken file is a static condition:
-// an attempt that failed over it would rank every card in the fleet as unmeasured
-// for as long as the file stays broken, which is a ranking switched off by one
-// half-written ConfigMap key.
-func reclaimCosts(dir string) (map[string]reclaimCost, error) {
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return nil, fmt.Errorf("read spec dir %s: %w", dir, err)
-	}
-	costs := map[string]reclaimCost{}
-	for _, e := range entries {
-		name, isSpec := strings.CutSuffix(e.Name(), ".json")
-		if e.IsDir() || !isSpec {
-			continue
-		}
-		seconds, reason := readSpecCost(dir, e.Name())
-		if reason != "" {
-			log.Printf("evict: %s; %s has no measured cost and ranks behind every card that does", reason, name)
-			costs[name] = reclaimCost{reason: reason}
-			continue
-		}
-		costs[name] = reclaimCost{seconds: seconds}
-	}
-	return costs, nil
-}
-
-// readSpecCost is what one spec file says about its model's reclaim cost: the
-// figure, or the reason there is none. Every reason names the file, because the
-// file is what an operator has to go and look at, beside the model whose card will
-// rank last when a job is choosing one to take.
-func readSpecCost(dir, file string) (int64, string) {
-	raw, err := os.ReadFile(filepath.Join(dir, file))
-	if err != nil {
-		return 0, fmt.Sprintf("spec %s cannot be read: %v", file, err)
-	}
-	var spec struct {
-		Metadata struct {
-			Labels map[string]json.RawMessage `json:"labels"`
-		} `json:"metadata"`
-	}
-	if err := json.Unmarshal(raw, &spec); err != nil {
-		return 0, fmt.Sprintf("spec %s is not valid JSON: %v", file, err)
-	}
-	rawCost, declared := spec.Metadata.Labels[reclaimCostLabel]
-	if !declared {
-		return 0, fmt.Sprintf("spec %s declares no reclaim cost", file)
-	}
-	seconds, err := parseReclaimCost(rawCost)
-	if err != nil {
-		// A figure that is not a positive number of seconds is not a cost, and
-		// reading one as a cost would rank this card against measured ones.
-		return 0, fmt.Sprintf("spec %s: %v", file, err)
-	}
-	return seconds, ""
-}
-
-// parseReclaimCost reads the label's value: a label value is a string, which is
-// what the chart quotes it into, and a bare number is what a spec written by hand
-// carries.
-func parseReclaimCost(raw json.RawMessage) (int64, error) {
-	seconds, err := strconv.ParseInt(strings.Trim(string(raw), `"`), 10, 64)
-	if err != nil || seconds <= 0 {
-		return 0, fmt.Errorf("%s is not a positive whole number of seconds", raw)
-	}
-	return seconds, nil
-}
-
 // evictor is a waiting job's one attempt to have a card handed over: read what each
 // card of the pool costs to bring back, take the cheapest one a model holds, and
 // wait for the pod that holds it to actually go away.
@@ -1807,13 +1731,31 @@ func (e *evictor) try(ctx context.Context, budget time.Duration) error {
 		return errors.New("not attempted: the card-wait budget has no time left to wait an eviction out")
 	}
 
-	costs, err := reclaimCosts(e.specDir)
-	if err != nil {
-		return err
-	}
+	// The costs are read where they live now: the reclaim-cost label on the
+	// Deployment the eviction is about to delete. The spec directory they used
+	// to come from is a mount the head-end pod has and a claiming pod does not,
+	// and an eviction that cannot read its ranking must not spend the night
+	// waiting for a card that two models hold - measured 2026-11-28, when the
+	// nightly's one eviction attempt died on `open /etc/swapk8s/specs: no such
+	// file or directory` and the claim waited out its budget instead of taking
+	// either card.
 	pl, err := e.kc.cardOwnerPods(e.namespaces)
 	if err != nil {
 		return fmt.Errorf("scan card owners: %w", err)
+	}
+	costs := map[string]reclaimCost{}
+	for _, holder := range evictHolders(pl) {
+		if holder.model == "" {
+			continue
+		}
+		if _, stated := costs[holder.model]; stated {
+			continue
+		}
+		cost, reason := e.deploymentCost(holder)
+		if reason != "" {
+			log.Printf("evict: %s; %s has no measured cost and ranks behind every card that does", reason, holder.model)
+		}
+		costs[holder.model] = cost
 	}
 	plan := planEvict(e.pool, evictHolders(pl), costs)
 	if !plan.ok {
@@ -1834,6 +1776,35 @@ func (e *evictor) try(ctx context.Context, budget time.Duration) error {
 	// their owner's garbage collector takes them, and one still terminating still
 	// holds its VRAM. The card is back when the pod is gone.
 	return e.awaitRelease(ctx, target, within)
+}
+
+// deploymentCost reads one model's reclaim cost off the label the ai chart
+// renders onto its Deployment. The label is the same channel the spec file
+// carried, from the same values, so the ranking keeps its one source; the
+// deployment is the copy the eviction act actually touches, so its label is the
+// one that cannot disagree with what is being deleted. A deployment that is not
+// there means the pods the scan saw are already terminating and the card is
+// freeing itself: no cost, and the card ranks behind every live one.
+func (e *evictor) deploymentCost(holder cardHolder) (reclaimCost, string) {
+	d, err := e.kc.getDeployment(holder.namespace, holder.model)
+	if err != nil {
+		return reclaimCost{}, fmt.Sprintf("deployment could not be read: %v", err)
+	}
+	if d == nil {
+		return reclaimCost{}, "the deployment is already gone; its pods are terminating"
+	}
+	stated, ok := d.Labels[reclaimCostLabel]
+	if !ok {
+		return reclaimCost{}, "no reclaim-cost label on the deployment"
+	}
+	seconds, parseErr := strconv.ParseInt(stated, 10, 64)
+	if parseErr != nil {
+		return reclaimCost{}, fmt.Sprintf("reclaim-cost label %q is not a number", stated)
+	}
+	if seconds < 0 {
+		return reclaimCost{}, fmt.Sprintf("reclaim-cost label %d is not a cost", seconds)
+	}
+	return reclaimCost{seconds: seconds}, ""
 }
 
 // awaitRelease waits out the deletion the eviction started: the evicted model's pods

@@ -20,7 +20,7 @@ performs are asserted against the list at render time: dropping either fails the
 build and names the call it breaks.
 */ -}}
 {{- $rules := list
-      (dict "apiGroups" (list "apps") "resources" (list "deployments") "verbs" (list "delete") "resourceNames" $models)
+      (dict "apiGroups" (list "apps") "resources" (list "deployments") "verbs" (list "get" "delete") "resourceNames" $models)
       (dict "apiGroups" (list "") "resources" (list "pods") "verbs" (list "get" "list"))
 -}}
 {{- $granted := dict -}}
@@ -31,6 +31,9 @@ build and names the call it breaks.
 {{- end -}}
 {{- if not (has "delete" (default (list) (index $granted "deployments"))) -}}
 {{- fail "the card claimer's Role does not grant \"delete\" on deployments. `swapk8s claim` takes a busy card by deleting the Deployment of the model that holds it (deleteDeployment in src/swapk8s/main.go) — deleting rather than scaling to zero because the head-end's serve process is what tells the router a model is gone, and a Deployment at zero with its serve process still looping is a model the router still believes it has, whose next request is a proxy to a dead pod and never a wake (cmdStop). Without the verb the nightly names a card, is refused, and waits out --card-wait. The names it may delete are the on-demand models, from ai.onDemandModels: the same filter the roster and the spec ConfigMap are generated from, so a model cannot be woken by a request without also being evictable by a claim, or the reverse." -}}
+{{- end -}}
+{{- if not (has "get" (default (list) (index $granted "deployments"))) -}}
+{{- fail "the card claimer's Role does not grant \"get\" on deployments. The eviction reads the reclaim-cost label off the Deployment it is about to delete (evictor.deploymentCost in src/swapk8s/main.go) — the label is what ranks which card to take, and the deployment is the copy the eviction act touches, so its label is the one that cannot disagree with what is being deleted. Reading it from a spec file instead was measured broken 2026-11-28: the spec directory is a mount the head-end pod has and a claiming pod does not, the read failed, and the claim waited out its budget while two models held both cards. Without the verb the eviction still runs, but every card ranks unmeasured." -}}
 {{- end -}}
 {{- $podVerbs := default (list) (index $granted "pods") -}}
 {{- range $verb := list "get" "list" -}}
