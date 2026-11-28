@@ -274,6 +274,33 @@ def test_a_variant_that_cannot_be_saved_takes_the_other_ones_scratch_with_it(tmp
     assert list(tmp_path.glob("*.tmp")) == []
 
 
+def test_a_rename_that_fails_after_another_succeeded_rolls_the_day_back(tmp_path, monkeypatch):
+    """The renames roll back as a group, not as independent steps.
+
+    The save-first-rename-second pattern only holds if a rename failing after an
+    earlier one succeeded is undone: otherwise the banner sits at its final name,
+    the thumbnail is missing, and the manifest names both - the half-published
+    day, reached through the rename loop rather than through a save.
+    """
+    replace_calls: list[str] = []
+    real_replace = publish_stage.replace
+
+    def replacing_second_fails(src, dst):
+        replace_calls.append(dst.name)
+        if len(replace_calls) == 2:
+            raise OSError(28, "No space left on device")
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(publish_stage, "replace", replacing_second_fails)
+
+    with pytest.raises(OSError, match="No space left"):
+        publish(tmp_path)
+
+    assert not (tmp_path / banner_name(DAY)).exists()
+    assert not (tmp_path / thumb_name(DAY)).exists()
+    assert list(tmp_path.glob("*.tmp")) == []
+
+
 def test_a_viewer_can_date_the_panel_that_is_hanging_up(tmp_path: Path):
     publish(tmp_path, published_at=MORNING)
 

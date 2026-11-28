@@ -318,6 +318,7 @@ def _write_variants(source: Path, day: date, output_dir: Path) -> None:
     scratch name where the next run will find it.
     """
     staged: list[tuple[str, Path]] = []
+    renamed: list[tuple[str, Path]] = []
     published = False
     try:
         with Image.open(source) as panel:
@@ -326,8 +327,21 @@ def _write_variants(source: Path, day: date, output_dir: Path) -> None:
                 scratch = output_dir / f"{name}.tmp"
                 image.save(scratch, format="PNG")
                 staged.append((name, scratch))
-        for name, scratch in staged:
-            replace(scratch, output_dir / name)
+        try:
+            for name, scratch in staged:
+                replace(scratch, output_dir / name)
+                renamed.append((name, scratch))
+        except BaseException:
+            # A replace that failed with an earlier one already done has half
+            # published the day: the banner at its final name, the thumbnail
+            # missing, and the manifest naming both. Roll the finished renames
+            # back to their scratch names so the finally block below removes
+            # every scratch and the directory holds no variant at all - a day
+            # with no banner is what the next run corrects, not one with half
+            # of one.
+            for name, scratch in renamed:
+                replace(output_dir / name, scratch)
+            raise
         published = True
     finally:
         if not published:

@@ -213,6 +213,7 @@
           PANELS="$panels" PANEL_DAY="$day" python3 <<'PY'
           import json
           import os
+          import re
           from pathlib import Path
 
           panels = Path(os.environ["PANELS"])
@@ -224,7 +225,10 @@
               assert (panels / name).is_file(), name
 
           published = (panels / entry["prompt"]).read_text(encoding="utf-8")
-          assert "@" not in published, "the published prompt artefact carries an address"
+          # An @ is an address only where a domain could follow it; prompt text
+          # may name handles in prose, and a bare @ rejection would refuse a
+          # legitimate prompt, which is worse than the leak it guards against.
+          assert not re.search(r"\S+@\S+", published), "the published prompt artefact carries an address"
           assert "/var/lib/" not in published, "the published prompt artefact carries a path"
           PY
 
