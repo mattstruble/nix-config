@@ -28,16 +28,22 @@ for day in "$@"; do
   fi
   # The day override is set on the CLAIMER pod (the run script exports it to the
   # render pod beside the card), which is why the patch lands before creation.
-  K create job --from=cronjob/forecats-nightly "$name" -n forecats --dry-run=client -o yaml \
-    | python3 -c '
+  # -o json, not yaml: the file is read back with json.load, and a YAML document
+  # parses to nothing from char 0. Via a file, not a pipe, because sudo and a
+  # piped stdin disagree on who owns it.
+  tmp=$(mktemp)
+  K create job --from=cronjob/forecats-nightly "$name" -n forecats --dry-run=client -o json > "$tmp"
+  python3 - "$day" "$tmp" <<'PYEOF'
 import json, sys
-job = json.load(sys.stdin)
+day, path = sys.argv[1], sys.argv[2]
+job = json.load(open(path))
 env = job["spec"]["template"]["spec"]["containers"][0].setdefault("env", [])
 env[:] = [e for e in env if e.get("name") != "FORECATS_FOR_DAY"]
-env.append({"name": "FORECATS_FOR_DAY", "value": sys.argv[1]})
-json.dump(job, sys.stdout)
-' "$day" \
-    | K apply -f - >/dev/null
+env.append({"name": "FORECATS_FOR_DAY", "value": day})
+json.dump(job, open(path, "w"))
+PYEOF
+  K apply -f "$tmp" >/dev/null
+  rm -f "$tmp"
   # Wait for the whole chain: claim -> render -> publish. The job's own
   # backoffLimit bounds a day that keeps failing; the alerting reads the same
   # failure the operator would.
