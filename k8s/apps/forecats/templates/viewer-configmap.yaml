@@ -426,6 +426,19 @@ data:
         showAge(prompt.record ? prompt.record.rendered_at : null, false);
       } else {
         renderGallery(days);
+        // The prompt belongs on the homepage too: the picture the wall shows is
+        // the one the viewer is looking at, and the day page for it is one click
+        // away but should not be the only place its making is visible.
+        if (entry.prompt) {
+          const prompt = await read(entry.prompt);
+          renderPrompt(prompt.record, !prompt.answered
+            ? 'the gallery names ' + entry.prompt + ' and it did not answer'
+            : !prompt.record
+              ? 'the gallery names ' + entry.prompt + ' and it is not something this page can read'
+              : null);
+        } else {
+          renderPrompt(null, 'the newest panel was published without a prompt artefact, so nothing here says what made it');
+        }
         showAge(freshness ? freshness.rendered_at : null, true);
       }
     }
