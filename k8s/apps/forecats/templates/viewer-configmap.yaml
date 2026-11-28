@@ -461,7 +461,11 @@ data:
       const listed = index.record && Array.isArray(index.record.days) ? index.record.days : [];
       const days = listed.filter((entry) => entry && typeof entry.day === 'string');
       if (isDayPage) {
-        const entry = days.find((candidate) => candidate.date === day);
+        // The manifest's day records are keyed "day" (publish_stage's
+        // _day_record); a lookup on any other key finds nothing, and every day
+        // page reads as a date that was never published - which is how this
+        // line failed in front of the first viewer of it.
+        const entry = days.find((candidate) => candidate.day === day);
         return entry ? show(entry, days, null) : notPublished();
       }
       if (!days.length) {
@@ -483,7 +487,7 @@ data:
       if (freshness.answered && !freshness.record) {
         note(document.getElementById('panel'), '/' + freshnessName + ' is published and is not something this page can read');
       }
-      const named = freshness.record ? days.find((candidate) => candidate.date === freshness.record.for_day) : null;
+      const named = freshness.record ? days.find((candidate) => candidate.day === freshness.record.for_day) : null;
       return show(named || days[0], days, freshness.record);
     }
 
