@@ -1,0 +1,13 @@
+{
+  "manifest": "gallery.json",
+  "freshness": "freshness.json",
+  "variants": {
+    "full": "panel-{date}.png",
+    "banner": "panel-{date}-banner.png",
+    "thumb": "panel-{date}-thumb.png"
+  },
+  "prompt": "panel-{date}.prompt.json",
+  "private": [
+    "panel-{date}.provenance.json"
+  ]
+}

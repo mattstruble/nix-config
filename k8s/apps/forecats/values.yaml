@@ -181,11 +181,20 @@ nightly:
   drawForecastPlate: false
 
 viewer:
-  # The only thing that reads the published directory in this chart. It serves
-  # four paths and nothing else — see templates/viewer-configmap.yaml for why it
-  # is not `python -m http.server` over the panels volume.
+  # The only thing that reads the published directory in this chart. It answers the
+  # published names and nothing else — see templates/viewer-configmap.yaml for why
+  # it is not `python -m http.server` over the panels volume.
   image: python:3.12-alpine@sha256:c5ba3deef00c7758561a0f03c26f44f10589263d40e732b8748e0d1f38f6dd89
   port: 8080
+  # `published` is deliberately absent, like every other value here that another
+  # mechanism reads: nix renders it from
+  # src/forecats-pipeline/forecats_pipeline/published-artefacts.json, the file the
+  # publish step names its own writes with. The whitelist the server matches a
+  # request against and the two names the page fetches are both rendered out of it
+  # (templates/_helpers.tpl), so a name written here as well would be a second
+  # answer to "what is the gallery called" — and the page would fetch a path
+  # nothing writes, which is a broken picture that no test on either side of the
+  # boundary can see.
   resources:
     requests:
       cpu: 10m

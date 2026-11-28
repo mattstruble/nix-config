@@ -33,6 +33,14 @@ a blank page.
 {{- $ns := include "forecats.namespace" . -}}
 {{- $nightlyName := include "forecats.nightlyName" . -}}
 {{- $panels := (fromYaml (include "forecats.volumeFor" (dict "ctx" $ "name" "panels"))) -}}
+{{- /*
+The panel's name, split around the date so the shell can put today into it. The
+run's test for "this day is already published" is the publish step's test, and a
+copy of the file name here would be a dedup that stops matching the file: the run
+would claim a card, draw the day again and overwrite the only record of it.
+*/ -}}
+{{- $full := required "viewer.published.variants.full: the nightly tests for a panel that is already published by name, and the publish step is what names it" (fromYaml (include "forecats.publishedArtefacts" .)).variants.full -}}
+{{- $panelParts := splitList "{date}" $full -}}
 {{- $window := int (required "claim.podClaimWindowSeconds: nix renders this from headEnd.podClaimWindowSeconds in the ai chart, because the router's wake deadline is summed from the same number" .Values.claim.podClaimWindowSeconds) -}}
 {{- $cardWait := int (required "nightly.claimer.cardWaitSeconds: the card budget one attempt gets" .Values.nightly.claimer.cardWaitSeconds) -}}
 {{- $attempt := int (include "forecats.nightlyAttemptSeconds" .) -}}
@@ -99,8 +107,13 @@ data:
       # wrong: the render pod then finds the panel and exits 0, the same answer one
       # attempt later.
       day=$(TZ="$FORECATS_PLACE_TIMEZONE" date +%Y-%m-%d)
-      if [ -e "$panels_dir/panel-$day.png" ]; then
-        echo "forecats-nightly: panel-$day.png is already published; no card claimed"
+      panel_name="{{ first $panelParts }}${day}{{ last $panelParts }}"
+      # A regular file, not merely a name: the publish step writes the panel as one,
+      # and a directory or a socket that someone left with the panel's name would
+      # otherwise answer "already published", skip the night, and leave no failed
+      # Job for the alert to read.
+      if [ -f "$panels_dir/$panel_name" ]; then
+        echo "forecats-nightly: $panel_name is already published; no card claimed"
         exit 0
       fi
 
@@ -164,7 +177,7 @@ data:
       fi
 
       if [ "$verdict" = rendered ]; then
-        echo "forecats-nightly: attempt $attempt published panel-$day.png"
+        echo "forecats-nightly: attempt $attempt published $panel_name"
         exit 0
       fi
       echo "forecats-nightly: attempt $attempt ended $verdict" >&2

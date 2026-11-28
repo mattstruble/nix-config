@@ -562,6 +562,16 @@ in
       forecatsScheduleTimeZone = lib.throwIf (config.time.timeZone == null)
         ''forecats: the nightly CronJob's spec.timeZone is read from time.timeZone and this host leaves it null, which means UTC and a schedule read in a zone nobody chose. Set time.timeZone (nix/system/nix-settings.nix sets it for every host) rather than letting the nightly be scheduled by the control plane's clock.''
         config.time.timeZone;
+      # The names the publish step writes its artefacts under, read out of the file
+      # the publish step reads them from. The viewer serves that list and the page
+      # fetches out of it, so the two ends of the request cannot be moved apart by a
+      # change to one of them: renaming a published artefact in Python renames the
+      # path the chart renders, and a chart that wanted a name the file does not
+      # carry fails its own `required`. Read as JSON rather than matched out of the
+      # Python source, because the file is the data and the module that imports it
+      # is not.
+      forecatsPublishedArtefacts = builtins.fromJSON (builtins.readFile
+        ../../src/forecats-pipeline/forecats_pipeline/published-artefacts.json);
       forecatsValuesText = ''
         # The namespace the apply pass creates and applies into. A template that
         # names a namespace inside a string it emits reads this: the render runs
@@ -667,6 +677,13 @@ in
           name: ${forecatsSecret.name}
           keys:
         ${lib.concatMapStringsSep "\n" (key: "    - ${forecatsEnvName key}") forecatsSecret.keys}
+        # The published names, as JSON — which is YAML, on one line, with no second
+        # copy of a name for a change to one of them to forget. This is the viewer's
+        # whole whitelist and the page's whole vocabulary of fetches; the chart
+        # `required`s it and refuses the shapes a published name must not have
+        # (templates/_helpers.tpl), including the private ones it must not serve.
+        viewer:
+          published: ${builtins.toJSON forecatsPublishedArtefacts}
         # Where a viewer reports a panel they believe breaks the MiniMax H3 grant or
         # its acceptable use policy. The pipeline emits the same value into every
         # panel's provenance sidecar, so the address reaches anyone who can see the

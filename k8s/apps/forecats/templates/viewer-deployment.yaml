@@ -37,7 +37,11 @@ spec:
             # the same path the render writes, because the declaration says so once.
             - name: FORECATS_PANELS_DIRECTORY
               value: {{ $panels.mountPath | quote }}
-            - name: FORECATS_INDEX_FILE
+            # The whole site: today's panel with its variants and the gallery, and
+            # one day's panel with its prompt when the path is a date. Named for
+            # what it is served as rather than for the directory it would have
+            # indexed — the gallery manifest is the index, and this is a page.
+            - name: FORECATS_PAGE_FILE
               value: /viewer/index.html
             - name: FORECATS_VIEWER_PORT
               value: {{ .Values.viewer.port | quote }}

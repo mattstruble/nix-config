@@ -1,5 +1,6 @@
 {{- $panels := (fromYaml (include "forecats.volumeFor" (dict "ctx" $ "name" "panels"))) -}}
 {{- $report := include "forecats.reportAddress" . -}}
+{{- $published := (fromYaml (include "forecats.publishedArtefacts" .)) -}}
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -8,7 +9,7 @@ metadata:
     {{- include "forecats.labels" . | nindent 4 }}
     app.kubernetes.io/component: viewer
 data:
-  # Four paths, and nothing else.
+  # The published names, and nothing else.
   #
   # `python -m http.server` over the panels volume is the obvious version of this
   # and it is refused: the published directory holds a provenance sidecar per
@@ -17,23 +18,50 @@ data:
   # the reference-photo paths the picture was drawn from. The grant's safeguard is
   # that the panel reaches the household; a directory listing publishes the
   # household.
+  #
+  # The gallery manifest is what replaces the listing: the publish step writes the
+  # index of every retained day beside the panels, and a page follows names out of
+  # it. That is also why the whitelist can stay a whitelist — the site grows by a
+  # file the pipeline names, not by a path this server guesses at.
   server.py: |
     import os
     import re
     import sys
+    import threading
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
     from pathlib import Path
 
     panels = Path(os.environ["FORECATS_PANELS_DIRECTORY"])
-    index = Path(os.environ["FORECATS_INDEX_FILE"])
-    # The name the pipeline publishes, and nothing that looks like a path.
-    panel_name = re.compile(r"\A/panel-[0-9]{4}-[0-9]{2}-[0-9]{2}\.png\Z")
+    page = Path(os.environ["FORECATS_PAGE_FILE"])
+    # Every name below is the publish step's, rendered in from the file it writes
+    # its artefacts under (`viewer.published`, from published-artefacts.json in the
+    # pipeline). Nothing here holds a name of its own, so a rename on the write side
+    # renames the path the page is told to ask for, and a path the publish step does
+    # not write is not served — which is the same sentence as "the provenance
+    # sidecar is not served", and is not a list anyone has to keep that true.
+    published = [
+      {{- range $artefact := $published.served }}
+      (re.compile(r"{{ $artefact.pattern }}"), "{{ $artefact.contentType }}"),
+      {{- end }}
+    ]
+    # A day page. The date is the whole path and the page reads it back out of
+    # `location.pathname`, so one file answers every date there has been a panel
+    # for, and a date the gallery does not name can be answered honestly by a page
+    # that fetched the gallery rather than by a server that had to have known.
+    day_path = re.compile(r"\A/[0-9]{4}-[0-9]{2}-[0-9]{2}/?\Z")
     # A name the pipeline never publishes, resolved inside the published directory
-    # by the readiness probe. The pipeline writes panel-<date>.png, its provenance
-    # sidecar and freshness.json, and none of those begins with a dot.
+    # by the readiness probe. The pipeline writes panels, its records, the gallery
+    # manifest and — under a dot-prefixed name this server cannot be made to answer
+    # — the staged file it renames from; none of those begins with this one.
     probe_name = ".readiness-probe"
 
     class Handler(BaseHTTPRequestHandler):
+        # A client that connects and then stops talking would otherwise hold one of
+        # the pool's slots, and one thread, until the pod is replaced. The protocol
+        # is HTTP/1.0, so a served response closes the connection and this only ever
+        # bounds a client that is not sending anything.
+        timeout = 15
+
         def _send(self, status, body, content_type):
             self.send_response(status)
             self.send_header("content-type", content_type)
@@ -45,14 +73,18 @@ data:
         def do_GET(self):
             path = self.path.split("?", 1)[0]
             if path in ("/", "/index.html"):
-                return self._send(200, index.read_bytes(), "text/html; charset=utf-8")
+                return self._send(200, page.read_bytes(), "text/html; charset=utf-8")
             if path == "/healthz":
                 return self._health()
-            if path == "/freshness.json":
-                return self._file(panels / "freshness.json", "application/json")
-            if panel_name.match(path):
-                return self._file(panels / path.lstrip("/"), "image/png")
-            self.send_error(404, "this server answers four paths")
+            for pattern, content_type in published:
+                # The pattern is anchored at both ends and admits one name with no
+                # separator in it, so the path below is a name in the published
+                # directory and cannot be anything else.
+                if pattern.match(path):
+                    return self._file(panels / path.lstrip("/"), content_type)
+            if day_path.match(path):
+                return self._send(200, page.read_bytes(), "text/html; charset=utf-8")
+            self.send_error(404, "this server answers the published names and nothing else")
 
         def _health(self):
             # The volume, not the page. The page is mounted from a ConfigMap, so it
@@ -94,10 +126,51 @@ data:
         def log_message(self, fmt, *args):
             sys.stderr.write("%s - - %s\n" % (self.address_string(), fmt % args))
 
-    ThreadingHTTPServer(("0.0.0.0", int(os.environ["FORECATS_VIEWER_PORT"])), Handler).serve_forever()
-  # The viewer's whole page: the panel, how old it is, and the two things the
-  # MiniMax H3 grant obliges the household to put where a viewer can read them —
-  # what made the picture and who to tell if it should not exist.
+    class Site(ThreadingHTTPServer):
+        """The published names, answered by at most `workers` threads at a time.
+
+        `ThreadingHTTPServer` on its own starts a thread for every connection and
+        bounds nothing: a client that opens sockets and holds them open grows the
+        pod past the memory limit it is given, and the thread limit is the one thing
+        a household server cannot recover from by itself. A request that arrives
+        when every slot is taken waits in the listen queue instead of gaining a
+        thread, which is the backpressure a server of one PNG and two small JSON
+        files can afford.
+
+        The pool is above the six connections a browser opens for one page of
+        pictures, so a page load is never queued behind its own images.
+        """
+
+        workers = 8
+
+        def __init__(self, *args):
+            super().__init__(*args)
+            self.slots = threading.BoundedSemaphore(self.workers)
+
+        def process_request(self, request, client_address):
+            # Taken here, before the thread exists, so the count bounds the threads
+            # and not merely the work they do.
+            self.slots.acquire()
+            try:
+                super().process_request(request, client_address)
+            except Exception:
+                # No thread was started, so nothing else will hand the slot back.
+                self.slots.release()
+                raise
+
+        def process_request_thread(self, request, client_address):
+            try:
+                super().process_request_thread(request, client_address)
+            finally:
+                self.slots.release()
+
+    Site(("0.0.0.0", int(os.environ["FORECATS_VIEWER_PORT"])), Handler).serve_forever()
+  # The viewer's whole site: one file, which is today's panel with its variants and
+  # the gallery when the path is the homepage, and one day's panel with its prompt
+  # when the path is a date. The two views share the page because they share the
+  # obligation underneath them — the generator, the personal-use restriction and
+  # the address a report goes to are on every picture this shows, and a day page
+  # that left them off would put the grant's flow-down on the homepage only.
   #
   # The report address is rendered in, not fetched: it is the same value the
   # pipeline writes into every panel's provenance sidecar, and a page that showed
@@ -115,43 +188,300 @@ data:
       body { margin: 0; background: #111; color: #ddd; font: 14px/1.5 system-ui, sans-serif; }
       main { max-width: 100%; margin: 0 auto; padding: 1rem; }
       img { max-width: 100%; height: auto; display: block; background: #000; }
+      h1 { font-size: 1.05rem; font-weight: 600; }
+      h2 { font-size: .85rem; font-weight: 500; color: #888; margin: 1.5rem 0 .5rem; }
       .notice { display: flex; flex-wrap: wrap; gap: .25rem 1.5rem; font-size: .85rem; color: #aaa; }
       .stale { color: #e8a33d; }
+      .absent { color: #8a8a8a; font-size: .85rem; }
       a { color: #9ecbff; }
+      .variants { display: flex; flex-wrap: wrap; gap: 1rem; align-items: flex-start; margin-top: 1rem; }
+      .variants figure { margin: 0; }
+      .variants figcaption { font-size: .78rem; color: #888; }
+      .variants .banner { width: min(480px, 100%); }
+      .variants .thumb { width: 128px; }
+      .gallery { display: flex; flex-wrap: wrap; gap: .5rem; }
+      .gallery a { display: block; width: 96px; font-size: .7rem; color: #888; }
+      .gallery img { width: 96px; height: 96px; object-fit: cover; }
+      dl.prompt { display: grid; grid-template-columns: max-content 1fr; gap: .1rem .9rem; font-size: .9rem; max-width: 60rem; }
+      dl.prompt dt { color: #888; }
+      dl.prompt dd { margin: 0; overflow-wrap: anywhere; }
+      pre.caption { white-space: pre-wrap; font-size: .74rem; color: #9a9a9a; max-width: 60rem; }
     </style>
     </head>
     <body>
     <main>
-      <img id="panel" alt="Today's panel of the household cats">
+      <h1 id="day"></h1>
+      <div id="panel"></div>
+      <div id="variants" class="variants"></div>
+      <div id="prompt"></div>
       <p class="notice">
         <span id="age">checking whether this is today's panel…</span>
         <span>Drawn with {{ .Values.notice.generator }}, from the household's own weather and calendar feeds.</span>
         <span>{{ .Values.notice.personalUse }}</span>
         <span>Seen something here that should not exist? <a href="mailto:{{ $report }}">{{ $report }}</a> — the panel comes off the wall first.</span>
       </p>
+      <section id="gallery" hidden>
+        <h2>Every day this site holds</h2>
+        <div class="gallery" id="gallery-days"></div>
+      </section>
     </main>
     <script>
-    // The panel's name is published, not guessed: `freshness.json` is written by
-    // the same publish step as the picture and names it, which is also the only
-    // way a viewer learns the picture is old.
+    // Two names are asked for by hand: the gallery manifest and the freshness
+    // artefact. Both are rendered in from the file the publish step writes its
+    // artefacts under, and every other name this page uses is read out of the
+    // manifest — which is what lets a variant the publish step did not write be a
+    // sentence rather than a broken image, and what keeps this page from knowing a
+    // file name the pipeline is free to have renamed.
+    const manifestName = '{{ $published.manifest }}';
+    const freshnessName = '{{ $published.freshness }}';
     const staleAfterHours = {{ int .Values.notice.staleAfterHours }};
-    const age = document.getElementById('age');
-    const panel = document.getElementById('panel');
-    function show(record) {
-      panel.src = './' + record.panel;
-      const hours = (Date.now() - Date.parse(record.rendered_at)) / 3.6e6;
-      const ago = hours < 1 ? 'minutes ago' : 'hours ago';
-      const shown = Math.max(1, Math.round(hours < 1 ? hours * 60 : hours));
-      age.textContent = 'published ' + shown + ' ' + ago;
-      if (hours > staleAfterHours) {
+    // The variants a viewer expects to see beside the picture, in the order they
+    // are worth seeing. A name the manifest adds that is not in this list is still
+    // shown, after these; a name in this list the manifest does not carry is said
+    // to be absent.
+    const shownVariants = ['full', 'banner', 'thumb'];
+    const day = decodeURIComponent(location.pathname).replace(/^\/+|\/+$/g, '');
+    const isDayPage = /^\d{4}-\d{2}-\d{2}$/.test(day);
+
+    function element(tag, className, text) {
+      const node = document.createElement(tag);
+      if (className) node.className = className;
+      if (text !== undefined) node.textContent = text;
+      return node;
+    }
+
+    function note(target, text) {
+      target.append(element('p', 'absent', text));
+    }
+
+    // A published name answers in two ways this page has to tell apart: nothing
+    // came back, and something came back that is not the artefact. The second is a
+    // write that died halfway or a file someone edited, and calling it "nothing
+    // published yet" would send whoever reads it to look at the nightly for the
+    // wrong reason — so `answered` says whether the name spoke, and `record` says
+    // whether what it said was readable.
+    async function read(name) {
+      let response = null;
+      try {
+        response = await fetch('/' + name, { cache: 'no-store' });
+      } catch (unreachable) {
+        return { answered: false, record: null };
+      }
+      if (!response.ok) return { answered: false, record: null };
+      try {
+        return { answered: true, record: await response.json() };
+      } catch (malformed) {
+        return { answered: true, record: null };
+      }
+    }
+
+    function unreadable(name) {
+      document.getElementById('day').textContent = 'forecats';
+      const panel = document.getElementById('panel');
+      note(panel, 'the gallery at /' + name + ' is published and is not something this page can read');
+      note(panel, 'until it is written again this page has no index to follow, and this server lists nothing else');
+      const age = document.getElementById('age');
+      age.textContent = 'the published gallery could not be read';
+      age.className = 'stale';
+    }
+
+    function hoursSince(instant) {
+      const hours = (Date.now() - Date.parse(instant)) / 3.6e6;
+      return Number.isNaN(hours) ? null : hours;
+    }
+
+    function showAge(instant, isToday) {
+      const age = document.getElementById('age');
+      if (!instant) {
+        age.textContent = 'nothing published here says when this was drawn';
+        return;
+      }
+      const hours = hoursSince(instant);
+      if (hours === null) {
+        age.textContent = 'the published instant is not one this page can read';
+        return;
+      }
+      const units = hours < 1 ? Math.max(1, Math.round(hours * 60)) : Math.max(1, Math.round(hours));
+      const unit = hours < 1 ? 'minute' : 'hour';
+      age.textContent = 'published ' + units + ' ' + unit + (units === 1 ? '' : 's') + ' ago';
+      // "the nightly is not running" is a claim about today only: a day in the
+      // gallery is old by definition, and saying so on its own page would be the
+      // warning that fires every morning in the one place it cannot be true.
+      if (isToday && hours > staleAfterHours) {
         age.textContent = 'last published ' + Math.round(hours) + ' hours ago — the nightly is not running';
         age.className = 'stale';
       }
     }
-    fetch('./freshness.json', { cache: 'no-store' })
-      .then((response) => response.ok ? response.json() : Promise.reject(response.status))
-      .then(show)
-      .catch(() => { age.textContent = 'no panel published yet'; age.className = 'stale'; });
+
+    function image(name, label, className) {
+      const node = document.createElement('img');
+      node.src = '/' + name;
+      node.alt = label;
+      node.className = className;
+      // A name the gallery carries and the volume no longer holds is the state a
+      // hand leaves behind when it takes a panel off the wall: the manifest is
+      // rebuilt by the next nightly, and until then this is the honest answer —
+      // said in the place the broken picture would have been.
+      node.onerror = () => node.replaceWith(element('p', 'absent', name + ' is named by the gallery and did not arrive'));
+      return node;
+    }
+
+    function figure(name, label, className) {
+      const node = document.createElement('figure');
+      node.append(image(name, label, className));
+      node.append(element('figcaption', null, label));
+      return node;
+    }
+
+    function renderPanel(entry) {
+      const panel = document.getElementById('panel');
+      const variants = entry.variants || {};
+      const others = document.getElementById('variants');
+      // The names this page has a place for, then any the manifest carries that it
+      // does not know — a variant the publish step adds is served and shown, and
+      // the page is not where a new crop has to be announced.
+      const names = shownVariants.concat(Object.keys(variants).filter((key) => !shownVariants.includes(key)));
+      for (const name of names) {
+        const file = variants[name];
+        if (name === 'full') {
+          if (file) panel.append(figure(file, entry.day + ' — the panel', 'panel'));
+          else note(panel, 'the gallery names this day and it holds no full panel');
+          continue;
+        }
+        if (file) others.append(figure(file, entry.day + ' — ' + name, name));
+        else others.append(element('p', 'absent', 'no ' + name + ' published for this day'));
+      }
+    }
+
+    function renderGallery(days) {
+      if (!days.length) return;
+      const list = document.getElementById('gallery-days');
+      for (const entry of days) {
+        const link = element('a', null);
+        link.href = '/' + entry.day;
+        const variants = entry.variants || {};
+        // The thumbnail the manifest names, or the panel it names instead: both are
+        // names the publish step wrote, and neither is a guess at a file.
+        const name = variants.thumb || variants.full;
+        if (name) link.append(image(name, entry.day, 'day'));
+        link.append(element('span', null, entry.day));
+        list.append(link);
+      }
+      document.getElementById('gallery').hidden = false;
+    }
+
+    function renderPrompt(record, missing) {
+      const target = document.getElementById('prompt');
+      target.append(element('h2', null, 'How this panel was made'));
+      if (missing) {
+        note(target, missing);
+        return;
+      }
+      // The key names are the publish step's prompt record (publish_stage.py
+      // _prompt_record): prompt, seed, style, activity, weather_words, occasion.
+      // A key here that the artefact does not carry renders 'nothing published
+      // for this day' rather than an error, so a drift reads as an absence - but
+      // the names are the contract, and the contract file is what names them.
+      const list = document.createElement('dl');
+      list.className = 'prompt';
+      const fields = [
+        ['activity', record.activity],
+        ['weather', record.weather_words],
+        ['occasion', record.occasion],
+        ['seed', record.seed === undefined ? null : String(record.seed)],
+        ['style', record.style],
+      ];
+      for (const [label, value] of fields) {
+        list.append(element('dt', null, label));
+        list.append(element('dd', null, value || 'nothing published for this day'));
+      }
+      target.append(list);
+      if (record.prompt) {
+        const details = document.createElement('details');
+        details.append(element('summary', null, 'the prompt the picture was drawn from'));
+        details.append(element('pre', 'caption', record.prompt));
+        target.append(details);
+      }
+    }
+
+    async function show(entry, days, freshness) {
+      document.getElementById('day').textContent = isDayPage ? day : entry.day;
+      renderPanel(entry);
+      if (isDayPage) {
+        // The day's own instant is in its prompt artefact; the freshness artefact
+        // is only ever about the newest panel, and using it here would date an old
+        // day as though it had been redrawn today.
+        // A day published before the prompt artefact existed names none, and that
+        // is an answer rather than a failure — the archive holds panels older than
+        // this file, and their pages still show the picture.
+        const prompt = entry.prompt ? await read(entry.prompt) : { answered: false, record: null };
+        const missing = !entry.prompt
+          ? 'this day was published without a prompt artefact, so nothing here says what made it'
+          : !prompt.answered
+            ? 'the gallery names ' + entry.prompt + ' and it did not answer'
+            : !prompt.record
+              ? 'the gallery names ' + entry.prompt + ' and it is not something this page can read'
+              : null;
+        renderPrompt(prompt.record, missing);
+        showAge(prompt.record ? prompt.record.rendered_at : null, false);
+      } else {
+        renderGallery(days);
+        showAge(freshness ? freshness.rendered_at : null, true);
+      }
+    }
+
+    async function notPublished() {
+      document.getElementById('day').textContent = day;
+      const panel = document.getElementById('panel');
+      note(panel, 'the published gallery names no panel for ' + day + ', and this site has nothing to show for it');
+      note(panel,
+        'the gallery at /' + manifestName + ' is the index of what is here; a date it does not name was never published, and nothing about it is guessable from this server');
+      showAge(null, false);
+    }
+
+    async function start() {
+      const index = await read(manifestName);
+      if (index.answered && !index.record) return unreadable(manifestName);
+      // An artefact that parsed and is not the shape the publish step writes is the
+      // same empty gallery to a viewer as one that named no day, and neither is a
+      // reason to stop the page rendering.
+      const listed = index.record && Array.isArray(index.record.days) ? index.record.days : [];
+      const days = listed.filter((entry) => entry && typeof entry.day === 'string');
+      if (isDayPage) {
+        const entry = days.find((candidate) => candidate.date === day);
+        return entry ? show(entry, days, null) : notPublished();
+      }
+      if (!days.length) {
+        document.getElementById('day').textContent = 'forecats';
+        note(document.getElementById('panel'), 'no panel published yet');
+        const age = document.getElementById('age');
+        age.textContent = 'no panel published yet';
+        age.className = 'stale';
+        return;
+      }
+      // The freshness artefact names the panel the last successful nightly drew,
+      // which is the one that is today's; the manifest is newest first, so it is
+      // the fallback for a freshness artefact the publish step has not written yet.
+      const freshness = await read(freshnessName);
+      // An unreadable freshness artefact costs the age and nothing else: the
+      // manifest already named the newest day, and a page that hid today's panel
+      // because a timestamp was corrupt would be a worse report than the missing
+      // timestamp is.
+      if (freshness.answered && !freshness.record) {
+        note(document.getElementById('panel'), '/' + freshnessName + ' is published and is not something this page can read');
+      }
+      const named = freshness.record ? days.find((candidate) => candidate.date === freshness.record.for_day) : null;
+      return show(named || days[0], days, freshness.record);
+    }
+
+    // Nothing above is allowed to reach here: every artefact this page reads has an
+    // answer for the case where it is missing, unreadable or not the shape it was
+    // written in. If one of them is wrong about that, the wall shows the sentence
+    // rather than yesterday's page with no explanation.
+    start().catch(() => {
+      document.getElementById('age').textContent = 'this page could not be built from what is published';
+      document.getElementById('age').className = 'stale';
+    });
     </script>
     </body>
     </html>

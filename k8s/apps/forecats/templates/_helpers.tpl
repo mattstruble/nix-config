@@ -214,6 +214,109 @@ one value in this chart that an obligation, rather than a preference, put there.
 {{- end -}}
 
 {{- /*
+The published names the viewer answers, or a refusal.
+
+`viewer.published` is not this chart's to write. nix renders it from
+`src/forecats-pipeline/forecats_pipeline/published-artefacts.json`, the same file
+the publish step names its own writes with, and this helper renders both halves
+of the viewer out of it: the whitelist `server.py` matches a request against, and
+the two names `index.html` fetches before it knows a date. A path the page asks
+for that the publish step does not write is therefore not a bug this chart can
+introduce — it has no other source for a name — which is why there is no checker
+for the agreement and a great deal of refusal here.
+
+What is refused is what a name could otherwise be: a path (`../`, a slash), a
+staging name (the publish step writes under a dot-prefixed sibling and renames,
+so serving one would publish a half-written artefact), a variant with no date in
+it (one file the next day overwrote), a fixed name with a date in it (the page
+fetches it before it knows a date), two artefacts answering one path, or a
+private name that walked into the served list. The last of those is the boundary
+the tailnet-only decision rests on: the provenance sidecar carries the reference
+photo paths, the weight paths and the report address, and it is served to nobody.
+*/ -}}
+{{- define "forecats.publishedArtefacts" -}}
+{{- $published := required "viewer.published: set by services.k3s.appChartValues.forecats in nix/services/k3s.nix, which reads src/forecats-pipeline/forecats_pipeline/published-artefacts.json — the names the publish step writes and the names the page fetches are that one file, and a copy of it here is the drift this excludes" .Values.viewer.published -}}
+{{- $items := list
+      (dict "what" "viewer.published.manifest" "name" $published.manifest "dated" false)
+      (dict "what" "viewer.published.freshness" "name" $published.freshness "dated" false)
+      (dict "what" "viewer.published.prompt" "name" $published.prompt "dated" true) -}}
+{{- range $variant, $name := (required "viewer.published.variants: the public variant names and the files each is written under, keyed by the name a page shows beside the picture; a variant added there is served, linked and rendered by this chart without an edit to it" $published.variants) -}}
+{{- $items = append $items (dict "what" (printf "viewer.published.variants.%s" $variant) "name" $name "dated" true) -}}
+{{- end -}}
+{{- $served := list -}}
+{{- $seen := dict -}}
+{{- range $item := $items -}}
+{{- $name := include "forecats.publishedArtefactName" $item -}}
+{{- if hasKey $seen $name -}}
+{{- fail (printf "%s is %q, which another published name already is; one request would answer two artefacts and one of them would be the one nobody meant" $item.what $name) -}}
+{{- end -}}
+{{- $_ := set $seen $name true -}}
+{{- $served = append $served (dict "name" $name "pattern" (include "forecats.publishedArtefactPattern" $item) "contentType" (include "forecats.publishedArtefactType" $name)) -}}
+{{- end -}}
+{{- $private := required "viewer.published.private: the names the publish step writes and the viewer never serves — the provenance sidecar among them, which carries the reference photo paths, the weight paths and the report address" $published.private -}}
+{{- $privateNames := list -}}
+{{- range $entry := $private -}}
+{{- $name := include "forecats.publishedArtefactName" (dict "what" "viewer.published.private" "name" $entry "dated" true) -}}
+{{- if hasKey $seen $name -}}
+{{- fail (printf "viewer.published.private names %q and the same name is in the served list; the private artefacts are the ones the panel's privacy argument says are not published, and a whitelist that answers one is not a boundary" $name) -}}
+{{- end -}}
+{{- $privateNames = append $privateNames $name -}}
+{{- end -}}
+{{- dict "manifest" $published.manifest "freshness" $published.freshness "variants" $published.variants "served" $served "private" $privateNames | toYaml -}}
+{{- end -}}
+
+{{- /*
+One published name, checked for the shape a name has to keep for the server to be
+able to serve it safely, and returned unchanged.
+*/ -}}
+{{- define "forecats.publishedArtefactName" -}}
+{{- $name := required (printf "%s: the publish step writes no file under this name, so there is nothing for the page to fetch" .what) .name -}}
+{{- if not (regexMatch "^[A-Za-z0-9._-]+$" (replace "{date}" "0" $name)) -}}
+{{- fail (printf "%s is %q: a published name is letters, digits, dots, dashes and underscores around the one variable {date}. A name carrying a slash is a path, and this server resolves names inside the published directory and nothing else." .what $name) -}}
+{{- end -}}
+{{- if or (hasPrefix "." $name) (contains ".." $name) -}}
+{{- fail (printf "%s is %q: a dot-prefixed name is the publish step's staging namespace, where a half-written artefact waits for a rename. The names the viewer serves are finished artefacts." .what $name) -}}
+{{- end -}}
+{{- if and .dated (not (contains "{date}" $name)) -}}
+{{- fail (printf "%s is %q and carries no {date}: a published artefact named for no day is one file every nightly overwrites, and a gallery in which every date is the same picture." .what $name) -}}
+{{- end -}}
+{{- if and (not .dated) (contains "{date}" $name) -}}
+{{- fail (printf "%s is %q and carries {date}: the page fetches this name before it knows a date, because it is the artefact that tells the page what dates there are." .what $name) -}}
+{{- end -}}
+{{- $name -}}
+{{- end -}}
+
+{{- /*
+The name as the server matches it: anchored, escaped, and with the date left as
+the one open variable. Escaped before the date is substituted, so the only
+metacharacters in the result are the ones the date pattern brings with it — the
+same order `artefact_pattern` in the publish step uses, because a whitelist that
+matched something other than what the publish step wrote would be a whitelist
+that serves a file no page links.
+*/ -}}
+{{- define "forecats.publishedArtefactPattern" -}}
+{{- $name := include "forecats.publishedArtefactName" . -}}
+{{- $pattern := replace "." "\\." $name -}}
+{{- printf "\\A/%s\\Z" (replace "{date}" "[0-9]{4}-[0-9]{2}-[0-9]{2}" $pattern) -}}
+{{- end -}}
+
+{{- /*
+The content type a published name is served as, from its suffix. A name with no
+suffix the viewer knows is refused rather than guessed at: a panel served as
+`text/plain` is a broken picture and a prompt served as `image/png` is a broken
+prompt, and neither says what it was served as.
+*/ -}}
+{{- define "forecats.publishedArtefactType" -}}
+{{- if hasSuffix ".png" . -}}
+image/png
+{{- else if hasSuffix ".json" . -}}
+application/json
+{{- else -}}
+{{- fail (printf "%q is a published name with no suffix this viewer knows a content type for; the server answers a published name as the type its suffix names and nothing else" .) -}}
+{{- end -}}
+{{- end -}}
+
+{{- /*
 PodSecurity `restricted` at container level, for every container in this chart.
 
 k3s v1.35.8+k3s1 drops `readOnlyRootFilesystem` from the POD-level
