@@ -62,6 +62,11 @@ __all__ = [
 # refusal that quotes one would publish it.
 CALENDAR_FEEDS_ENV = "FORECATS_CALENDAR_FEEDS"
 
+# The day a run is for, exported by the run script beside the card: today for a
+# nightly, an earlier date for a backfill. Read where --day is absent, so the
+# flag keeps authority and the two callers share one code path.
+FOR_DAY_ENV = "FORECATS_FOR_DAY"
+
 # Where the cats are described. Not a secret, so a plain file rather than a
 # decrypted unit; the secret half of the configuration is the feed addresses.
 HOUSEHOLD_FILE_ENV = "FORECATS_HOUSEHOLD_FILE"
@@ -267,11 +272,28 @@ def _nightly(args: argparse.Namespace, output_dir: Path) -> int:
         longitude=args.longitude,
         timezone=args.timezone,
     )
+    # The day, from the first of the three places it can be said: --day on the
+    # command line, the environment the run script exports beside the card
+    # (FOR_DAY_ENV — a nightly exports today, a backfill exports the day it is
+    # for), and the zone clock. The order is the authority order: a flag beats an
+    # environment beats a clock, and an unparsable date is refused no matter
+    # which of them said it, because a render for the wrong day publishes under
+    # the wrong name.
     try:
-        day = date.fromisoformat(args.day) if args.day else datetime.now(location.zone).date()
+        stated = None
+        if args.day:
+            stated = args.day
+            day = date.fromisoformat(args.day)
+        elif os.environ.get(FOR_DAY_ENV, ""):
+            stated = os.environ[FOR_DAY_ENV]
+            day = date.fromisoformat(stated)
+        else:
+            day = datetime.now(location.zone).date()
     except ValueError:
+        # The value is named wherever it came from: a bad export reads exactly
+        # like a bad flag, because both are a date somebody wrote down.
         raise UsageError(
-            f"--day wants an ISO date such as 2026-03-08, got {args.day!r}"
+            f"--day wants an ISO date such as 2026-03-08, got {stated!r}"
         ) from None
 
     feeds = _calendar_feeds()

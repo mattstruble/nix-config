@@ -36,7 +36,7 @@ from forecats_pipeline.calendar_feeds import MultiFeedCalendarProvider
 from forecats_pipeline.contracts import PipelineRefusal
 from forecats_pipeline.day_context_stage import PayloadLog, RecordingFetcher
 from forecats_pipeline.contracts import Published
-from forecats_pipeline.pipeline import CALENDAR_FEEDS_ENV, Skipped, main, run_nightly
+from forecats_pipeline.pipeline import CALENDAR_FEEDS_ENV, FOR_DAY_ENV, Skipped, main, run_nightly
 from forecats_pipeline.publish_stage import (
     FRESHNESS_NAME,
     GALLERY_NAME,
@@ -423,6 +423,73 @@ def test_a_day_that_is_not_a_date_names_the_flag_instead_of_the_failure(tmp_path
     )
     assert "isoformat" not in printed
     assert "unhandled" not in printed
+
+
+def _argv_without_day(output_dir: Path) -> list[str]:
+    """The nightly's arguments, minus the --day the run script does not pass."""
+    argv = nightly_argv(output_dir)
+    flag = argv.index("--day")
+    del argv[flag : flag + 2]
+    return argv
+
+
+def test_the_environment_says_the_day_where_the_flag_does_not(tmp_path, monkeypatch, capsys):
+    """The run script exports the day beside the card; the flag still wins.
+
+    A nightly exports today and a backfill exports an earlier date — one code
+    path, differing only in what the environment says. The flag keeps authority:
+    a --day on the command line is not overridden by a stale environment, and an
+    unparsable environment date is refused with the message a bad flag gets,
+    because a render for the wrong day publishes under the wrong name.
+    """
+    monkeypatch.setenv(CALENDAR_FEEDS_ENV, f"home={DAY_ICS.as_uri()}")
+    monkeypatch.setenv(REPORT_ADDRESS_ENV, REPORT_INBOX)
+    monkeypatch.setenv(FOR_DAY_ENV, "2026-03-08")
+
+    exit_code = main(
+        _argv_without_day(tmp_path / "panels")
+        + ["--household-file", str(household_file(tmp_path)), "--weather", "rain"]
+    )
+
+    assert exit_code == 0, capsys.readouterr().out
+    # The environment's day, not the clock's: the panel is published under the
+    # name the export said, which is the whole reason the variable travels.
+    assert (tmp_path / "panels" / "panel-2026-03-08.png").is_file()
+
+
+def test_a_stale_environment_loses_to_the_flag(tmp_path, monkeypatch, capsys):
+    """A backfill job that inherits yesterday's export must not redraw yesterday.
+
+    The date the environment says is deliberately one the flag does not: a test
+    where both agree cannot tell the authority order from a coincidence.
+    """
+    monkeypatch.setenv(CALENDAR_FEEDS_ENV, f"home={DAY_ICS.as_uri()}")
+    monkeypatch.setenv(REPORT_ADDRESS_ENV, REPORT_INBOX)
+    monkeypatch.setenv(FOR_DAY_ENV, "2026-03-09")
+
+    exit_code = main(
+        nightly_argv(tmp_path / "panels")
+        + ["--household-file", str(household_file(tmp_path)), "--weather", "rain"]
+    )
+
+    assert exit_code == 0, capsys.readouterr().out
+    # The flag's day is the one that rendered; the environment's day named a
+    # panel that does not exist.
+    assert (tmp_path / "panels" / "panel-2026-03-08.png").is_file()
+    assert (tmp_path / "panels" / "panel-2026-03-09.png").is_file() is False
+
+
+def test_an_environment_day_that_is_not_a_date_is_refused_like_a_flag(tmp_path, monkeypatch, capsys):
+    """The message names the flag because that is where a reader looks first."""
+    monkeypatch.setenv(CALENDAR_FEEDS_ENV, f"home={DAY_ICS.as_uri()}")
+    monkeypatch.setenv(REPORT_ADDRESS_ENV, REPORT_INBOX)
+    monkeypatch.setenv(FOR_DAY_ENV, "not-a-date")
+
+    exit_code = main(_argv_without_day(tmp_path / "panels"))
+
+    printed = capsys.readouterr().out
+    assert exit_code == 1
+    assert "refused at usage: --day wants an ISO date such as 2026-03-08, got 'not-a-date'" in printed
 
 
 def test_a_nightly_with_no_address_to_report_to_publishes_nothing(tmp_path, monkeypatch, capsys):

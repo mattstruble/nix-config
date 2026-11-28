@@ -111,6 +111,13 @@ data:
                   value: "${NVIDIA_VISIBLE_DEVICES}"
                 - name: SWAPK8S_CARD
                   value: "${NVIDIA_VISIBLE_DEVICES}"
+                # The day this run renders, exported by the run script beside the
+                # card — today for a nightly, an earlier date for a backfill. The
+                # pipeline reads it where --day is absent, so the override and the
+                # nightly are one code path and the day has one source: the run
+                # script's own computation.
+                - name: FORECATS_FOR_DAY
+                  value: "${FORECATS_FOR_DAY}"
                 - name: HOME
                   value: /tmp
                 # The grant's report address, beside the picture it is about. The

@@ -93,7 +93,11 @@ data:
     # the shim's own attribution, which the pod spec also wants. RENDER_REF is
     # exported for the same reason: the file the created Job's name lands in is
     # read by this script, outside those quotes.
-    export CARD_PATTERN='$NVIDIA_VISIBLE_DEVICES $SWAPK8S_CARD'
+    # FORECATS_FOR_DAY is always exported (the date fallback above guarantees a
+    # non-empty value), so the substitution always has something to say and the
+    # -no-empty refusal below cannot fire on it: a nightly and a backfill are
+    # one code path, differing only in what the day is.
+    export CARD_PATTERN='$NVIDIA_VISIBLE_DEVICES $SWAPK8S_CARD $FORECATS_FOR_DAY'
     export RENDER_REF="$render_ref"
 
     attempt=0
@@ -106,7 +110,13 @@ data:
       # makes this test miss for a few hours around midnight and never makes it
       # wrong: the render pod then finds the panel and exits 0, the same answer one
       # attempt later.
-      day=$(TZ="$FORECATS_PLACE_TIMEZONE" date +%Y-%m-%d)
+      # The day this run is for. The zone clock answers for a nightly; the
+      # override is what a backfill sets on its manual job, and the export below
+      # is what carries it to the render pod beside the card — through the same
+      # substitution, so a run for a day that is not today needs no second path
+      # through the claim.
+      day="${FORECATS_FOR_DAY:-$(TZ="$FORECATS_PLACE_TIMEZONE" date +%Y-%m-%d)}"
+      export FORECATS_FOR_DAY="$day"
       panel_name="{{ first $panelParts }}${day}{{ last $panelParts }}"
       # A regular file, not merely a name: the publish step writes the panel as one,
       # and a directory or a socket that someone left with the panel's name would
