@@ -142,12 +142,12 @@
       services.k3s.wikiOidcEgressCidrs = [ "66.63.168.18/32" ];
 
       # CIDRs the roborock server's hostPorts (555/8881) accept through its
-      # NetworkPolicy. The main LAN is here; the vacuum's deadzone VLAN and
-      # the HA zone must be added BEFORE onboarding, together with their
-      # UniFi firewall policies — the two lists govern the same boundary and
-      # the RUNBOOK's curl-from-VLAN check is what says they agree
-      # (k8s/apps/home/roborock/RUNBOOK.md).
-      services.k3s.roborockIngressCidrs = [ "10.0.0.0/24" ];
+      # NetworkPolicy. The main LAN (which also holds Home Assistant) and the
+      # vacuum's deadzone VLAN (10.0.60.0/24, WAN-less — the onboarding
+      # requirement). The UniFi firewall policies (RUNBOOK.md) govern the
+      # same boundary from outside the cluster — a client one list blocks the
+      # other must too, so grow both together.
+      services.k3s.roborockIngressCidrs = [ "10.0.0.0/24" "10.0.60.0/24" ];
 
       services.k3s.aiChart.strataBundle = toString config.system.build.strata;
 
