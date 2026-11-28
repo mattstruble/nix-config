@@ -174,7 +174,11 @@ nightly:
   # not painted by the model: a number the model invented is a wrong number on
   # the wall of the house. Turning this off is a decision about the picture, not
   # a knob for a host, so it is a value and not a flag the pipeline defaults.
-  drawForecastPlate: true
+  # Off since 2026-11-27 by owner decision: the scene the model renders already
+  # carries the day's weather and occasion, and the semi-transparent plate over
+  # the lower-left corner read as a caption the picture did not need. What is
+  # given up is the one place the numbers were verified rather than interpreted.
+  drawForecastPlate: false
 
 viewer:
   # The only thing that reads the published directory in this chart. It serves
