@@ -145,8 +145,12 @@ domain reserved for documentation, because the real address is personal data and
 this repository is public; the owner sets it in config that is not pushed here.
 
 **On notice, the owner takes that day's panel off the wall before anything else:
-delete `panel-<date>.png` and `panel-<date>.provenance.json` from the panels
-volume, then answer the person who reported it and say that it is down.**
+delete `panel-<date>.png`, `panel-<date>-banner.png`, `panel-<date>-thumb.png` and
+`panel-<date>.provenance.json` from the panels volume, then answer the person who
+reported it and say that it is down.** The banner and the thumbnail are the same
+picture at the shapes a page can hold, so they come down with it; `gallery.json`
+is rewritten by the next nightly and names only the days whose full panel is still
+on the volume.
 
 What prompt action cannot mean is deleting the file and expecting the picture to
 stay gone. The seed is the date and the caption is built from the household file,

@@ -195,6 +195,39 @@
           test -s "$panels/panel-$day.png"
           test -s "$panels/panel-$day.provenance.json"
 
+          # The other names a page fetches. They are checked here and not only in
+          # the suite because the installed wrapper's own run writes them: a build
+          # whose interpreter had no Pillow, or whose wrapper pointed at another
+          # output directory, publishes a panel with no banner beside it, and the
+          # wall is where that would surface.
+          test -s "$panels/panel-$day-banner.png"
+          test -s "$panels/panel-$day-thumb.png"
+          test -s "$panels/panel-$day.prompt.json"
+          test -s "$panels/gallery.json"
+
+          # The index names the day and every rendition the volume holds, and the
+          # public artefact beside the panel carries neither an address nor a path
+          # into the photo volume. A viewer may serve the index and the prompt
+          # artefact and refuses the sidecar, so this is where the line between the
+          # two is drawn before a wall reads either.
+          PANELS="$panels" PANEL_DAY="$day" python3 <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          panels = Path(os.environ["PANELS"])
+          gallery = json.loads((panels / "gallery.json").read_text(encoding="utf-8"))
+          (entry,) = gallery["days"]
+          assert entry["day"] == os.environ["PANEL_DAY"], entry
+          assert sorted(entry["variants"]) == ["banner", "full", "thumb"], entry
+          for name in entry["variants"].values():
+              assert (panels / name).is_file(), name
+
+          published = (panels / entry["prompt"]).read_text(encoding="utf-8")
+          assert "@" not in published, "the published prompt artefact carries an address"
+          assert "/var/lib/" not in published, "the published prompt artefact carries a path"
+          PY
+
           # Existence is not the plate. The fake renderer's placeholder is one flat
           # colour, so a published file carrying more than one is what says the
           # overlay ran and opened the font it was handed: a panel published with

@@ -22,7 +22,7 @@ from PIL import Image, ImageDraw, ImageFont
 
 from forecats_pipeline.contracts import Occasion, WeatherToday
 
-__all__ = ["ForecastBox", "overlay_forecast"]
+__all__ = ["ForecastBox", "overlay_forecast", "panel_occasion"]
 
 # Sized against the panel, not in points, so the box is the same fraction of
 # the picture whatever the render resolution turns out to be.
@@ -51,6 +51,15 @@ class ForecastBox:
         return rest + ((self.occasion,) if self.occasion else ())
 
 
+def panel_occasion(occasions: tuple[Occasion, ...]) -> str | None:
+    """The one occasion a day is about: the first of them, as the plate names it.
+
+    The published prompt artefact carries the same title, so which of several
+    events a panel picks is decided here and nowhere else.
+    """
+    return occasions[0].title if occasions else None
+
+
 def forecast_box(
     weather: WeatherToday, for_day: date, occasions: tuple[Occasion, ...] = ()
 ) -> ForecastBox:
@@ -60,7 +69,7 @@ def forecast_box(
         high=f"Hi {weather.temperature_high_c:g}°",
         low=f"Lo {weather.temperature_low_c:g}°",
         date_line=for_day.strftime("%a %-d %b"),
-        occasion=occasions[0].title if occasions else None,
+        occasion=panel_occasion(occasions),
     )
 
 

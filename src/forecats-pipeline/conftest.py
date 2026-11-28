@@ -7,11 +7,13 @@ because recurrence expansion is exactly where a pipeline integration breaks.
 """
 
 from datetime import UTC, date, datetime
+from io import BytesIO
 from pathlib import Path
 
 import pytest
 from day_context import Location
 from forecats_pipeline.contracts import Household, Pet
+from PIL import Image
 
 DAY_ICS = Path(__file__).parents[1] / "forecats-day-context" / "fixtures" / "day.ics"
 FEED_URL = "https://example.invalid/ics/day.ics"
@@ -22,6 +24,18 @@ MORNING = datetime(2026, 3, 8, 7, 30, tzinfo=UTC)
 # A fixture address on a domain reserved for documentation, because the real one
 # is personal data and the sidecar carrying it is served beside the picture.
 REPORT_INBOX = "owner@example.invalid"
+
+
+def gradient_png(size: int) -> bytes:
+    """A decodable PNG whose every row differs from the row above it.
+
+    The publish step cuts the banner and the thumbnail out of a panel's own bytes,
+    so a stand-in for a rendered panel has to be a picture Pillow can open, and a
+    flat field could not tell a crop of it from a redraw of something else.
+    """
+    buffer = BytesIO()
+    Image.linear_gradient("L").resize((size, size)).convert("RGB").save(buffer, format="PNG")
+    return buffer.getvalue()
 
 
 class StubFeed:

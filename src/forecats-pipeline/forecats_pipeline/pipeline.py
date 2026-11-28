@@ -171,13 +171,10 @@ def run_nightly(
         else ()
     )
 
-    caption = draft_caption(
-        context,
-        household,
-        (generator.scene_for(context, household, upcoming=upcoming) if generator else None)
-        or table_scene(context, household),
-        location=location.name,
-    )
+    scene = (
+        generator.scene_for(context, household, upcoming=upcoming) if generator else None
+    ) or table_scene(context, household)
+    caption = draft_caption(context, household, scene, location=location.name)
     # The seed is the date: re-running a date would reproduce the same picture,
     # and a provenance file that names a seed names the day it belongs to.
     seed = int(day.strftime("%Y%m%d"))
@@ -212,6 +209,10 @@ def run_nightly(
         caption,
         rendered,
         payloads.bodies() if payloads else {},
+        # The scene the caption was written from, passed on because the published
+        # prompt artefact names the activity: the words a viewer reads beside the
+        # picture are the words this run actually sent, not a paraphrase of them.
+        scene=scene,
         output_dir=output_dir,
         report_address=report_address,
         published_at=published_at,

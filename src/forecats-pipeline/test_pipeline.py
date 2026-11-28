@@ -13,7 +13,17 @@ from pathlib import Path
 
 import day_context
 import forecats_pipeline
-from conftest import DAY, DAY_ICS, FEED_URL, MORNING, REPORT_INBOX, StubFeed, StubWeatherProvider, two_pets
+from conftest import (
+    DAY,
+    DAY_ICS,
+    FEED_URL,
+    MORNING,
+    REPORT_INBOX,
+    StubFeed,
+    StubWeatherProvider,
+    gradient_png,
+    two_pets,
+)
 from day_context import (
     FailureKind,
     Fetched,
@@ -27,7 +37,16 @@ from forecats_pipeline.contracts import PipelineRefusal
 from forecats_pipeline.day_context_stage import PayloadLog, RecordingFetcher
 from forecats_pipeline.contracts import Published
 from forecats_pipeline.pipeline import CALENDAR_FEEDS_ENV, Skipped, main, run_nightly
-from forecats_pipeline.publish_stage import FRESHNESS_NAME, panel_name, provenance_name
+from forecats_pipeline.publish_stage import (
+    FRESHNESS_NAME,
+    GALLERY_NAME,
+    banner_name,
+    panel_name,
+    prompt_name,
+    provenance_name,
+    read_gallery,
+    thumb_name,
+)
 from forecats_pipeline.render_stage import (
     MODEL_DIRECTORY_ENV,
     REPORT_ADDRESS_ENV,
@@ -43,12 +62,15 @@ SOURCE_ROOTS = os.pathsep.join(
 
 # A stand-in for the diffusion CLI: it records what it was asked for and writes
 # the picture it was promised. `sys.executable` rather than `/bin/sh` because a
-# shebang has to name an interpreter that exists wherever the suite runs.
+# shebang has to name an interpreter that exists wherever the suite runs. The
+# picture it writes is a real PNG read off disk: the publish step cuts its banner
+# and thumbnail out of the bytes the render left behind, so a file that is only a
+# PNG header is a panel that cannot be cropped.
 FAKE_CLI = '''#!{interpreter}
 import json, os, pathlib, sys
 
 argv = sys.argv[1:]
-pathlib.Path(argv[argv.index("-o") + 1]).write_bytes(bytes([137, 80, 78, 71, 13, 10, 26, 10]))
+pathlib.Path(argv[argv.index("-o") + 1]).write_bytes(pathlib.Path({panel!r}).read_bytes())
 pathlib.Path(os.environ["FAKE_CLI_LOG"]).write_text(json.dumps({{
     "argv": argv,
     "cuda_visible_devices": os.environ.get("CUDA_VISIBLE_DEVICES"),
@@ -185,6 +207,36 @@ def test_one_run_publishes_the_panel_the_sidecar_and_the_freshness_file(tmp_path
     assert published.provenance_path.endswith(".provenance.json")
     assert Path(published.provenance_path).is_file()
     assert (tmp_path / FRESHNESS_NAME).is_file()
+
+
+def test_one_run_cuts_the_banner_and_the_thumbnail_and_indexes_the_day(tmp_path: Path):
+    run(tmp_path)
+
+    for name in (banner_name(DAY), thumb_name(DAY), prompt_name(DAY), GALLERY_NAME):
+        assert (tmp_path / name).is_file(), name
+
+    entry = read_gallery(tmp_path)["days"][0]
+    assert entry["day"] == DAY.isoformat()
+    assert entry["variants"]["banner"] == banner_name(DAY)
+    assert entry["prompt"] == prompt_name(DAY)
+
+
+def test_the_published_prompt_names_no_path_and_no_address(tmp_path: Path):
+    """The caption is published; the paths the render read and the inbox are not.
+
+    The real caption is long and quotes the household file, so this is the curation
+    rule run against the words the pipeline actually sends rather than against a
+    fixture written to pass it.
+    """
+    run(tmp_path)
+
+    published = (tmp_path / prompt_name(DAY)).read_text(encoding="utf-8")
+
+    assert REPORT_INBOX not in published
+    assert "@" not in published
+    for photo in ("/refs/milo.jpg", "/refs/mochi.jpg"):
+        assert photo not in published
+    assert "BEGIN:VCALENDAR" not in published
 
 
 def test_the_sidecar_records_the_feed_that_was_read(tmp_path: Path):
@@ -464,7 +516,11 @@ def test_the_entry_point_renders_with_no_host_and_no_ssh_credentials(tmp_path: P
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     fake_cli = bin_dir / "sd-cli"
-    fake_cli.write_text(FAKE_CLI.format(interpreter=sys.executable), encoding="utf-8")
+    drawn = tmp_path / "cli-drew.png"
+    drawn.write_bytes(gradient_png(16))
+    fake_cli.write_text(
+        FAKE_CLI.format(interpreter=sys.executable, panel=str(drawn)), encoding="utf-8"
+    )
     fake_cli.chmod(0o755)
     log = tmp_path / "cli.json"
 
