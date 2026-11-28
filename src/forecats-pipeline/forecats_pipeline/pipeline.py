@@ -25,7 +25,7 @@ from day_context.weather_open_meteo import OpenMeteoWeatherProvider
 from forecats_pipeline.activity_stage import ActivityGenerator
 from forecats_pipeline.calendar_feeds import MultiFeedCalendarProvider, upcoming_occasions
 from forecats_pipeline.caption_stage import draft_caption, table_scene
-from forecats_pipeline.contracts import Household, PipelineRefusal, Published
+from forecats_pipeline.contracts import Household, PipelineRefusal, Published, day_seed
 from forecats_pipeline.day_context_stage import (
     CachingFetcher,
     PayloadLog,
@@ -176,8 +176,10 @@ def run_nightly(
     ) or table_scene(context, household)
     caption = draft_caption(context, household, scene, location=location.name)
     # The seed is the date: re-running a date would reproduce the same picture,
-    # and a provenance file that names a seed names the day it belongs to.
-    seed = int(day.strftime("%Y%m%d"))
+    # and a provenance file that names a seed names the day it belongs to. The
+    # day's art style comes from the same number, so a re-render reproduces the
+    # style its sidecar names too.
+    seed = day_seed(day)
     rendered = renderer.render(
         caption,
         seed=seed,

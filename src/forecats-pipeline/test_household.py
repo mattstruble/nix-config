@@ -54,6 +54,48 @@ def test_the_shipped_photos_are_the_ones_the_photo_volume_carries():
     assert {str(pet.reference_photo.parent) for pet in household.pets} == {photo_directory}
 
 
+def test_the_shipped_styles_are_a_rotation_and_not_a_repeated_line():
+    """A list of one is the fixed string this replaced; a duplicate is a shorter list.
+
+    The list itself is the file's to hold — nothing here restates it, because a
+    second copy of a list a person edits is a check that can pass while both are
+    wrong.
+    """
+    styles = load_household(REPO / "src/forecats-pipeline/household.yaml").art_styles
+
+    assert len(styles) > 1, "one style is not a rotation"
+    assert len(set(styles)) == len(styles), "a style listed twice is one fewer style"
+
+
+def test_styles_written_as_one_line_are_refused_rather_than_read_as_letters(tmp_path):
+    """`art_styles: risograph` is a string, and a string iterates one letter a day."""
+    with pytest.raises(ValueError, match="art_styles"):
+        load_household(
+            write(
+                tmp_path,
+                "pets:\n  - name: Milo\n    reference_photo: /r/milo.jpg\n"
+                "    visual_description: a tabby\nart_styles: risograph\n",
+            )
+        )
+
+
+def test_a_household_naming_no_styles_names_none_rather_than_borrowing_a_default(tmp_path):
+    """The fallback style belongs to the caption stage, not to this loader.
+
+    A default here would be a second place a style is written down, and the one
+    the shipped file could silently disagree with.
+    """
+    household = load_household(
+        write(
+            tmp_path,
+            "pets:\n  - name: Milo\n    reference_photo: /r/milo.jpg\n"
+            "    visual_description: a tabby\n",
+        )
+    )
+
+    assert household.art_styles == ()
+
+
 def test_a_pet_with_no_photo_is_refused_before_the_render(tmp_path):
     with pytest.raises(ValueError, match="no reference_photo"):
         load_household(write(tmp_path, "pets:\n  - name: Nobody\n"))

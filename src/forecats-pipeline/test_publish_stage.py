@@ -157,6 +157,7 @@ def test_the_sidecar_names_the_template_the_seed_the_weights_and_the_photos(tmp_
 
     record = provenance(tmp_path)
     assert record["template_hash"] == "deadbeef0000"
+    assert record["style"] == "risograph"
     assert record["seed"] == 20260308
     assert record["weights"] == [WEIGHT]
     assert record["reference_photos"] == [REFERENCE_PHOTO]

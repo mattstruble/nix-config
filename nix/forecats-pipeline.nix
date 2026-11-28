@@ -252,13 +252,27 @@
           # way to report a violation reachable from the panel, and the sidecar beside
           # the picture is what a viewer has — so this is where the build checks that
           # the value named above arrived there rather than being read and dropped.
-          PROVENANCE="$panels/panel-$day.provenance.json" python3 <<'PY'
+          PROVENANCE="$panels/panel-$day.provenance.json" \
+          HOUSEHOLD="${placeholder "out"}/src/forecats-pipeline/household.yaml" python3 <<'PY'
           import json
           import os
+
+          import yaml
 
           with open(os.environ["PROVENANCE"], encoding="utf-8") as sidecar:
               record = json.load(sidecar)
           assert record["report_address"] == "check@forecats.invalid", record.get("report_address")
+
+          # The art styles are data in the household file, and this is the one run that
+          # reads the store copy the wrapper defaults to instead of a test fixture: a
+          # store copy that lost the list still renders, in the fallback the caption
+          # stage ships with, and nothing in the sidecar separates that panel from the
+          # day the rotation landed on the same line. What a green run does not claim is
+          # that the picture looks like the style — only that the render named the one
+          # it drew in, and named it from the list the owner edits.
+          with open(os.environ["HOUSEHOLD"], encoding="utf-8") as handle:
+              styles = yaml.safe_load(handle)["art_styles"]
+          assert record["style"] == styles[record["seed"] % len(styles)], record["style"]
           PY
 
           # A build has no weights, so the real renderer has nowhere to read from —

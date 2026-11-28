@@ -1,6 +1,7 @@
 """The caption stub has to be boring, explainable, and honest about the sky."""
 
 import re
+from dataclasses import replace
 from pathlib import Path
 from datetime import UTC, date, datetime
 
@@ -17,10 +18,16 @@ from forecats_pipeline.caption_stage import (
     template_hash,
 )
 from conftest import two_pets
-from forecats_pipeline.contracts import DayContext, Occasion, WeatherToday
+from forecats_pipeline.contracts import DayContext, Occasion, WeatherToday, day_seed
+from forecats_pipeline.household import load_household
 from day_context.weather import WeatherCondition
 
 MORNING = datetime(2026, 3, 8, 7, 30, tzinfo=UTC)
+
+# The household file the nightly is drawn from: the list of art styles is data
+# there, so every assertion about that list reads this file rather than writing
+# the list out a second time.
+HOUSEHOLD_FILE = Path(__file__).parent / "household.yaml"
 
 
 def draft_caption(context, household):
@@ -269,8 +276,56 @@ def test_a_clear_december_cannot_draw_a_summer_day():
 
 
 def test_the_style_string_does_not_chose_the_room():
-    """'warm detailed interior' in the style put every panel indoors for a year."""
-    assert "interior" not in PANEL_STYLE.lower()
+    """'warm detailed interior' in the style put every panel indoors for a year.
+
+    The list is data in the household file, so the words it may not contain are
+    checked against that file: a hand-copied list here would pass while the real
+    one grew a room.
+    """
+    shipped = load_household(HOUSEHOLD_FILE).art_styles
+
+    for style in (PANEL_STYLE, *shipped):
+        for place in ("interior", "indoor", "outdoor", "room"):
+            assert place not in style.lower(), f"{style!r} names where the cats are"
+
+
+def test_a_day_is_drawn_in_one_of_the_household_styles():
+    """One style for a year of panels is the same picture, thirty times a month."""
+    caption = draft_caption(context(), two_pets())
+
+    assert caption.style in two_pets().art_styles
+    assert f"The art style should be: {caption.style}" in caption.text
+
+
+def test_the_style_and_the_seed_come_from_one_number():
+    """A date re-rendered reproduces its style, by the rule its seed follows.
+
+    The renderer's seed is `day_seed(day)` and the style is that number's place in
+    the household's list. A style drawn from the clock instead would leave the
+    provenance beside a panel describing a drawing that no longer exists.
+    """
+    styles = two_pets().art_styles
+
+    for day in (date(2026, 3, 8), date(2026, 11, 27), date(2027, 1, 1)):
+        caption = draft_caption(context(for_day=day), two_pets())
+        assert caption.style == styles[day_seed(day) % len(styles)]
+
+
+def test_a_month_of_days_is_drawn_in_every_style_the_household_names():
+    """The rotation runs: consecutive days walk the list, so none of it goes unused."""
+    drawn = {
+        draft_caption(context(for_day=date(2026, 5, day)), two_pets()).style
+        for day in range(1, 32)
+    }
+
+    assert drawn == set(two_pets().art_styles)
+
+
+def test_a_household_naming_no_style_is_drawn_in_the_one_this_stage_ships_with():
+    """A household file older than the list still renders, in the style it knew."""
+    caption = draft_caption(context(), replace(two_pets(), art_styles=()))
+
+    assert caption.style == PANEL_STYLE
 
 
 def test_a_celebration_asks_for_an_action_not_a_pose():

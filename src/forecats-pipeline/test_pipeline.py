@@ -247,6 +247,23 @@ def test_the_sidecar_records_the_feed_that_was_read(tmp_path: Path):
     assert "open-meteo" in record
 
 
+def test_the_sidecar_records_the_style_the_day_was_drawn_in(tmp_path: Path):
+    """A panel is explainable only if the style it was drawn in is written down.
+
+    The seed and the style are read back out of one published file and checked
+    against each other: both are answers the date gave, so a re-render of the date
+    reproduces the pair, which is what makes the sidecar a record of the panel
+    beside it rather than of some other run.
+    """
+    published = run(tmp_path)
+
+    record = json.loads(Path(published.provenance_path).read_text(encoding="utf-8"))
+    styles = two_pets().art_styles
+
+    assert record["style"] in styles
+    assert record["style"] == styles[record["seed"] % len(styles)]
+
+
 def test_the_sidecar_names_a_private_feed_by_its_label_not_its_address(
     tmp_path, monkeypatch, capsys
 ):

@@ -3,6 +3,10 @@
 Every stage returns either a value or a PipelineRefusal. A refusal is data, not
 an exception, because "the weather service was down" and "today has nothing in
 it" must not look the same to the thing that decides whether to publish.
+
+One rule about a day is stated here as well, because two stages derive from it.
+A second copy of that rule is how a re-rendered date would draw the same picture
+in a different style and stop matching the sidecar written beside it.
 '''
 
 from dataclasses import dataclass, field
@@ -19,7 +23,18 @@ __all__ = [
     "Staleness",
     "WeatherToday",
     "Household",
+    "day_seed",
 ]
+
+
+def day_seed(for_day: date) -> int:
+    """The number a date is drawn by: that date's own digits, and nothing else.
+
+    Derived from the day and not from the clock, so a second run for a date
+    reproduces what its provenance already records. Both the diffusion seed and
+    the day's place in the household's list of art styles are this one number.
+    """
+    return int(for_day.strftime("%Y%m%d"))
 
 
 @dataclass(frozen=True)
@@ -138,11 +153,17 @@ class Household:
     `consistency_rules` are negative and deliberate: the pair are similar
     enough that a model will happily swap their markings, and the only thing
     that stopped Mochi acquiring Milo's white chest was being told not to.
+
+    `art_styles` is the list a day's panel is drawn in one of. It is empty when
+    the household file names none, and the caption stage then draws in the one
+    style it was written with — which is every panel this repo ever made, before
+    the list existed.
     """
 
     pets: tuple[Pet, ...]
     relationship: tuple[str, ...] = ()
     consistency_rules: tuple[str, ...] = ()
+    art_styles: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if not self.pets:

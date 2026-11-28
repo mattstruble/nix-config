@@ -72,3 +72,26 @@ consistency_rules:
   - Both cats must have copper/golden-orange eyes, not green or yellow.
   - Preserve their individual markings and identities across images.
   - Do not depict either cat as grey, black, tuxedo or unstriped.
+
+# How the panel is drawn. One of these lines is chosen for the day, and the
+# provenance sidecar names the one it was.
+#
+# The pick is the day's and not a coin's: a date re-rendered draws the style its
+# own sidecar already names, and a random pick would draw a different picture
+# under a record of the old one.
+#
+# Prune this list by looking at the outputs, not at the wording. A style can
+# misfire in a way no sentence predicts: upstream removed South Park after a
+# render gave a cat X eyes.
+#
+# Every line is written for a colour e-ink panel — bold shapes and flat colour,
+# because fine texture dithers into mud. None of them names where the cats are: a
+# style that says interior overrides the sky and the season, which is how every
+# panel of one year ended up indoors.
+art_styles:
+  - bright flat cartoon illustration, bold clean outlines, saturated cheerful colours, deep readable depth
+  - risograph print, bold poster shapes, limited two-colour palette, deliberate misregistration
+  - ukiyo-e woodblock print, flat planes of colour, firm outlines, stylised weather
+  - hand-drawn picture book, warm gouache, rounded shapes, soft edges
+  - linocut print, thick carved lines, high-contrast flat blocks, limited ink palette
+  - cut-paper collage, layered flat shapes, bold overlapping edges, crisp shadows

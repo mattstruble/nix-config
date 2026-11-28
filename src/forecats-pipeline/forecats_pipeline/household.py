@@ -36,7 +36,26 @@ def load_household(path: Path) -> Household:
         pets=pets,
         relationship=tuple(document.get("relationship") or ()),
         consistency_rules=tuple(document.get("consistency_rules") or ()),
+        art_styles=_art_styles(document),
     )
+
+
+def _art_styles(document: dict) -> tuple[str, ...]:
+    """The styles the panel rotates through, in the order the file lists them.
+
+    An entry that is not a line of text is refused rather than read: a style
+    written as `art_styles: risograph` instead of a list would otherwise be
+    iterated character by character, and a day would ask to be drawn in `r`.
+    """
+    listed = document.get("art_styles")
+    if listed is None:
+        return ()
+    if not isinstance(listed, list):
+        raise ValueError("art_styles: wants a list with one style per line, not one line")
+    styles = tuple(listed)
+    if any(not isinstance(style, str) or not style.strip() for style in styles):
+        raise ValueError("art_styles: an entry that is not a line of text names no style")
+    return tuple(style.strip() for style in styles)
 
 
 def _pet(entry: dict) -> Pet:

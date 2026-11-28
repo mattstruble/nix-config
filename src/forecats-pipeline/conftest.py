@@ -106,4 +106,11 @@ def two_pets() -> Household:
         ),
         relationship=("Biological brothers who sleep snuggled together.",),
         consistency_rules=("Never give Mochi Milo's white facial and chest markings.",),
+        # Three, so that a month of days is a rotation and not one style wearing
+        # three names. The shipped list is longer than this one.
+        art_styles=(
+            "flat cartoon, bold outlines, saturated colour",
+            "risograph print, two-colour grain, offset edges",
+            "ukiyo-e woodblock, flat planes of colour, firm outlines",
+        ),
     )

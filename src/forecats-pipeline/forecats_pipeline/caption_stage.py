@@ -25,15 +25,24 @@ props, and a night variant of every sky.
 import hashlib
 from datetime import date
 
-from forecats_pipeline.contracts import Caption, DayContext, Household, Scene, WeatherToday
+from forecats_pipeline.contracts import Caption, DayContext, Household, Scene, WeatherToday, day_seed
 
-__all__ = ["PANEL_STYLE", "draft_caption", "table_scene", "template_hash"]
+__all__ = [
+    "PANEL_STYLE",
+    "draft_caption",
+    "style_for_day",
+    "table_scene",
+    "template_hash",
+]
 
-# Cartoon, per the owner's pick of forecats' look, and deliberately free of fine
-# detail: the destination is a colour e-ink panel, where thin texture dithers
-# away into mud. Deliberately silent about the setting — the first version of
-# this string said "warm detailed interior", which put every panel of a year
-# indoors no matter what the day said.
+# The style a household that names none in `household.yaml` is drawn in, and the
+# style every panel of the first year was drawn in. Cartoon, per the owner's pick
+# of forecats' look, and deliberately free of fine detail: the destination is a
+# colour e-ink panel, where thin texture dithers away into mud. Deliberately
+# silent about the setting — the first version of this string said "warm detailed
+# interior", which put every panel of a year indoors no matter what the day said.
+#
+# The list a day actually picks from is data, in `household.yaml`.
 PANEL_STYLE = (
     "bright flat cartoon illustration, bold clean outlines, saturated cheerful "
     "colours, deep readable depth"
@@ -266,9 +275,31 @@ _NEGATIVE_STARTS = ("never", "do not", "avoid", "not ", "no ")
 
 
 def template_hash() -> str:
-    """Which words built this panel, as something a provenance file can hold."""
+    """Which template built this panel, as something a provenance file can hold.
+
+    The material is the template and the fallback style, both of them fixed for a
+    version of this file. The style a given day drew in is recorded beside the
+    hash, and rotating it must not move the hash: a year of panels has to stay
+    groupable by the words they were all built from.
+    """
     material = f"{_TEMPLATE}\n{PANEL_STYLE}".encode()
     return hashlib.sha256(material).hexdigest()[:12]
+
+
+def style_for_day(household: Household, for_day: date) -> str:
+    """The art style this date is drawn in, taken from the household's list.
+
+    Rotated by the day rather than drawn at random: `day_seed` is the rule the
+    diffusion seed already follows, so re-rendering a date reproduces the style
+    its own provenance names, and a sidecar never describes a drawing that no
+    longer exists. Upstream picks at random and keeps nothing; a panel here is
+    published with the record of how it was made.
+
+    A household that names no style gets `PANEL_STYLE`, which is what every panel
+    was before the list existed.
+    """
+    styles = household.art_styles or (PANEL_STYLE,)
+    return styles[day_seed(for_day) % len(styles)]
 
 
 def draft_caption(
@@ -291,6 +322,7 @@ def draft_caption(
             "pipeline before it reaches this stage"
         )
     weather = context.weather
+    style = style_for_day(household, context.for_day)
     text = _TEMPLATE.format(
         n_pets=len(household.pets),
         identities=_identities(household),
@@ -306,9 +338,9 @@ def draft_caption(
         activity=scene.activity,
         foreground=scene.foreground,
         background=scene.background,
-        style=PANEL_STYLE,
+        style=style,
     )
-    return Caption(text=text, template_hash=template_hash(), style=PANEL_STYLE)
+    return Caption(text=text, template_hash=template_hash(), style=style)
 
 
 def table_scene(context: DayContext, household: Household) -> Scene:
